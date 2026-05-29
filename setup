@@ -38,6 +38,29 @@ DOCLINT
   echo "  ✓ doclint.json"
 }
 
+# docs-gardener config (shared from doclint.json)
+if [ -f doclint.json ] && [ ! -f docs-gardener.json ]; then
+  python3 -c "
+import json
+with open('doclint.json') as f:
+    d = json.load(f)
+gardener = {k: v for k, v in d.items() if k in ('docsDir','codeDirs','codeExt','baseBranch')}
+gardener['catalogs'] = {}
+with open('docs-gardener.json','w') as f:
+    json.dump(gardener, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null || cat > docs-gardener.json <<'GARDENER'
+{
+  "docsDir": "docs",
+  "codeDirs": ["src", "tests"],
+  "codeExt": ".py",
+  "baseBranch": "dev",
+  "catalogs": {}
+}
+GARDENER
+  echo "  ✓ docs-gardener.json"
+fi
+
 # CI workflows
 mkdir -p .github/workflows
 
@@ -107,13 +130,17 @@ cat <<PROMPT
      如果使用 Claude Desktop，编辑 .mcp.json；
      如果使用其他客户端，按照其项目级 MCP 配置规范。
 
-  2. 写入以下配置：
+  2. 写入以下配置（hy-workflow 负责闭环流程，docs-gardener 负责文档语义审查）：
 
   {
     "mcpServers": {
       "hy-workflow": {
         "command": "npx",
         "args": ["-y", "github:voxServalG/hy-workflow-mcp"]
+      },
+      "docs-gardener": {
+        "command": "npx",
+        "args": ["-y", "github:voxServalG/docs-gardener", "mcp"]
       }
     }
   }
