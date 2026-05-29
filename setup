@@ -159,7 +159,7 @@ PROJECT_ROOT=$(pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 
 _mcp_found=false
-for f in ".opencode/mcp.json" ".mcp.json" ".opencode.json"; do
+for f in ".opencode/opencode.json" ".mcp.json" ".opencode.json"; do
   if [ -f "$f" ]; then
     _mcp_found=true
     _mcp_file="$f"
@@ -196,21 +196,24 @@ cat <<PROMPT
 
   1. 找到或创建项目根目录下的 MCP 配置文件：
 
-      opencode     →  .opencode/mcp.json
+      opencode     →  .opencode/opencode.json
       Claude Dsktp →  .mcp.json
       其他客户端   →  按其项目级 MCP 配置规范
 
   2. 确保配置中包含以下两个 server 条目（若已有其他 MCP，追加合并）：
 
   {
-    "mcpServers": {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
       "hy-workflow": {
-        "command": "npx",
-        "args": ["-y", "github:voxServalG/hy-workflow-mcp"]
+        "type": "local",
+        "command": ["npx", "-y", "github:voxServalG/hy-workflow-mcp"],
+        "enabled": true
       },
       "docs-gardener": {
-        "command": "npx",
-        "args": ["-y", "github:voxServalG/docs-gardener", "mcp"]
+        "type": "local",
+        "command": ["npx", "-y", "github:voxServalG/docs-gardener", "mcp"],
+        "enabled": true
       }
     }
   }
