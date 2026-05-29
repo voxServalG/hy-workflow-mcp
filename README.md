@@ -2,36 +2,17 @@
 
 MCP server 强制 LLM 走 **9 阶段闭环工作流**。硬规则（状态机锁定 + lint 校验）和软规则（用户 approve gate + 自定义 rubrics）结合。
 
-## 快速开始
+## 一键部署
 
-### 1. 安装 MCP 配置
-
-将以下内容添加到你的 MCP 客户端配置（如 `~/.config/opencode/mcp.json`）：
-
-```json
-{
-  "mcpServers": {
-    "hy-workflow": {
-      "command": "npx",
-      "args": ["-y", "github:voxServalG/hy-workflow-mcp"]
-    }
-  }
-}
-```
-
-### 2. 新项目冷启动
-
-在新项目根目录：
+在项目根目录执行：
 
 ```bash
-# 1. 部署 harness（codelint + doclint + docs-gardener + CI）
-curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-harness/main/deploy | bash
-
-# 2. 加入 MCP
-npx -y github:voxServalG/hy-workflow-mcp --init
+curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
 
-然后 LLM 在任意任务中调 `hy_init` → `hy_plan` → `hy_approve` → ...
+脚本会输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置和 `hy_init`。
+
+之后任何代码/文档任务，agent 自动走闭环。
 
 ## 闭环流程
 
