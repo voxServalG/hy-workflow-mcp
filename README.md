@@ -1,0 +1,118 @@
+# hy-workflow MCP
+
+MCP server 强制 LLM 走 **9 阶段闭环工作流**。硬规则（状态机锁定 + lint 校验）和软规则（用户 approve gate + 自定义 rubrics）结合。
+
+## 快速开始
+
+### 1. 安装 MCP 配置
+
+将以下内容添加到你的 MCP 客户端配置（如 `~/.config/opencode/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "hy-workflow": {
+      "command": "npx",
+      "args": ["-y", "github:voxServalG/hy-workflow-mcp"]
+    }
+  }
+}
+```
+
+### 2. 新项目冷启动
+
+在新项目根目录：
+
+```bash
+# 1. 部署 harness（codelint + doclint + docs-gardener + CI）
+curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-harness/main/deploy | bash
+
+# 2. 加入 MCP
+npx -y github:voxServalG/hy-workflow-mcp --init
+```
+
+然后 LLM 在任意任务中调 `hy_init` → `hy_plan` → `hy_approve` → ...
+
+## 闭环流程
+
+```
+hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+             ↑                     ↑                    ↑           ↑           ↑
+         (用户驳回)           (用户许可)          (verify fail)  (CI fail)    (下游分支)
+```
+
+## 10 个工具
+
+| Tool | 阶段 | 硬规则 | 软规则 |
+|------|------|--------|--------|
+| `hy_init` | init | 部署 harness configs + CI workflows | — |
+| `hy_plan` | plan | 基线扫描 | LLM 生成 scope+boundary+verify+rubs |
+| `hy_approve` | approve | phase 必为 plan | **用户许可 gate** |
+| `hy_branch` | branch | 命名规范校验 | — |
+| `hy_edit` | edit | 锁定 scope 边界 | LLM 编写代码 |
+| `hy_verify` | verify | lint+scope+boundary+platform+smoke+tests | 自定义 rubrics |
+| `hy_commit` | commit | verifyHash 校验 | PR 嵌入 plan 摘要 |
+| `hy_ci` | ci | 轮询 GitHub Checks | — |
+| `hy_merge` | merge | 全绿才放行 | — |
+| `hy_chain` | chain | — | 下游 rebase |
+| `hy_status` | 任意 | — | 返回当前 phase |
+
+## verify 的 6 层校验
+
+```
+1. lint     → doclint + codelint（由 harness 定义）
+2. scope    → git diff 文件 ⊆ plan.scope 声明
+3. boundary → entry_points 逐条可导入
+4. platform → pip install / venv 创建
+5. smoke    → 快速冒烟（<5s）
+6. tests    → 完整测试套件
+```
+
+## plan 数据结构
+
+```typescript
+{
+  task: "拆分 cli.py",
+  scope: {
+    changes: ["cli.py"],
+    new_files: ["cli_utils.ts", "cli_commands.ts"],
+    delete: []
+  },
+  boundary: {
+    dependency_dag: "cli_utils ← cli",
+    entry_points: ["from magshield.cli import main"],
+    no_new_external: true
+  },
+  verify: {
+    platform: {
+      python_version: "3.11",
+      setup: ["python -m pip install -e ."]
+    },
+    smoke: [
+      { command: "python -c 'from magshield.cli import main'", expected_exit: 0, description: "import OK" }
+    ],
+    tests: [
+      { command: "pytest tests/ -v", expected_exit: 0, description: "all tests" }
+    ]
+  },
+  risks: ["函数边界切错"],
+  discussion: "依赖 DAG 无循环..."
+}
+```
+
+## 系统提示
+
+LLM 连接 MCP 时会自动注入以下约束：
+
+- 🔒 必须按固定顺序调用工具
+- ❌ 禁止直接使用 git checkout/commit/push/gh pr create
+- ❌ 禁止跳过 hy_verify 调 hy_commit
+- 👤 hy_plan 完成后必须等待用户 hy_approve
+
+## 自举
+
+本项目自身也用 hy-workflow 管理。看到 `.hy/workflow.json`？那就是状态文件。
+
+## 许可
+
+MIT

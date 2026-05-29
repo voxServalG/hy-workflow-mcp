@@ -1,0 +1,22 @@
+name: Docs Lint
+
+on:
+  push: { paths: ["docs/**", "README.md"] }
+  pull_request: { paths: ["docs/**", "README.md"] }
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npx --yes github:voxServalG/doclint lint --json > report.json || true
+      - name: Fail if lint errors
+        run: |
+          if [ $(jq '.failed' report.json) -gt 0 ]; then
+            echo "::error::doclint found $(jq '.failed' report.json) errors"
+            exit 1
+          fi

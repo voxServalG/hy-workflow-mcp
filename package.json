@@ -1,0 +1,24 @@
+{
+  "name": "hy-workflow-mcp",
+  "version": "0.1.0",
+  "description": "MCP server enforcing a 9-phase closed-loop workflow for LLM-assisted development with harzard harness",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "hy-workflow": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "npx tsx src/server.ts"
+  },
+  "author": "Haiyi",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,24 @@
+import { readState, writeState, transition, assertPhase } from "../state.js";
+import { execSync } from "node:child_process";
+import type { ToolResult } from "./_base.js";
+
+export async function handleInit(): Promise<ToolResult> {
+  const state = readState();
+  assertPhase(state, "init");
+
+  // Run hy-harness deploy
+  try {
+    execSync(
+      "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-harness/main/deploy | bash",
+      { stdio: "inherit", timeout: 60_000 }
+    );
+  } catch {
+    return { next: "init", error: "Harness deployment failed. Check Node.js >= 18 and Python >= 3.10." };
+  }
+
+  const next = transition(state, "plan");
+  next.phase = "plan";
+  writeState(next);
+
+  return { next: "plan", message: "Harness deployed. Run hy_plan to define your task." };
+}

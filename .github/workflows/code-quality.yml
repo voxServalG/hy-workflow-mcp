@@ -1,0 +1,23 @@
+name: Code Quality
+
+on:
+  push: { paths: ["src/**", "codelint.json"] }
+  pull_request: { paths: ["src/**", "codelint.json"] }
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Layer Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npx --yes github:voxServalG/codelint check --json > report.json || true
+      - name: Fail if errors
+        run: |
+          errors=$(jq '.errors' report.json)
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::codelint found $errors errors"
+            exit 1
+          fi
