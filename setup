@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-# ── hy-workflow: one‑command project setup ──────────────────
-# 1. Deploys hy-harness (codelint + doclint + CI)
-# 2. Outputs a prompt for your LLM agent to finish the MCP config
+# ── hy-workflow: one‑command project setup (idempotent) ──────
+#   ✓ 只安装缺失的，不覆盖已有配置
+#   ✓ 已有 → 显示保留
+#   ✓ 缺失 → 创建默认值
+#   ✓ 输出 LLM agent prompt
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -11,9 +13,24 @@ echo "  │  hy-workflow · 项目级 MCP 一键部署  │"
 echo "  └──────────────────────────────────────┘"
 echo ""
 
-# ── Step 1: Deploy harness ──────────────────────────────────
-echo "  ⏳ Deploying codelint + doclint ..."
-npx --yes github:voxServalG/codelint init --yes 2>/dev/null || {
+# ── helpers ──────────────────────────────────────────────────
+
+CREATED=()
+SKIPPED=()
+PASS=0
+SKIP=0
+
+_created() { CREATED+=("$1"); PASS=$((PASS + 1)); echo "  ✓ $1 (created)"; }
+_skipped() { SKIPPED+=("$1"); SKIP=$((SKIP + 1)); echo "  ○ $1 (already exists, kept)"; }
+
+# ── codelint ─────────────────────────────────────────────────
+
+echo "  ⏳ codelint ..."
+npx --yes github:voxServalG/codelint check --json >/dev/null 2>&1 && _have_lint=true || _have_lint=false
+
+if [ -f codelint.json ]; then
+  _skipped "codelint.json"
+else
   cat > codelint.json <<'CODELINT'
 {
   "codeDirs": ["src"],
@@ -22,10 +39,17 @@ npx --yes github:voxServalG/codelint init --yes 2>/dev/null || {
   "maxLines": 500
 }
 CODELINT
-  echo "  ✓ codelint.json"
-}
+  _created "codelint.json"
+fi
 
-npx --yes github:voxServalG/doclint init --yes 2>/dev/null || {
+# ── doclint ──────────────────────────────────────────────────
+
+echo "  ⏳ doclint ..."
+npx --yes github:voxServalG/doclint lint --json >/dev/null 2>&1 && _have_doclint=true || _have_doclint=false
+
+if [ -f doclint.json ]; then
+  _skipped "doclint.json"
+else
   cat > doclint.json <<'DOCLINT'
 {
   "docsDir": "docs",
@@ -35,21 +59,30 @@ npx --yes github:voxServalG/doclint init --yes 2>/dev/null || {
   "maxLines": 200
 }
 DOCLINT
-  echo "  ✓ doclint.json"
-}
+  _created "doclint.json"
+fi
 
-# docs-gardener config (shared from doclint.json)
-if [ -f doclint.json ] && [ ! -f docs-gardener.json ]; then
+# ── docs-gardener ────────────────────────────────────────────
+
+echo "  ⏳ docs-gardener ..."
+if [ -f docs-gardener.json ]; then
+  _skipped "docs-gardener.json"
+elif [ -f doclint.json ]; then
   python3 -c "
-import json
-with open('doclint.json') as f:
-    d = json.load(f)
-gardener = {k: v for k, v in d.items() if k in ('docsDir','codeDirs','codeExt','baseBranch')}
-gardener['catalogs'] = {}
-with open('docs-gardener.json','w') as f:
-    json.dump(gardener, f, indent=2, ensure_ascii=False)
-    f.write('\n')
-" 2>/dev/null || cat > docs-gardener.json <<'GARDENER'
+import json, sys
+try:
+    with open('doclint.json') as f:
+        d = json.load(f)
+    gardener = {k: v for k, v in d.items() if k in ('docsDir','codeDirs','codeExt','baseBranch')}
+    gardener['catalogs'] = {}
+    with open('docs-gardener.json','w') as f:
+        json.dump(gardener, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+    print('OK')
+except Exception:
+    sys.exit(1)
+" 2>/dev/null && _created "docs-gardener.json (from doclint.json)" || {
+    cat > docs-gardener.json <<'GARDENER'
 {
   "docsDir": "docs",
   "codeDirs": ["src", "tests"],
@@ -58,13 +91,21 @@ with open('docs-gardener.json','w') as f:
   "catalogs": {}
 }
 GARDENER
-  echo "  ✓ docs-gardener.json"
+    _created "docs-gardener.json (default)"
+  }
+else
+  _created "docs-gardener.json"
 fi
 
-# CI workflows
+# ── CI workflows ─────────────────────────────────────────────
+
+echo "  ⏳ CI workflows ..."
 mkdir -p .github/workflows
 
-cat > .github/workflows/code-quality.yml <<'CI'
+if [ -f .github/workflows/code-quality.yml ]; then
+  _skipped ".github/workflows/code-quality.yml"
+else
+  cat > .github/workflows/code-quality.yml <<'CI'
 name: Code Quality
 on:
   push: { paths: ["src/**", "codelint.json"] }
@@ -84,9 +125,13 @@ jobs:
             exit 1
           fi
 CI
-echo "  ✓ .github/workflows/code-quality.yml"
+  _created ".github/workflows/code-quality.yml"
+fi
 
-cat > .github/workflows/docs-check.yml <<'CIDOC'
+if [ -f .github/workflows/docs-check.yml ]; then
+  _skipped ".github/workflows/docs-check.yml"
+else
+  cat > .github/workflows/docs-check.yml <<'CIDOC'
 name: Docs Lint
 on:
   push: { paths: ["docs/**", "README.md"] }
@@ -105,32 +150,57 @@ jobs:
             exit 1
           fi
 CIDOC
-echo "  ✓ .github/workflows/docs-check.yml"
+  _created ".github/workflows/docs-check.yml"
+fi
 
-# ── Step 2: Output the LLM prompt ────────────────────────────
+# ── MCP 配置检查（仅提醒，不改文件）─────────────────────────
 
 PROJECT_ROOT=$(pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 
+_mcp_found=false
+for f in ".opencode/mcp.json" ".mcp.json" ".opencode.json"; do
+  if [ -f "$f" ]; then
+    _mcp_found=true
+    _mcp_file="$f"
+    break
+  fi
+done
+
+# ── Step 2: Output the LLM prompt ────────────────────────────
+
 cat <<PROMPT
 
   ═══════════════════════════════════════════════════
-  ✅  Harness deployed to ${PROJECT_NAME}/
+  ✅  ${PASS} created, ${SKIP} kept · ${PROJECT_NAME}/
+  ═══════════════════════════════════════════════════
 
+PROMPT
+
+if [ "$_mcp_found" = true ]; then
+  cat <<ALREADY
+  ℹ️  已检测到 MCP 配置: ${_mcp_file}
+      请确保其中同时包含 hy-workflow 和 docs-gardener 条目，
+      否则把下方配置合并进去。
+
+ALREADY
+fi
+
+cat <<PROMPT
   📋 请将以下文字发送给你的 LLM agent：
   ═══════════════════════════════════════════════════
 
   ────── 复制以下内容发给 LLM ──────
 
-  请为项目 ${PROJECT_NAME} 配置 hy-workflow MCP（项目级，非全局）。
+  请为项目 ${PROJECT_NAME} 配置 hy-workflow 和 docs-gardener MCP（项目级，非全局）。
 
-  1. 创建或编辑项目根目录下的 MCP 配置文件。
+  1. 找到或创建项目根目录下的 MCP 配置文件：
 
-     如果使用 opencode，编辑 .opencode/mcp.json；
-     如果使用 Claude Desktop，编辑 .mcp.json；
-     如果使用其他客户端，按照其项目级 MCP 配置规范。
+      opencode     →  .opencode/mcp.json
+      Claude Dsktp →  .mcp.json
+      其他客户端   →  按其项目级 MCP 配置规范
 
-  2. 写入以下配置（hy-workflow 负责闭环流程，docs-gardener 负责文档语义审查）：
+  2. 确保配置中包含以下两个 server 条目（若已有其他 MCP，追加合并）：
 
   {
     "mcpServers": {
@@ -145,9 +215,9 @@ cat <<PROMPT
     }
   }
 
-  3. 配置完成后，在项目根目录调用 hy_init 初始化工作流状态。
+  3. 配置完成后，调用 hy_init 初始化工作流状态。
 
-  4. 之后任何代码/文档编辑任务，都会自动走 9 阶段闭环：
+  4. 之后任何代码/文档任务自动走 9 阶段闭环：
      hy_plan → hy_approve → hy_branch → hy_edit → hy_verify
      → hy_commit → hy_ci → hy_merge → hy_chain
 
