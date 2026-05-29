@@ -6,8 +6,22 @@ MCP server 强制 LLM 走 **9 阶段闭环工作流**。硬规则（状态机锁
 
 在项目根目录执行：
 
+**macOS / Linux**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
+```
+
+**Windows（Git Bash / WSL）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
+```
+
+**Windows（PowerShell）**
+
+```powershell
+iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
 
 脚本会输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。
