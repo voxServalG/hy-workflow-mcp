@@ -1,3 +1,4 @@
 node_modules/
 .hy/
 *.tsbuildinfo
+tests/_test_*

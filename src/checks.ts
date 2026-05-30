@@ -1,4 +1,6 @@
 import { execSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { CheckItem, PlanDoc, WorkflowState } from "./state.js";
 import { currentBranch } from "./state.js";
 
@@ -67,7 +69,29 @@ export function runCodeLint(root: string): CheckResult[] {
   }
 }
 
-// ── 2. Scope (hard) ─────────────────────────────────────────
+// ── 2. Compile (hard) ───────────────────────────────────────
+
+function resolveCompileCmd(root: string): string | null {
+  const configPath = path.join(root, "codelint.json");
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    if (config.codeExt === ".ts") return "npx tsc --noEmit";
+    if (config.codeExt === ".py") return `${findPython()} -m py_compile src/**/*.py`;
+  } catch {}
+  return null;
+}
+
+export function runCompile(root: string): CheckResult[] {
+  const cmd = resolveCompileCmd(root);
+  if (!cmd) return [ok("compile", "compile", "No compile command configured (missing codelint.json)", false)];
+  const r = execOr(cmd, root);
+  return [r.ok
+    ? ok("compile", "compile", "Build OK")
+    : fail("compile", "compile", r.stderr || r.stdout || "Build failed", true)];
+}
+
+// ── 3. Scope (hard) ─────────────────────────────────────────
 
 export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
@@ -92,7 +116,7 @@ export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
   return res;
 }
 
-// ── 3. Boundary ──────────────────────────────────────────────
+// ── 4. Boundary ──────────────────────────────────────────────
 
 export function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
@@ -114,7 +138,7 @@ export function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[] {
   return res;
 }
 
-// ── 4. Platform ──────────────────────────────────────────────
+// ── 5. Platform ──────────────────────────────────────────────
 
 export function runPlatform(plan: PlanDoc): CheckResult[] {
   return plan.verify.platform.setup.map(cmd => {
@@ -125,7 +149,7 @@ export function runPlatform(plan: PlanDoc): CheckResult[] {
   });
 }
 
-// ── 5. Smoke & 6. Tests ──────────────────────────────────────
+// ── 6. Smoke & 7. Tests ──────────────────────────────────────
 
 export function runSmoke(plan: PlanDoc, root: string): CheckResult[] {
   return runItems(plan.verify.smoke, "smoke", root);
@@ -160,6 +184,7 @@ export function runAllChecks(root: string, state: WorkflowState): VerifyReport {
   const all: CheckResult[] = [
     ...runDocLint(root),
     ...runCodeLint(root),
+    ...runCompile(root),
     ...runScopeCheck(root, p),
     ...runBoundaryCheck(root, p),
     ...runPlatform(p),
