@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/set
 **Windows（PowerShell）**
 
 ```powershell
-[Console]::OutputEncoding = [Text.Encoding]::UTF8; (iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup).Content | bash
+iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh; bash setup.sh; rm setup.sh
 ```
 
 脚本会输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。
