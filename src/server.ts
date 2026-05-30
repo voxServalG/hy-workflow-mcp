@@ -121,6 +121,26 @@ tests 验证的是本次改动的功能点？
 risks 有至少 1 条真实担忧？
 discussion 解释了"为什么这样做"？
 
+## hy_plan 触发
+
+当用户说出以下任意词语时，立即调用 hy_plan 生成 PlanDoc:
+  "计划一下"、"plan it"、"做个计划"、"plan"、"做计划"、"plan this"、
+  或用户描述开发任务意图时。
+hy_status 返回的 action.triggerWords 也会告诉你触发词。
+
+## approve 后自动推进
+
+hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和 stopAfter。
+按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。
+
+hy_commit 创建 PR 后任务结束。用户需要时手动调用:
+  hy_ci → hy_merge → hy_chain
+
+## 失败处理
+
+hy_verify 失败: 编辑修复后重新 hy_verify。
+hy_ci 有红:   编辑修复后重新 hy_verify → hy_commit → hy_ci。
+
 hy_status 随时可查看当前阶段。
 `;
 
@@ -162,11 +182,11 @@ const TOOLS = [
   },
   {
     name: "hy_approve",
-    description: "用户审视 plan。approved=true 放行 → branch，approved=false 驳回 → plan。唯一用户 gate。",
+    description: "用户审视 plan。输入 'approve' 放行到 branch，其他文字=驳回理由回到 plan。",
     inputSchema: {
       type: "object",
       properties: {
-        approved: { type: "boolean" },
+        approved: { type: "string", description: "输入 'approve' 放行。任何其他文字=驳回，内容作为驳回理由" },
         note: { type: "string", description: "可选备注" },
       },
       required: ["approved"],
