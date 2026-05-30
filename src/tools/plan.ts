@@ -24,6 +24,35 @@ export async function handlePlan(args: { task: string; plan: PlanDoc }): Promise
     return { next: "plan", error: "PlanDoc 必须包含: task, scope, boundary, verify, risks, discussion" };
   }
 
+  // ── Helpers ──────────────────────────────────────────────────
+  const EXECUTABLE_PREFIXES = new Set([
+    "sh","bash","zsh","fish","dash",
+    "node","npx","npm","yarn","pnpm","bun","deno","tsx","tsc","jest","vitest","mocha","ava",
+    "python","python3","py","pip","pip3","pytest","tox","mypy","ruff","black","isort","flake8","pylint",
+    "uvicorn","gunicorn","flask","django-admin","celery","fastapi",
+    "cargo","rustc","go","gofmt",
+    "gcc","g++","clang","clang++","cmake","make","ninja","meson",
+    "java","javac","mvn","gradle","dotnet",
+    "git","gh","git-lfs",
+    "docker","kubectl","helm","podman",
+    "curl","wget","ssh","scp","rsync",
+    "psql","mysql","sqlite3","redis-cli",
+    "ruby","gem","bundle","rake","rails","rspec",
+    "php","composer",
+    "perl","lua","elixir","mix","iex","ghc","cabal","stack",
+    "swift","xcodebuild","R","Rscript",
+    "echo","cat","touch","mkdir","rm","cp","mv","chmod",
+    "grep","sed","awk","find","xargs","head","tail","wc","sort","diff","tar","gzip","zip","unzip",
+    "env","export","which","type","jq",
+  ]);
+  const hasExecutable = (cmd: string): boolean => {
+    const firstWord = cmd.trim().split(/\s+/)[0];
+    if (EXECUTABLE_PREFIXES.has(firstWord)) return true;
+    if (cmd.includes("/") || cmd.includes("\\")) return true;
+    return false;
+  };
+  const hollow = new Set(["echo ok","echo \"ok\"","echo 'ok'","echo test","echo \"test\"","echo 'test'"]);
+
   // ── Gate 2: scope not all-empty ─────────────────────────────
   const hasChanges = (p.scope.changes?.length ?? 0) > 0;
   const hasNew = (p.scope.new_files?.length ?? 0) > 0;
@@ -38,6 +67,11 @@ export async function handlePlan(args: { task: string; plan: PlanDoc }): Promise
   }
   if (!p.boundary.entry_points?.length) {
     return { next: "plan", error: "boundary.entry_points 至少需要 1 条命令" };
+  }
+  for (const ep of p.boundary.entry_points) {
+    if (!hasExecutable(ep)) {
+      return { next: "plan", error: `boundary.entry_points: "${ep}" 不是可执行命令。请使用 npx/python/node/git 等可执行前缀。` };
+    }
   }
 
   // ── Gate 4: verify has substance ────────────────────────────
@@ -59,8 +93,7 @@ export async function handlePlan(args: { task: string; plan: PlanDoc }): Promise
     return { next: "plan", error: "discussion 不能为空，说明方案选择原因" };
   }
 
-  // ── Gate 6: no hollow commands ───────────────────────────────
-  const hollow = new Set(["echo ok", "echo \"ok\"", "echo 'ok'", "echo test", "echo \"test\"", "echo 'test'"]);
+  // ── Gate 6: no hollow or non-executable commands ────────────
   for (const ep of p.boundary.entry_points) {
     if (hollow.has(ep.trim())) {
       return { next: "plan", error: `boundary.entry_points 含空洞命令 "${ep}"。echo 不验证任何东西，请写有效入口点。` };
@@ -69,6 +102,17 @@ export async function handlePlan(args: { task: string; plan: PlanDoc }): Promise
   for (const s of p.verify.smoke) {
     if (hollow.has(s.command.trim())) {
       return { next: "plan", error: `verify.smoke 含空洞命令 "${s.command}"。echo 不验证任何东西，请写实质性检查。` };
+    }
+    if (!hasExecutable(s.command)) {
+      return { next: "plan", error: `verify.smoke: "${s.command}" 不是可执行命令。` };
+    }
+  }
+  for (const t of p.verify.tests) {
+    if (hollow.has(t.command.trim())) {
+      return { next: "plan", error: `verify.tests 含空洞命令 "${t.command}"。` };
+    }
+    if (!hasExecutable(t.command)) {
+      return { next: "plan", error: `verify.tests: "${t.command}" 不是可执行命令。` };
     }
   }
 

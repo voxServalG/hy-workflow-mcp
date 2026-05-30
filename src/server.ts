@@ -96,21 +96,38 @@ tests: 针对本次改动的功能验证，至少 1 条。只测你改的部分�
   "task": "任务简述",
   "plan": {
     "task": "同上",
-    "scope": { "changes": [], "new_files": [], "delete": [] },
+    "scope": {
+      "changes": ["src/server.ts", "src/tools/plan.ts"],
+      "new_files": ["tests/test_feature.ts"],
+      "delete": []
+    },
     "boundary": {
-      "dependency_dag": "描述改动影响面",
-      "entry_points": ["至少1条可执行命令"],
+      "dependency_dag": "server.ts → tools/plan.ts。plan.ts 独立，无上游依赖。",
+      "entry_points": ["npx tsc --noEmit", "python -c 'from core import main'"],
       "no_new_external": true
     },
     "verify": {
-      "platform": { "python_version": ">=3.10", "setup": [] },
-      "smoke": [ { "command": "...", "expected_exit": 0, "description": "..." } ],
-      "tests": [ { "command": "...", "expected_exit": 0, "description": "..." } ]
+      "platform": { "python_version": ">=3.10", "setup": ["npm install", "npx tsc"] },
+      "smoke": [
+        { "command": "npx tsc --noEmit", "expected_exit": 0, "description": "TypeScript 编译检查" },
+        { "command": "python -c 'from pkg import main'", "expected_exit": 0, "description": "入口模块加载" }
+      ],
+      "tests": [
+        { "command": "python tests/test_feature.py", "expected_exit": 0, "description": "新功能端到端验证" }
+      ]
     },
-    "risks": ["至少1条风险"],
-    "discussion": "方案讨论与权衡说明"
+    "risks": ["兼容性: 未在 Windows 测试", "性能: 大文件场景未覆盖"],
+    "discussion": "选方案 A 而非方案 B，因为 A 改动面更小且向后兼容。"
   }
 }
+
+⚠ scope.changes 必须是真实文件路径。
+  ❌ "修改文件" "更新代码"
+  ✅ "src/server.ts" "tests/test.py"
+
+⚠ entry_points / smoke.command / tests.command 必须是 shell 可执行命令。
+  ❌ "确认链接不404" "检查编译" "验证结果"
+  ✅ "npx tsc --noEmit" "python tests/test.py" "node tests/run.js"
 
 ## 自检清单（调用 hy_plan 前逐条确认）
 
