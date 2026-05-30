@@ -9,7 +9,7 @@ export async function handleInit(): Promise<ToolResult> {
   // Run hy-harness deploy
   try {
     execSync(
-      "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-harness/main/deploy | bash",
+      "npx --yes github:voxServalG/hy-harness",
       { stdio: "inherit", timeout: 60_000 }
     );
   } catch {
