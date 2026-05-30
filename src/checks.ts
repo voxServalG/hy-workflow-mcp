@@ -30,10 +30,21 @@ function fail(title: string, layer: string, detail = "", hard = true): CheckResu
   return { layer, name: title, passed: false, detail: detail || "FAILED", hard };
 }
 
+function findPython(): string {
+  const candidates = ["python3", "python", "py"];
+  for (const cmd of candidates) {
+    try {
+      execSync(`${cmd} --version`, { stdio: "ignore", timeout: 5_000 });
+      return cmd;
+    } catch {}
+  }
+  return "python3";
+}
+
 // ── 1. Lint (hard) ──────────────────────────────────────────
 
 export function runDocLint(root: string): CheckResult[] {
-  const r = execOr("npx --yes doclint lint --json 2>/dev/null || true", root);
+  const r = execOr("npx --yes doclint lint --json", root);
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [report.failed === 0
@@ -45,7 +56,7 @@ export function runDocLint(root: string): CheckResult[] {
 }
 
 export function runCodeLint(root: string): CheckResult[] {
-  const r = execOr("npx --yes codelint check --json 2>/dev/null || true", root);
+  const r = execOr("npx --yes codelint check --json", root);
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [report.errors === 0
@@ -87,7 +98,7 @@ export function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
 
   for (const ep of plan.boundary.entry_points) {
-    const r = execOr(`python3 -c "${ep}"`, root);
+    const r = execOr(`${findPython()} -c "${ep}"`, root);
     res.push(r.ok
       ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
       : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", r.stderr || r.stdout));

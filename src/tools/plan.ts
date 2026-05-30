@@ -10,11 +10,13 @@ export async function handlePlan(args: { task: string; plan: PlanDoc }): Promise
   // Run garden-scan to get baseline
   let baseline = {};
   try {
-    const raw = execSync("npx --yes docs-gardener garden-scan 2>/dev/null || echo '{}'", {
+    const raw = execSync("npx --yes docs-gardener garden-scan", {
       encoding: "utf-8", timeout: 30_000, stdio: ["pipe","pipe","pipe"]
     });
     baseline = JSON.parse(raw || "{}");
-  } catch {}
+  } catch {
+    baseline = {};
+  }
 
   // Validate plan doc has required fields
   const p = args.plan;
