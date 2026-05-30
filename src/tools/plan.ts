@@ -18,14 +18,58 @@ export async function handlePlan(args: { task: string; plan: PlanDoc }): Promise
     baseline = {};
   }
 
-  // Validate plan doc has required fields
+  // ── Gate 1: required top-level fields ──────────────────────
   const p = args.plan;
-  if (!p.task || !p.scope || !p.boundary || !p.verify) {
-    return { next: "plan", error: "PlanDoc must include: task, scope, boundary, verify {platform, smoke, tests}" };
+  if (!p.task || !p.scope || !p.boundary || !p.verify || !p.risks || p.discussion === undefined) {
+    return { next: "plan", error: "PlanDoc 必须包含: task, scope, boundary, verify, risks, discussion" };
   }
 
-  if (!p.verify.smoke || !p.verify.tests || !p.verify.platform) {
-    return { next: "plan", error: "verify must include: platform, smoke (≥1 check), tests" };
+  // ── Gate 2: scope not all-empty ─────────────────────────────
+  const hasChanges = (p.scope.changes?.length ?? 0) > 0;
+  const hasNew = (p.scope.new_files?.length ?? 0) > 0;
+  const hasDelete = (p.scope.delete?.length ?? 0) > 0;
+  if (!hasChanges && !hasNew && !hasDelete) {
+    return { next: "plan", error: "scope 全空 — changes / new_files / delete 至少一项非空" };
+  }
+
+  // ── Gate 3: boundary has substance ──────────────────────────
+  if (!p.boundary.dependency_dag) {
+    return { next: "plan", error: "boundary.dependency_dag 不能为空，哪怕只改一个文件也要说明" };
+  }
+  if (!p.boundary.entry_points?.length) {
+    return { next: "plan", error: "boundary.entry_points 至少需要 1 条命令" };
+  }
+
+  // ── Gate 4: verify has substance ────────────────────────────
+  if (!p.verify.platform?.python_version) {
+    return { next: "plan", error: "verify.platform.python_version 不能为空" };
+  }
+  if (!p.verify.smoke?.length) {
+    return { next: "plan", error: "verify.smoke 至少需要 1 条" };
+  }
+  if (!p.verify.tests?.length) {
+    return { next: "plan", error: "verify.tests 至少需要 1 条" };
+  }
+
+  // ── Gate 5: risks & discussion non-empty ────────────────────
+  if (!p.risks.length) {
+    return { next: "plan", error: "risks 至少需要 1 条风险" };
+  }
+  if (p.discussion === "") {
+    return { next: "plan", error: "discussion 不能为空，说明方案选择原因" };
+  }
+
+  // ── Gate 6: no hollow commands ───────────────────────────────
+  const hollow = new Set(["echo ok", "echo \"ok\"", "echo 'ok'", "echo test", "echo \"test\"", "echo 'test'"]);
+  for (const ep of p.boundary.entry_points) {
+    if (hollow.has(ep.trim())) {
+      return { next: "plan", error: `boundary.entry_points 含空洞命令 "${ep}"。echo 不验证任何东西，请写有效入口点。` };
+    }
+  }
+  for (const s of p.verify.smoke) {
+    if (hollow.has(s.command.trim())) {
+      return { next: "plan", error: `verify.smoke 含空洞命令 "${s.command}"。echo 不验证任何东西，请写实质性检查。` };
+    }
   }
 
   const next = transition(state, "plan"); // stays in plan until approve
