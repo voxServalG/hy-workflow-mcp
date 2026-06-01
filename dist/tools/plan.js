@@ -209,6 +209,19 @@ export async function handlePlan(args) {
             return { next: "plan", error: `verify.tests command "${t.command}" is not executable. Use a recognized command prefix (npx, node, python, etc).` };
         }
     }
+    // Gate 7: semantic quality (soft — warnings only, do not block)
+    const warnings = [];
+    if (p.task.length < 20) {
+        warnings.push(`task 较简短 (${p.task.length} chars)，建议补充问题动机和上下文`);
+    }
+    for (const r of p.risks) {
+        if (r.length < 20) {
+            warnings.push(`risk "${r}" 过于简短 (${r.length} chars)，建议包含触发场景、影响和缓解措施`);
+        }
+    }
+    if (p.discussion.length < 50) {
+        warnings.push("discussion 建议说明备选方案及否定理由");
+    }
     const next = transition(state, "plan");
     next.phase = "plan";
     next.plan = p;
@@ -217,6 +230,7 @@ export async function handlePlan(args) {
         next: "approve",
         plan: p,
         summary: buildSummary(p),
+        warnings: warnings.length ? warnings : undefined,
         message: "PlanDoc validated. Review the plan, then call hy_approve to proceed or provide feedback to revise.",
     };
 }

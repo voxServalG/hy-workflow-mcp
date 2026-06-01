@@ -64,12 +64,12 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 ## hy_plan 使用
 
 调用 hy_plan({task: "描述你要做的任务", plan: { ... PlanDoc JSON ... }})。构造 PlanDoc 时：
-- 先用 Read/Glob/Grep 了解项目结构、现有文件、可用命令
-- scope.changes/new_files/delete 必须是真实文件路径
-- boundary.entry_points 必须是可执行 shell 命令（如 npx tsc --noEmit）
-- verify.smoke/tests 必须是真实验证命令，禁止 echo ok 等空洞命令
-- risks 必须诚实，不能写 "No risks"
-- discussion 必须说明方案选择的理由
+- 先用 Read/Glob/Grep 了解项目结构，确认每个文件路径存在
+- task：描述解决的**问题**和**动机**，不是操作步骤列表
+- dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
+- entry_points：覆盖编译+lint+测试，每条对应一个验证维度
+- risks：每条含场景+影响+缓解措施，不写一句话标签
+- discussion：含至少一个备选方案及否定理由
 
 PlanDoc 通过 6 道 gate 校验后写入状态，进入 approve。
 
@@ -123,17 +123,17 @@ const TOOLS = [
           type: "object",
           required: ["task", "scope", "boundary", "verify", "risks", "discussion"],
           additionalProperties: false,
-          description: "PlanDoc JSON。scope 里文件路径必须是真实存在的；entry_points/smoke/tests 命令必须是可执行命令，禁止 echo ok 等空洞占位。",
+          description: "PlanDoc JSON。scope 里文件路径必须是经 Read/Glob 确认存在的真实路径；entry_points/smoke/tests 命令必须覆盖编译+lint+测试三个验证维度，禁止 echo ok 等空洞占位。",
           properties: {
-            task: { type: "string", description: "Brief task summary" },
+            task: { type: "string", description: "描述要解决的问题和动机，而非仅列操作步骤。如 '修复 approve 不校验 plan 就切 phase 的问题' 优于 '修改 approve.ts'。" },
             scope: {
               type: "object",
               required: ["changes", "new_files", "delete"],
               additionalProperties: false,
               properties: {
-                changes:   { type: "array", items: { type: "string" }, description: "Existing files to modify" },
-                new_files: { type: "array", items: { type: "string" }, description: "New files to create" },
-                delete:    { type: "array", items: { type: "string" }, description: "Files to delete" },
+                changes:   { type: "array", items: { type: "string" }, description: "要修改的现有文件。每个路径必须经 Read/Glob 确认存在。" },
+                new_files: { type: "array", items: { type: "string" }, description: "要创建的新文件。列出完整相对路径。" },
+                delete:    { type: "array", items: { type: "string" }, description: "要删除的文件。列出完整相对路径。" },
               },
             },
             boundary: {
@@ -141,9 +141,9 @@ const TOOLS = [
               required: ["dependency_dag", "entry_points", "no_new_external"],
               additionalProperties: false,
               properties: {
-                dependency_dag: { type: "string", description: "Text description of dependency impact" },
-                entry_points:   { type: "array", items: { type: "string" }, description: "Executable shell commands (min 1)" },
-                no_new_external: { type: "boolean", description: "Whether this introduces new external deps" },
+                dependency_dag: { type: "string", description: "列出直接受影响的模块、间接受波及的下游、以及明确不受影响的模块。如 'plan.ts 不再依赖 llm.ts；server.ts 引用不变；无其他模块受波及'。" },
+                entry_points:   { type: "array", items: { type: "string" }, description: "必须覆盖改动的关键验证面：编译、lint、确定性测试。每条对应一个验证维度，禁止凑数。" },
+                no_new_external: { type: "boolean", description: "是否引入新的外部依赖（npm 包、API、服务）" },
               },
             },
             verify: {
@@ -162,7 +162,7 @@ const TOOLS = [
                 },
                 smoke: {
                   type: "array",
-                  description: "Quick smoke tests (<5s each, min 1)",
+                  description: "快速验证 (<5s/条，min 1)。每条对应一个验证维度（编译、lint、格式检查等），禁止 echo ok 类空洞命令。",
                   items: {
                     type: "object",
                     required: ["command", "expected_exit", "description"],
@@ -176,7 +176,7 @@ const TOOLS = [
                 },
                 tests: {
                   type: "array",
-                  description: "Full test suite (min 1)",
+                  description: "完整测试套件 (min 1)。建议覆盖单元测试和集成测试。",
                   items: {
                     type: "object",
                     required: ["command", "expected_exit", "description"],
@@ -190,8 +190,8 @@ const TOOLS = [
                 },
               },
             },
-            risks:      { type: "array", items: { type: "string" }, description: "Honest risk list (min 1)" },
-            discussion: { type: "string", description: "Why this approach was chosen over alternatives" },
+            risks:      { type: "array", items: { type: "string" }, description: "每条包含：什么场景触发、什么被影响、如何缓解。如一 'reset 在用户未确认时触发会丢 plan — 由提示词限制调用时机'。不写 'No risks' 或一句话标签。" },
+            discussion: { type: "string", description: "说明为何选此方案。含至少一个被考虑但被否定的备选方案及否定理由。" },
           },
         },
       },
