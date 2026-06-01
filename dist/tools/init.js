@@ -5,7 +5,7 @@ export async function handleInit() {
     assertPhase(state, "init");
     // Run hy-harness deploy
     try {
-        execSync("curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-harness/main/deploy | bash", { stdio: "inherit", timeout: 60_000 });
+        execSync("npx --yes github:voxServalG/hy-harness", { stdio: "inherit", timeout: 60_000 });
     }
     catch {
         return { next: "init", error: "Harness deployment failed. Check Node.js >= 18 and Python >= 3.10." };

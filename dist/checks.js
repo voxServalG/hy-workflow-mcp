@@ -1,4 +1,6 @@
 import { execSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { currentBranch } from "./state.js";
 // ── Helpers ──────────────────────────────────────────────────
 function execOr(cmd, cwd) {
@@ -16,9 +18,20 @@ function ok(title, layer, detail = "", hard = true) {
 function fail(title, layer, detail = "", hard = true) {
     return { layer, name: title, passed: false, detail: detail || "FAILED", hard };
 }
+function findPython() {
+    const candidates = ["python3", "python", "py"];
+    for (const cmd of candidates) {
+        try {
+            execSync(`${cmd} --version`, { stdio: "ignore", timeout: 5_000 });
+            return cmd;
+        }
+        catch { }
+    }
+    return "python3";
+}
 // ── 1. Lint (hard) ──────────────────────────────────────────
 export function runDocLint(root) {
-    const r = execOr("npx --yes doclint lint --json 2>/dev/null || true", root);
+    const r = execOr("npx --yes doclint lint --json", root);
     try {
         const report = JSON.parse(r.stdout || "{}");
         return [report.failed === 0
@@ -30,7 +43,7 @@ export function runDocLint(root) {
     }
 }
 export function runCodeLint(root) {
-    const r = execOr("npx --yes codelint check --json 2>/dev/null || true", root);
+    const r = execOr("npx --yes codelint check --json", root);
     try {
         const report = JSON.parse(r.stdout || "{}");
         return [report.errors === 0
@@ -41,7 +54,31 @@ export function runCodeLint(root) {
         return [fail("codelint", "lint", "Could not parse codelint report", true)];
     }
 }
-// ── 2. Scope (hard) ─────────────────────────────────────────
+// ── 2. Compile (hard) ───────────────────────────────────────
+function resolveCompileCmd(root) {
+    const configPath = path.join(root, "codelint.json");
+    if (!fs.existsSync(configPath))
+        return null;
+    try {
+        const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        if (config.codeExt === ".ts")
+            return "npx tsc --noEmit";
+        if (config.codeExt === ".py")
+            return `${findPython()} -m py_compile src/**/*.py`;
+    }
+    catch { }
+    return null;
+}
+export function runCompile(root) {
+    const cmd = resolveCompileCmd(root);
+    if (!cmd)
+        return [ok("compile", "compile", "No compile command configured (missing codelint.json)", false)];
+    const r = execOr(cmd, root);
+    return [r.ok
+            ? ok("compile", "compile", "Build OK")
+            : fail("compile", "compile", r.stderr || r.stdout || "Build failed", true)];
+}
+// ── 3. Scope (hard) ─────────────────────────────────────────
 export function runScopeCheck(root, plan) {
     const res = [];
     const branch = currentBranch(root);
@@ -63,11 +100,11 @@ export function runScopeCheck(root, plan) {
     }
     return res;
 }
-// ── 3. Boundary ──────────────────────────────────────────────
+// ── 4. Boundary ──────────────────────────────────────────────
 export function runBoundaryCheck(root, plan) {
     const res = [];
     for (const ep of plan.boundary.entry_points) {
-        const r = execOr(`python3 -c "${ep}"`, root);
+        const r = execOr(`${findPython()} -c "${ep}"`, root);
         res.push(r.ok
             ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
             : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", r.stderr || r.stdout));
@@ -80,7 +117,7 @@ export function runBoundaryCheck(root, plan) {
     }
     return res;
 }
-// ── 4. Platform ──────────────────────────────────────────────
+// ── 5. Platform ──────────────────────────────────────────────
 export function runPlatform(plan) {
     return plan.verify.platform.setup.map(cmd => {
         const r = execOr(cmd);
@@ -89,7 +126,7 @@ export function runPlatform(plan) {
             : fail(`setup: ${cmd.slice(0, 50)}`, "platform", r.stderr || r.stdout);
     });
 }
-// ── 5. Smoke & 6. Tests ──────────────────────────────────────
+// ── 6. Smoke & 7. Tests ──────────────────────────────────────
 export function runSmoke(plan, root) {
     return runItems(plan.verify.smoke, "smoke", root);
 }
@@ -112,6 +149,7 @@ export function runAllChecks(root, state) {
     const all = [
         ...runDocLint(root),
         ...runCodeLint(root),
+        ...runCompile(root),
         ...runScopeCheck(root, p),
         ...runBoundaryCheck(root, p),
         ...runPlatform(p),
