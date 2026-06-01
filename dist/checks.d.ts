@@ -8,6 +8,7 @@ export interface CheckResult {
 }
 export declare function runDocLint(root: string): CheckResult[];
 export declare function runCodeLint(root: string): CheckResult[];
+export declare function runCompile(root: string): CheckResult[];
 export declare function runScopeCheck(root: string, plan: PlanDoc): CheckResult[];
 export declare function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[];
 export declare function runPlatform(plan: PlanDoc): CheckResult[];

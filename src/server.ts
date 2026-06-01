@@ -199,11 +199,11 @@ const TOOLS = [
   },
   {
     name: "hy_approve",
-    description: "用户审视 plan。输入 'approve' 放行到 branch，其他文字=驳回理由回到 plan。",
+    description: "用户审视 plan。传 approved=\"approve\" 放行到 branch，传其他任何字符串=驳回理由回到 plan。注意：approved 必须是字符串，不可传 boolean。",
     inputSchema: {
       type: "object",
       properties: {
-        approved: { type: "string", description: "输入 'approve' 放行。任何其他文字=驳回，内容作为驳回理由" },
+        approved: { type: "string", description: "必须传字符串 'approve' 才放行（如 approved='approve'）。传其他任何字符串均为驳回，内容作为驳回理由。不可传 boolean true/false。" },
         note: { type: "string", description: "可选备注" },
       },
       required: ["approved"],

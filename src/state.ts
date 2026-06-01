@@ -121,7 +121,7 @@ export function writeState(state: WorkflowState): void {
 
 const VALID_TRANSITIONS: Record<Phase, Phase[]> = {
   init: ["init", "plan", "done"],
-  plan: ["plan", "approve", "done"],
+  plan: ["plan", "approve", "branch", "done"],
   approve: ["approve", "branch", "plan"], // plan = retry after reject
   branch: ["branch", "edit", "done"],
   edit: ["edit", "verify", "done"],
