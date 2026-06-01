@@ -1,4 +1,5 @@
 node_modules/
 .hy/
+.env
 *.tsbuildinfo
 tests/_test_*
