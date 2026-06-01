@@ -12,11 +12,13 @@ export async function handleCi(): Promise<ToolResult> {
   if (!result.ok) return { next: "ci", error: result.error, checks: result.checks };
 
   if (!result.allGreen) {
+    const failedNames = (result.checks || []).filter((c: any) => c.status !== "pass").map((c: any) => c.name);
     return {
       next: "edit",
       allGreen: false,
       checks: result.checks,
-      message: "CI checks not all green. Fix issues, push, and re-run hy_ci.",
+      failedChecks: failedNames,
+      message: `CI not all green. Failed: ${failedNames.join(", ")}. Fix issues, push, and re-run hy_ci.`,
     };
   }
 

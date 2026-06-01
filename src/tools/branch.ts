@@ -22,5 +22,5 @@ export async function handleBranch(args: { category: string; topic: string }): P
   next.plan!.branch = result.branch;
   writeState(next);
 
-  return { next: "edit", branch: result.branch };
+  return { next: "edit", branch: result.branch, message: `Branch ${result.branch} created. Call hy_edit to lock scope.` };
 }

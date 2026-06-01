@@ -36,5 +36,5 @@ export async function handleApprove(args: { approved: string; note?: string }): 
   const next = transition(state, "plan");
   next.approval = { time: new Date().toISOString(), note: input || args.note || "rejected" };
   writeState(next);
-  return { next: "plan", approved: false, note: input };
+  return { next: "plan", approved: false, note: input, message: "Plan rejected. Revise the task description and call hy_plan again." };
 }

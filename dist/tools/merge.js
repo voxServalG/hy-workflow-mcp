@@ -10,6 +10,6 @@ export async function handleMerge() {
         return { next: "merge", error: result.error };
     const next = transition(state, "chain");
     writeState(next);
-    return { next: "chain", prNumber: state.prNumber, message: `PR #${state.prNumber} merged.` };
+    return { next: "chain", prNumber: state.prNumber, message: `PR #${state.prNumber} merged. Call hy_chain to rebase downstream branches.` };
 }
 //# sourceMappingURL=merge.js.map

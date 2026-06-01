@@ -17,6 +17,6 @@ export async function handleBranch(args) {
     next.branch = result.branch;
     next.plan.branch = result.branch;
     writeState(next);
-    return { next: "edit", branch: result.branch };
+    return { next: "edit", branch: result.branch, message: `Branch ${result.branch} created. Call hy_edit to lock scope.` };
 }
 //# sourceMappingURL=branch.js.map
