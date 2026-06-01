@@ -21,6 +21,7 @@ import { handleCi } from "./tools/ci.js";
 import { handleMerge } from "./tools/merge.js";
 import { handleChain } from "./tools/chain.js";
 import { handleStatus } from "./tools/status.js";
+import { handleReset } from "./tools/reset.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -33,7 +34,7 @@ const SYSTEM_PROMPT = `
 
 ### 流程规则
 
-**0. hy_init — 项目首次使用时调用。** 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。已部署则跳过，自动进 plan。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。
+**0. hy_init — 项目首次使用时调用。** 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。已部署则跳过，自动进 plan。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补装 harness。
 
 1. hy_plan — 调用时传入 {task, plan}。你需要自行利用工作区上下文构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
    **重要**: hy_plan 返回后，原样输出 summary 字段的内容向用户展示。禁止在用户查看前自行推进到下一步。
@@ -53,6 +54,10 @@ const SYSTEM_PROMPT = `
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
+
+### hy_reset
+
+hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。仅在用户明确要求放弃当前开发任务时使用。
 
 ---
 
@@ -270,6 +275,11 @@ const TOOLS = [
     description: "查看当前工作流阶段。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "hy_reset",
+    description: "重置到 plan 阶段，清空当前工作数据（branch/pr/plan/verifyHash）。任意阶段可调用。",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
 // ― System prompt capability
@@ -306,6 +316,7 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
     case "hy_merge":   return handleMerge();
     case "hy_chain":   return handleChain(args as any);
     case "hy_status":  return handleStatus();
+    case "hy_reset":   return handleReset();
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }

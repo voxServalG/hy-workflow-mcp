@@ -4,7 +4,7 @@ import type { ToolResult } from "./_base.js";
 
 export async function handleInit(): Promise<ToolResult> {
   const state = readState();
-  assertPhase(state, "init");
+  assertPhase(state, "init", "plan");
 
   // Run hy-harness deploy
   try {
