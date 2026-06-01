@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CheckItem, PlanDoc, WorkflowState } from "./state.js";
-import { currentBranch } from "./state.js";
+import { currentBranch, getBaseBranch } from "./state.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -92,14 +92,6 @@ export function runCompile(root: string): CheckResult[] {
 }
 
 // ── 3. Scope (hard) ─────────────────────────────────────────
-
-function getBaseBranch(root: string): string {
-  try {
-    const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
-    if (config.baseBranch) return config.baseBranch;
-  } catch {}
-  return "dev";
-}
 
 export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];

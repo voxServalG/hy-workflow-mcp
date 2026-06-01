@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { currentBranch } from "./state.js";
+import { currentBranch, getBaseBranch } from "./state.js";
 // ── Helpers ──────────────────────────────────────────────────
 function execOr(cmd, cwd) {
     try {
@@ -79,15 +79,6 @@ export function runCompile(root) {
             : fail("compile", "compile", r.stderr || r.stdout || "Build failed", true)];
 }
 // ── 3. Scope (hard) ─────────────────────────────────────────
-function getBaseBranch(root) {
-    try {
-        const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
-        if (config.baseBranch)
-            return config.baseBranch;
-    }
-    catch { }
-    return "dev";
-}
 export function runScopeCheck(root, plan) {
     const res = [];
     const branch = currentBranch(root);
