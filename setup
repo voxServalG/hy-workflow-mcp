@@ -84,7 +84,7 @@ cat <<PROMPT
   2. 确保配置中包含以下两个 server 条目（若已有其他 MCP，追加合并）：
 
   {
-    "$schema": "https://opencode.ai/config.json",
+    "\$schema": "https://opencode.ai/config.json",
     "mcp": {
       "hy-workflow": {
         "type": "local",
