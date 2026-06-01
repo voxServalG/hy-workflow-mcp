@@ -10,15 +10,15 @@ Layer 1: lint
 └── codelint — npx codelint check --json
 
 Layer 2: compile
-└── tsc --noEmit (.ts) / py_compile (.py)
+└── npx tsc --noEmit (.ts) / py_compile (.py)
 
 Layer 3: scope
-├── git diff dev..<branch> 文件 ⊆ plan.scope 声明
+├── git diff origin/${baseBranch}..<branch> 文件 ⊆ plan.scope 声明
 └── plan.scope 声明的文件都实际变更了 (软)
 
 Layer 4: boundary
-├── entry_points 逐个 `python -c "..."` 可导入
-└── no_new_external → pyproject.toml/setup.cfg 无变更
+├── entry_points 逐条执行（.py 项目用 python -c 包裹，其他直接 shell 执行）
+└── no_new_external → pyproject.toml/setup.cfg/setup.py/requirements.txt/policy.md 无变更
 
 Layer 5: platform
 └── plan.verify.platform.setup 命令逐条执行
@@ -30,7 +30,7 @@ Layer 6: smoke + tests
 
 ## 判定逻辑
 
-`src/checks.ts:180-200`
+`src/checks.ts:193-207`
 
 ```typescript
 allPassed = 所有 hard 检查都通过
@@ -79,6 +79,14 @@ interface VerifyReport {
 ## verifyHash
 
 全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + verify 字段做 SHA256，取前 12 位 hex。此哈希存入 `WorkflowState.verifyHash`，`hy_commit` 校验防止篡改。
+
+## 配置依赖
+
+| 配置 | 影响 |
+|------|------|
+| `codelint.json: codeExt` | 决定编译命令（`.ts` → `npx tsc --noEmit`，`.py` → `py_compile`）和 boundary entry_points 执行方式 |
+| `codelint.json: baseBranch` | scope check 的 Git diff 基线分支 |
+| `doclint.json` | doclint 检查规则，验证文档质量 |
 
 ## Related
 
