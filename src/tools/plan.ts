@@ -4,6 +4,48 @@ import type { PlanDoc } from "../state.js";
 import { execSync } from "node:child_process";
 import { generatePlanDoc } from "../llm.js";
 
+function buildSummary(p: PlanDoc): string {
+  const lines: string[] = [];
+  lines.push(`## Plan: ${p.task}`);
+  lines.push("");
+  lines.push("### Scope");
+  if (p.scope.changes.length) {
+    lines.push("**Changes:**");
+    p.scope.changes.forEach(f => lines.push(`- \`${f}\``));
+  }
+  if (p.scope.new_files.length) {
+    lines.push("**New files:**");
+    p.scope.new_files.forEach(f => lines.push(`- \`${f}\``));
+  }
+  if (p.scope.delete.length) {
+    lines.push("**Delete:**");
+    p.scope.delete.forEach(f => lines.push(`- \`${f}\``));
+  }
+  lines.push("");
+  lines.push("### Boundary");
+  lines.push(`- Dependency DAG: ${p.boundary.dependency_dag}`);
+  lines.push(`- Entry points:`);
+  p.boundary.entry_points.forEach(ep => lines.push(`  - \`${ep}\``));
+  lines.push(`- No new external deps: ${p.boundary.no_new_external}`);
+  lines.push("");
+  lines.push("### Verify");
+  lines.push(`- Platform: Python ${p.verify.platform.python_version}`);
+  if (p.verify.platform.setup.length) {
+    p.verify.platform.setup.forEach(s => lines.push(`  - \`${s}\``));
+  }
+  lines.push(`- Smoke checks (${p.verify.smoke.length}):`);
+  p.verify.smoke.forEach(s => lines.push(`  - \`${s.command}\` → exit ${s.expected_exit}: ${s.description}`));
+  lines.push(`- Tests (${p.verify.tests.length}):`);
+  p.verify.tests.forEach(t => lines.push(`  - \`${t.command}\` → exit ${t.expected_exit}: ${t.description}`));
+  lines.push("");
+  lines.push("### Risks");
+  p.risks.forEach(r => lines.push(`- ${r}`));
+  lines.push("");
+  lines.push("### Discussion");
+  lines.push(p.discussion);
+  return lines.join("\n");
+}
+
 export async function handlePlan(args: { task: string }): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "plan");
@@ -195,6 +237,7 @@ export async function handlePlan(args: { task: string }): Promise<ToolResult> {
   return {
     next: "approve",
     plan: p,
+    summary: buildSummary(p),
     message: "PlanDoc generated via DeepSeek API. Review the plan, then call hy_approve to proceed or provide feedback to revise.",
     source: "api",
   };

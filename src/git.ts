@@ -1,5 +1,8 @@
 import { execSync } from "node:child_process";
 import { getBaseBranch } from "./state.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 function run(cmd: string, cwd?: string): { ok: boolean; stdout: string; stderr: string } {
   try {
@@ -8,6 +11,12 @@ function run(cmd: string, cwd?: string): { ok: boolean; stdout: string; stderr: 
   } catch (e: any) {
     return { ok: false, stdout: e.stdout?.trim() ?? "", stderr: e.stderr?.trim() ?? e.message ?? "" };
   }
+}
+
+function writeTempFile(content: string): string {
+  const tmpPath = path.join(os.tmpdir(), `hy-commit-${Date.now()}.txt`);
+  fs.writeFileSync(tmpPath, content, "utf-8");
+  return tmpPath;
 }
 
 export function createBranch(root: string, category: string, topic: string): { ok: boolean; branch: string; error?: string } {
@@ -21,10 +30,15 @@ export function createBranch(root: string, category: string, topic: string): { o
 export function commitAll(root: string, title: string, body: string): { ok: boolean; hash?: string; error?: string } {
   const r1 = run("git add -A", root);
   if (!r1.ok) return { ok: false, error: r1.stderr };
-  const r2 = run(`git commit -m "${title}" -m "${body}"`, root);
-  if (!r2.ok) return { ok: false, error: r2.stderr };
-  const r3 = run("git rev-parse HEAD", root);
-  return { ok: true, hash: r3.stdout };
+  const bodyFile = writeTempFile(body);
+  try {
+    const r2 = run(`git commit -m "${title}" -F "${bodyFile}"`, root);
+    if (!r2.ok) return { ok: false, error: r2.stderr };
+    const r3 = run("git rev-parse HEAD", root);
+    return { ok: true, hash: r3.stdout };
+  } finally {
+    fs.unlinkSync(bodyFile);
+  }
 }
 
 export function push(root: string, branch: string): { ok: boolean; error?: string } {
@@ -38,11 +52,16 @@ export function pushForce(root: string, branch: string): { ok: boolean; error?: 
 }
 
 export function createPr(root: string, title: string, body: string, baseBranch: string, headBranch: string): { ok: boolean; prNumber?: number; url?: string; error?: string } {
-  const r = run(`gh pr create --title "${title}" --body "${body}" --base ${baseBranch} --head ${headBranch}`, root);
-  if (!r.ok) return { ok: false, error: r.stderr };
-  const match = r.stdout.match(/\/(\d+)$/);
-  const prNumber = match ? parseInt(match[1]) : null;
-  return { ok: true, prNumber: prNumber ?? 0, url: r.stdout.trim() };
+  const bodyFile = writeTempFile(body);
+  try {
+    const r = run(`gh pr create --title "${title}" --body-file "${bodyFile}" --base ${baseBranch} --head ${headBranch}`, root);
+    if (!r.ok) return { ok: false, error: r.stderr };
+    const match = r.stdout.match(/\/(\d+)$/);
+    const prNumber = match ? parseInt(match[1]) : null;
+    return { ok: true, prNumber: prNumber ?? 0, url: r.stdout.trim() };
+  } finally {
+    fs.unlinkSync(bodyFile);
+  }
 }
 
 export function mergePr(prNumber: number): { ok: boolean; error?: string } {
