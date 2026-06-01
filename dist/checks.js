@@ -79,10 +79,20 @@ export function runCompile(root) {
             : fail("compile", "compile", r.stderr || r.stdout || "Build failed", true)];
 }
 // ── 3. Scope (hard) ─────────────────────────────────────────
+function getBaseBranch(root) {
+    try {
+        const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
+        if (config.baseBranch)
+            return config.baseBranch;
+    }
+    catch { }
+    return "dev";
+}
 export function runScopeCheck(root, plan) {
     const res = [];
     const branch = currentBranch(root);
-    const r = execOr(`git diff origin/dev..${branch} --name-only`, root);
+    const base = getBaseBranch(root);
+    const r = execOr(`git diff origin/${base}..${branch} --name-only`, root);
     if (!r.ok)
         return [fail("scope", "scope", `git diff failed: ${r.stderr}`)];
     const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());
@@ -101,16 +111,28 @@ export function runScopeCheck(root, plan) {
     return res;
 }
 // ── 4. Boundary ──────────────────────────────────────────────
+function getCodeExt(root) {
+    try {
+        const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
+        return config.codeExt ?? "";
+    }
+    catch { }
+    return "";
+}
 export function runBoundaryCheck(root, plan) {
     const res = [];
+    const ext = getCodeExt(root);
     for (const ep of plan.boundary.entry_points) {
-        const r = execOr(`${findPython()} -c "${ep}"`, root);
+        const cmd = ext === ".py"
+            ? `${findPython()} -c "${ep}"`
+            : ep;
+        const r = execOr(cmd, root);
         res.push(r.ok
             ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
             : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", r.stderr || r.stdout));
     }
     if (plan.boundary.no_new_external) {
-        const r = execOr("git diff origin/dev.. -- pyproject.toml setup.cfg setup.py requirements.txt", root);
+        const r = execOr(`git diff origin/${getBaseBranch(root)}.. -- pyproject.toml setup.cfg setup.py requirements.txt policy.md`, root);
         res.push(r.stdout.trim()
             ? fail("no_new_external", "boundary", "Dependency file changed")
             : ok("no_new_external", "boundary", "No dep changes"));
