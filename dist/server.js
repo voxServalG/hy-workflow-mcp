@@ -16,7 +16,7 @@ import { handleChain } from "./tools/chain.js";
 import { handleStatus } from "./tools/status.js";
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
-你正在操作一个启用了 hy-workflow MCP 的项目。
+你正在操作一个启用了 hy-workflow MCP 的项目。所有工具输入输出均为 JSON 格式。
 
 ## 硬性流程（必须严格按顺序，禁止跳过）
 
@@ -24,8 +24,8 @@ const SYSTEM_PROMPT = `
 
 ### 流程规则
 
-1. hy_plan — 分析任务生成 PlanDoc。每个字段会被 hy_verify 实际执行，决定了 PR 能不能合并。
-2. hy_approve — 用户审视 plan，approved=true 放行，approved=false 驳回回到 hy_plan。
+1. hy_plan — 调用时传入 {task} 描述任务。服务端自动调用 DeepSeek API 生成 PlanDoc。你只需要清楚描述要做什么。
+2. hy_approve — 用户审视 plan。传 approved="approve" 放行，其他内容=驳回。
 3. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
 4. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 5. hy_verify — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
@@ -43,98 +43,15 @@ const SYSTEM_PROMPT = `
 
 ---
 
-## hy_plan 编写指南
+## hy_plan 使用
 
-下面每个字段都标注了【消费方式】——这是它在下游怎么被执行的。填空洞内容你的 PR 合不了。
+调用 hy_plan({task: "描述你要做的任务"})。服务端自动分析项目上下文（garden-scan）并用 DeepSeek API 生成 PlanDoc。PlanDoc 生成后必须经过 6 道验证关才会被接受。
 
-### scope
-【消费: hy_edit 锁定文件, hy_verify 用 git diff 对比。声明了没改 → warning；改了没声明 → hard fail】
-
-- changes: 已存在、本次修改的文件
-- new_files: 本次新建的文件
-- delete: 本次删除的文件
-
-### boundary
-【消费: entry_points 逐条被 hy_verify 执行，命令在本机跑通了不等于 CI 能跑】
-
-- dependency_dag: 文字描述改动影响面。哪怕只改了一个文件也写"X 独立，无上游依赖"
-- entry_points: 可执行命令列表，至少 1 条。 坏例: "echo ok"（空洞）。 好例: "npx tsc --noEmit" 或 "python -c 'from core import main'"
-- no_new_external: 本次是否引入新第三方依赖
-
-### verify
-【消费: plan.tests 在 CI 无头 Linux 容器里执行。能本机跑的 python 脚本 ≠ CI 能跑】
-
-platform:
-  - python_version: 最低 Python 版本
-  - setup: 环境准备命令（安装依赖、编译等）
-
-smoke: 快速烟雾测试（<5s），至少 1 条实质性命令。 坏例: { command: "echo ok" }。 好例: { command: "npx tsc --noEmit", expected_exit: 0, description: "编译检查" }
-
-tests: 针对本次改动的功能验证，至少 1 条。只测你改的部分，不给全量回归。 自检: 这条 PASS 了，我有信心说"改动正确"吗？
-
-### risks
-【消费: PR 正文，供 reviewer 审查】
-
-至少 1 条诚实担忧。 坏例: ["无风险"]（永远有风险，至少写"兼容性: 未在 Windows 测试"）
-
-### discussion
-【消费: PR 正文】
-
-写下方案选择的权衡——为什么选 A 不选 B？不写，reviewer 会替你问。
-
----
-
-## PlanDoc 结构（调用 hy_plan 时 plan 参数必须遵从此结构）
-
-{
-  "task": "任务简述",
-  "plan": {
-    "task": "同上",
-    "scope": {
-      "changes": ["src/server.ts", "src/tools/plan.ts"],
-      "new_files": ["tests/test_feature.ts"],
-      "delete": []
-    },
-    "boundary": {
-      "dependency_dag": "server.ts → tools/plan.ts。plan.ts 独立，无上游依赖。",
-      "entry_points": ["npx tsc --noEmit", "python -c 'from core import main'"],
-      "no_new_external": true
-    },
-    "verify": {
-      "platform": { "python_version": ">=3.10", "setup": ["npm install", "npx tsc"] },
-      "smoke": [
-        { "command": "npx tsc --noEmit", "expected_exit": 0, "description": "TypeScript 编译检查" },
-        { "command": "python -c 'from pkg import main'", "expected_exit": 0, "description": "入口模块加载" }
-      ],
-      "tests": [
-        { "command": "python tests/test_feature.py", "expected_exit": 0, "description": "新功能端到端验证" }
-      ]
-    },
-    "risks": ["兼容性: 未在 Windows 测试", "性能: 大文件场景未覆盖"],
-    "discussion": "选方案 A 而非方案 B，因为 A 改动面更小且向后兼容。"
-  }
-}
-
-⚠ scope.changes 必须是真实文件路径。
-  ❌ "修改文件" "更新代码"
-  ✅ "src/server.ts" "tests/test.py"
-
-⚠ entry_points / smoke.command / tests.command 必须是 shell 可执行命令。
-  ❌ "确认链接不404" "检查编译" "验证结果"
-  ✅ "npx tsc --noEmit" "python tests/test.py" "node tests/run.js"
-
-## 自检清单（调用 hy_plan 前逐条确认）
-
-scope 和 git diff 预期一致？
-entry_points 在干净环境能执行？不是 echo ok？
-smoke 有至少 1 条实质性命令？
-tests 验证的是本次改动的功能点？
-risks 有至少 1 条真实担忧？
-discussion 解释了"为什么这样做"？
+如果 API Key 未设置或 API 调用失败，hy_plan 会返回 error + PlanDoc JSON Schema。此时你需要手动构造 PlanDoc 并再次调用 hy_plan({task, plan})。
 
 ## hy_plan 触发
 
-当用户说出以下任意词语时，立即调用 hy_plan 生成 PlanDoc:
+当用户说出以下任意词语时，立即调用 hy_plan:
   "计划一下"、"plan it"、"做个计划"、"plan"、"做计划"、"plan this"、
   或用户描述开发任务意图时。
 hy_status 返回的 action.triggerWords 也会告诉你触发词。
@@ -153,6 +70,11 @@ hy_verify 失败: 编辑修复后重新 hy_verify。
 hy_ci 有红:   编辑修复后重新 hy_verify → hy_commit → hy_ci。
 
 hy_status 随时可查看当前阶段。
+
+## 提示
+
+- 所有工具返回均为 JSON，含 next 字段指示下一阶段
+- PlanDoc 的 smokes/tests 的 max_tokens 需足够，建议默认 4096+
 `;
 // ― Server setup
 const server = new Server({ name: "hy-workflow", version: "0.1.0" }, { capabilities: { tools: {} } });
@@ -160,30 +82,18 @@ const TOOLS = [
     {
         name: "hy_init",
         description: "初始化项目：部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）",
-        inputSchema: { type: "object", properties: {} },
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "hy_plan",
-        description: "分析任务 → 生成完整 PlanDoc。LLM 必须输出符合结构约定的 plan，缺字段/空内容会被拒绝。",
+        description: "分析任务 → 服务端自动调用 DeepSeek API 生成 PlanDoc。LLM 只需传 {task} 描述任务。",
         inputSchema: {
             type: "object",
             properties: {
-                task: { type: "string", description: "任务简述" },
-                plan: {
-                    type: "object",
-                    description: "PlanDoc 对象，必须包含: task, scope, boundary, verify, risks, discussion",
-                    properties: {
-                        task: { type: "string", description: "任务简述" },
-                        scope: { type: "object", description: "{ changes: string[], new_files: string[], delete: string[] }" },
-                        boundary: { type: "object", description: "{ dependency_dag: string, entry_points: string[], no_new_external: boolean }" },
-                        verify: { type: "object", description: "{ platform: {...}, smoke: CheckItem[], tests: CheckItem[] }" },
-                        risks: { type: "array", description: "风险列表，至少 1 条" },
-                        discussion: { type: "string", description: "方案讨论与权衡说明" },
-                    },
-                    required: ["task", "scope", "boundary", "verify", "risks", "discussion"],
-                },
+                task: { type: "string", description: "任务描述，清晰说明要做什么（如：修复 hy_approve 状态机转换 bug）" },
             },
-            required: ["task", "plan"],
+            required: ["task"],
+            additionalProperties: false,
         },
     },
     {
@@ -193,9 +103,10 @@ const TOOLS = [
             type: "object",
             properties: {
                 approved: { type: "string", description: "必须传字符串 'approve' 才放行（如 approved='approve'）。传其他任何字符串均为驳回，内容作为驳回理由。不可传 boolean true/false。" },
-                note: { type: "string", description: "可选备注" },
+                note: { type: "string", description: "备注" },
             },
-            required: ["approved"],
+            required: ["approved", "note"],
+            additionalProperties: false,
         },
     },
     {
@@ -208,17 +119,18 @@ const TOOLS = [
                 topic: { type: "string", description: "kebab-case 主题" },
             },
             required: ["category", "topic"],
+            additionalProperties: false,
         },
     },
     {
         name: "hy_edit",
         description: "锁定 scope，LLM 使用标准 Read/Edit/Write 编辑文件。完成后调 hy_verify。",
-        inputSchema: { type: "object", properties: {} },
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "hy_verify",
         description: "全量校验：doclint + codelint + scope + boundary + platform + smoke + tests。全绿方可 commit。",
-        inputSchema: { type: "object", properties: {} },
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "hy_commit",
@@ -230,17 +142,18 @@ const TOOLS = [
                 body: { type: "string" },
             },
             required: ["title", "body"],
+            additionalProperties: false,
         },
     },
     {
         name: "hy_ci",
         description: "轮询 CI 状态，返回结构化报告。",
-        inputSchema: { type: "object", properties: {} },
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "hy_merge",
         description: "全绿后合并 PR + 删除分支。",
-        inputSchema: { type: "object", properties: {} },
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "hy_chain",
@@ -251,12 +164,13 @@ const TOOLS = [
                 branches: { type: "array", items: { type: "string" } },
             },
             required: ["branches"],
+            additionalProperties: false,
         },
     },
     {
         name: "hy_status",
         description: "查看当前工作流阶段。",
-        inputSchema: { type: "object", properties: {} },
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
 ];
 // ― System prompt capability

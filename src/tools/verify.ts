@@ -14,6 +14,7 @@ export async function handleVerify(): Promise<ToolResult> {
   if (!report.allPassed) {
     const next = transition(state, "edit");
     writeState(next);
+    const failedChecks = report.checks.filter(c => c.hard && !c.passed).map(c => `${c.layer}/${c.name}`);
     return {
       next: "edit",
       passed: false,
@@ -21,7 +22,8 @@ export async function handleVerify(): Promise<ToolResult> {
       hardFailed: report.hardFailed,
       total: report.total,
       checks: report.checks,
-      message: `${report.hardFailed} hard checks failed. Fix and re-run hy_verify.`,
+      failedChecks,
+      message: `${report.hardFailed} checks failed: ${failedChecks.join(", ")}. Fix and re-run hy_verify.`,
     };
   }
 

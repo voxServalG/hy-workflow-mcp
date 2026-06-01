@@ -20,6 +20,6 @@ export async function handleChain(args) {
     checkout(root, "dev");
     const next = transition(state, "done");
     writeState(next);
-    return { next: "done", done: results, message: `Rebased ${results.length} branches.` };
+    return { next: "done", done: results, message: `Rebased ${results.length} branches. Workflow complete. All downstream branches synced.` };
 }
 //# sourceMappingURL=chain.js.map
