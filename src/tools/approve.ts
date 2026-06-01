@@ -8,7 +8,7 @@ export async function handleApprove(args: { approved: string; note?: string }): 
 
   const input = (args.approved ?? "").trim();
 
-  if (input === "approve") {
+  if (input === "approve" || input === "true") {
     const approval: Approval = {
       time: new Date().toISOString(),
       note: args.note ?? "",

@@ -52,7 +52,7 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 
 - **进入 Phase**: `plan`
 - **转换到**: 保持 `plan`，返回 `next: "approve"`
-- **成功返回**: `{ next: "approve", plan, message, source: "api" }`
+- **成功返回**: `{ next: "approve", plan, summary, message, source: "api" }`
 - **失败返回**: `{ next: "plan", error, fallback: {message, schema} }`
 
 **参见**: `src/tools/plan.ts:7-201`, `src/llm.ts:93-137`（DeepSeek API 调用）
@@ -63,7 +63,7 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 
 **资源**: `src/tools/approve.ts` (40 行)
 
-用户审视 PlanDoc 的入口。`approved` 必须传字符串 `"approve"` 才放行（严格匹配）。其他任何内容视为驳回理由，回到 `plan`。
+用户审视 PlanDoc 的入口。`approved` 必须传字符串 `"approve"` 才放行（严格匹配，同时容错 `"true"`）。其他任何内容视为驳回理由，回到 `plan`。
 
 - **进入 Phase**: `plan`, `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录
