@@ -6,41 +6,51 @@ function buildSummary(p: PlanDoc): string {
   const lines: string[] = [];
   lines.push(`## Plan: ${p.task}`);
   lines.push("");
+
   lines.push("### Scope");
-  if (p.scope.changes.length) {
-    lines.push("**Changes:**");
-    p.scope.changes.forEach(f => lines.push(`- \`${f}\``));
-  }
-  if (p.scope.new_files.length) {
-    lines.push("**New files:**");
-    p.scope.new_files.forEach(f => lines.push(`- \`${f}\``));
-  }
-  if (p.scope.delete.length) {
-    lines.push("**Delete:**");
-    p.scope.delete.forEach(f => lines.push(`- \`${f}\``));
-  }
+  const changes = p.scope.changes;
+  lines.push(`- **Changes** (string[], ${changes.length} item${changes.length !== 1 ? "s" : ""}):`);
+  if (changes.length) { changes.forEach(f => lines.push(`  - \`${f}\``)); }
+  else { lines.push("  (none)"); }
+  const newFiles = p.scope.new_files;
+  lines.push(`- **New files** (string[], ${newFiles.length} item${newFiles.length !== 1 ? "s" : ""}):`);
+  if (newFiles.length) { newFiles.forEach(f => lines.push(`  - \`${f}\``)); }
+  else { lines.push("  (none)"); }
+  const deleted = p.scope.delete;
+  lines.push(`- **Delete** (string[], ${deleted.length} item${deleted.length !== 1 ? "s" : ""}):`);
+  if (deleted.length) { deleted.forEach(f => lines.push(`  - \`${f}\``)); }
+  else { lines.push("  (none)"); }
+
   lines.push("");
   lines.push("### Boundary");
-  lines.push(`- Dependency DAG: ${p.boundary.dependency_dag}`);
-  lines.push(`- Entry points:`);
-  p.boundary.entry_points.forEach(ep => lines.push(`  - \`${ep}\``));
-  lines.push(`- No new external deps: ${p.boundary.no_new_external}`);
+  lines.push(`- **Dependency DAG:** ${p.boundary.dependency_dag}`);
+  const eps = p.boundary.entry_points;
+  lines.push(`- **Entry points** (string[], ${eps.length} item${eps.length !== 1 ? "s" : ""}):`);
+  eps.forEach(ep => lines.push(`  - \`${ep}\``));
+  lines.push(`- **No new external deps** (boolean): \`${p.boundary.no_new_external}\``);
+
   lines.push("");
   lines.push("### Verify");
-  lines.push(`- Platform: Python ${p.verify.platform.python_version}`);
-  if (p.verify.platform.setup.length) {
-    p.verify.platform.setup.forEach(s => lines.push(`  - \`${s}\``));
-  }
-  lines.push(`- Smoke checks (${p.verify.smoke.length}):`);
-  p.verify.smoke.forEach(s => lines.push(`  - \`${s.command}\` → exit ${s.expected_exit}: ${s.description}`));
-  lines.push(`- Tests (${p.verify.tests.length}):`);
-  p.verify.tests.forEach(t => lines.push(`  - \`${t.command}\` → exit ${t.expected_exit}: ${t.description}`));
+  const plat = p.verify.platform;
+  lines.push(`- **Platform:** Python ${plat.python_version}`);
+  const setup = plat.setup;
+  lines.push(`  - setup (string[], ${setup.length} item${setup.length !== 1 ? "s" : ""}): ${setup.map(s => `\`${s}\``).join(", ") || "(none)"}`);
+  const smokes = p.verify.smoke;
+  lines.push(`- **Smoke** (CheckItem[], ${smokes.length} check${smokes.length !== 1 ? "s" : ""}):`);
+  smokes.forEach(s => lines.push(`  - \`${s.command}\` → exit ${s.expected_exit}: ${s.description}`));
+  const tests = p.verify.tests;
+  lines.push(`- **Tests** (CheckItem[], ${tests.length} check${tests.length !== 1 ? "s" : ""}):`);
+  tests.forEach(t => lines.push(`  - \`${t.command}\` → exit ${t.expected_exit}: ${t.description}`));
+
   lines.push("");
-  lines.push("### Risks");
-  p.risks.forEach(r => lines.push(`- ${r}`));
+  const risks = p.risks;
+  lines.push(`### Risks (string[], ${risks.length} item${risks.length !== 1 ? "s" : ""})`);
+  risks.forEach(r => lines.push(`- ${r}`));
+
   lines.push("");
   lines.push("### Discussion");
   lines.push(p.discussion);
+
   return lines.join("\n");
 }
 

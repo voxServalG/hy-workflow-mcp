@@ -29,7 +29,7 @@ const SYSTEM_PROMPT = `
 **0. hy_init — 项目首次使用时调用。** 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。已部署则跳过，自动进 plan。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。
 
 1. hy_plan — 调用时传入 {task, plan}。你需要自行利用工作区上下文构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
-   **重要**: hy_plan 返回后，你必须将完整的 PlanDoc 以可读格式向用户展示。包含：Task（任务描述）、Scope（改/增/删的文件清单）、Boundary（入口点）、Verify（smoke/tests 命令）、Risks（风险）、Discussion（方案理由）。存在 summary 字段时可优先使用 summary。禁止只显示摘要片段。禁止在用户查看前自行推进到下一步。
+   **重要**: hy_plan 返回后，原样输出 summary 字段的内容向用户展示。禁止在用户查看前自行推进到下一步。
 2. hy_approve — 用户审视 plan。传 approved="approve" 放行，其他内容=驳回。
    **重要**: 严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。你必须等待用户对展示的 plan 做出认可。犹豫时反问用户确认。用户明确拒绝时，将拒绝理由填入 approved 参数传回。
 3. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
