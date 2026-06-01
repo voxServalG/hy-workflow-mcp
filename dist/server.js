@@ -28,7 +28,7 @@ const SYSTEM_PROMPT = `
 
 **0. hy_init — 项目首次使用时调用。** 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。已部署则跳过，自动进 plan。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。
 
-1. hy_plan — 调用时传入 {task} 描述任务。服务端自动调用 DeepSeek API 生成 PlanDoc。你只需要清楚描述要做什么。
+1. hy_plan — 调用时传入 {task, plan}。你需要自行利用工作区上下文构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
    **重要**: hy_plan 返回后，你必须将完整的 PlanDoc 以可读格式向用户展示。包含：Task（任务描述）、Scope（改/增/删的文件清单）、Boundary（入口点）、Verify（smoke/tests 命令）、Risks（风险）、Discussion（方案理由）。存在 summary 字段时可优先使用 summary。禁止只显示摘要片段。禁止在用户查看前自行推进到下一步。
 2. hy_approve — 用户审视 plan。传 approved="approve" 放行，其他内容=驳回。
    **重要**: 严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。你必须等待用户对展示的 plan 做出认可。犹豫时反问用户确认。用户明确拒绝时，将拒绝理由填入 approved 参数传回。
@@ -51,9 +51,15 @@ const SYSTEM_PROMPT = `
 
 ## hy_plan 使用
 
-调用 hy_plan({task: "描述你要做的任务"})。服务端自动分析项目上下文（garden-scan）并用 DeepSeek API 生成 PlanDoc。PlanDoc 生成后必须经过 6 道验证关才会被接受。
+调用 hy_plan({task: "描述你要做的任务", plan: { ... PlanDoc JSON ... }})。构造 PlanDoc 时：
+- 先用 Read/Glob/Grep 了解项目结构、现有文件、可用命令
+- scope.changes/new_files/delete 必须是真实文件路径
+- boundary.entry_points 必须是可执行 shell 命令（如 npx tsc --noEmit）
+- verify.smoke/tests 必须是真实验证命令，禁止 echo ok 等空洞命令
+- risks 必须诚实，不能写 "No risks"
+- discussion 必须说明方案选择的理由
 
-如果 API Key 未设置或 API 调用失败，hy_plan 会返回 error + PlanDoc JSON Schema。此时你需要手动构造 PlanDoc 并再次调用 hy_plan({task, plan})。
+PlanDoc 通过 6 道 gate 校验后写入状态，进入 approve。
 
 ## hy_plan 触发
 
@@ -80,7 +86,6 @@ hy_status 随时可查看当前阶段。
 ## 提示
 
 - 所有工具返回均为 JSON，含 next 字段指示下一阶段
-- PlanDoc 的 smokes/tests 的 max_tokens 需足够，建议默认 4096+
 `;
 // ― Server setup
 const server = new Server({ name: "hy-workflow", version: "0.1.0" }, { capabilities: { tools: {} } });
@@ -92,13 +97,14 @@ const TOOLS = [
     },
     {
         name: "hy_plan",
-        description: "分析任务 → 服务端自动调用 DeepSeek API 生成 PlanDoc。LLM 只需传 {task} 描述任务。",
+        description: "分析任务 → LLM 使用工作区上下文构造 PlanDoc JSON → 服务端 6 道 gate 校验。LLM 需传 {task, plan}。",
         inputSchema: {
             type: "object",
             properties: {
                 task: { type: "string", description: "任务描述，清晰说明要做什么（如：修复 hy_approve 状态机转换 bug）" },
+                plan: { type: "object", description: "PlanDoc JSON，根据项目上下文构造。必须包含: task, scope(changes/new_files/delete), boundary(dependency_dag/entry_points/no_new_external), verify(platform/smoke/tests), risks, discussion。" },
             },
-            required: ["task"],
+            required: ["task", "plan"],
             additionalProperties: false,
         },
     },
@@ -218,13 +224,6 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error(`hy-workflow MCP v0.1.0 running`);
-    if (!process.env.DEEPSEEK_API_KEY) {
-        console.error("⚠ DEEPSEEK_API_KEY not set. hy_plan will run in manual fallback mode.");
-        console.error("  Create a .env file in your project root:");
-        console.error("    echo 'DEEPSEEK_API_KEY=sk-...' >> .env");
-        console.error("  Or set it in your shell environment directly.");
-        console.error("  Get your key at https://platform.deepseek.com/api_keys");
-    }
 }
 main().catch(console.error);
 //# sourceMappingURL=server.js.map

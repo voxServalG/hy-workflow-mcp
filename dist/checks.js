@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { currentBranch, getBaseBranch } from "./state.js";
+import { getBaseBranch } from "./state.js";
 // ── Helpers ──────────────────────────────────────────────────
 function execOr(cmd, cwd) {
     try {
@@ -31,7 +31,7 @@ function findPython() {
 }
 // ── 1. Lint (hard) ──────────────────────────────────────────
 export function runDocLint(root) {
-    const r = execOr("npx --yes doclint lint --json", root);
+    const r = execOr("npx --yes github:voxServalG/doclint lint --json", root);
     try {
         const report = JSON.parse(r.stdout || "{}");
         return [report.failed === 0
@@ -43,7 +43,7 @@ export function runDocLint(root) {
     }
 }
 export function runCodeLint(root) {
-    const r = execOr("npx --yes codelint check --json", root);
+    const r = execOr("npx --yes github:voxServalG/codelint check --json", root);
     try {
         const report = JSON.parse(r.stdout || "{}");
         return [report.errors === 0
@@ -81,9 +81,8 @@ export function runCompile(root) {
 // ── 3. Scope (hard) ─────────────────────────────────────────
 export function runScopeCheck(root, plan) {
     const res = [];
-    const branch = currentBranch(root);
     const base = getBaseBranch(root);
-    const r = execOr(`git diff origin/${base}..${branch} --name-only`, root);
+    const r = execOr(`git diff origin/${base} --name-only -- . ":(exclude)dist/*" ":(exclude)node_modules/*"`, root);
     if (!r.ok)
         return [fail("scope", "scope", `git diff failed: ${r.stderr}`)];
     const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());

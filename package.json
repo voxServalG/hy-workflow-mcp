@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "npx tsx src/server.ts"
+    "dev": "npx tsx src/server.ts",
+    "test": "npx tsc --noEmit"
   },
   "author": "Haiyi",
   "license": "MIT",
