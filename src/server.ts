@@ -114,7 +114,81 @@ const TOOLS = [
       type: "object",
       properties: {
         task: { type: "string", description: "任务描述，清晰说明要做什么（如：修复 hy_approve 状态机转换 bug）" },
-        plan: { type: "object", description: "PlanDoc JSON，根据项目上下文构造。必须包含: task, scope(changes/new_files/delete), boundary(dependency_dag/entry_points/no_new_external), verify(platform/smoke/tests), risks, discussion。" },
+        plan: {
+          type: "object",
+          required: ["task", "scope", "boundary", "verify", "risks", "discussion"],
+          additionalProperties: false,
+          description: "PlanDoc JSON。scope 里文件路径必须是真实存在的；entry_points/smoke/tests 命令必须是可执行命令，禁止 echo ok 等空洞占位。",
+          properties: {
+            task: { type: "string", description: "Brief task summary" },
+            scope: {
+              type: "object",
+              required: ["changes", "new_files", "delete"],
+              additionalProperties: false,
+              properties: {
+                changes:   { type: "array", items: { type: "string" }, description: "Existing files to modify" },
+                new_files: { type: "array", items: { type: "string" }, description: "New files to create" },
+                delete:    { type: "array", items: { type: "string" }, description: "Files to delete" },
+              },
+            },
+            boundary: {
+              type: "object",
+              required: ["dependency_dag", "entry_points", "no_new_external"],
+              additionalProperties: false,
+              properties: {
+                dependency_dag: { type: "string", description: "Text description of dependency impact" },
+                entry_points:   { type: "array", items: { type: "string" }, description: "Executable shell commands (min 1)" },
+                no_new_external: { type: "boolean", description: "Whether this introduces new external deps" },
+              },
+            },
+            verify: {
+              type: "object",
+              required: ["platform", "smoke", "tests"],
+              additionalProperties: false,
+              properties: {
+                platform: {
+                  type: "object",
+                  required: ["python_version", "setup"],
+                  additionalProperties: false,
+                  properties: {
+                    python_version: { type: "string", description: "Minimum Python version" },
+                    setup: { type: "array", items: { type: "string" }, description: "Environment setup commands" },
+                  },
+                },
+                smoke: {
+                  type: "array",
+                  description: "Quick smoke tests (<5s each, min 1)",
+                  items: {
+                    type: "object",
+                    required: ["command", "expected_exit", "description"],
+                    additionalProperties: false,
+                    properties: {
+                      command:      { type: "string", description: "Shell command to run" },
+                      expected_exit: { type: "number", description: "Expected exit code (0 for success)" },
+                      description:  { type: "string", description: "What this check verifies" },
+                    },
+                  },
+                },
+                tests: {
+                  type: "array",
+                  description: "Full test suite (min 1)",
+                  items: {
+                    type: "object",
+                    required: ["command", "expected_exit", "description"],
+                    additionalProperties: false,
+                    properties: {
+                      command:      { type: "string", description: "Shell command to run" },
+                      expected_exit: { type: "number", description: "Expected exit code" },
+                      description:  { type: "string", description: "What this check verifies" },
+                    },
+                  },
+                },
+              },
+            },
+            risks:      { type: "array", items: { type: "string" }, description: "Honest risk list (min 1)" },
+            discussion: { type: "string", description: "Why this approach was chosen over alternatives" },
+          },
+        },
       },
       required: ["task", "plan"],
       additionalProperties: false,
