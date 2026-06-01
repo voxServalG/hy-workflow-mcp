@@ -3,5 +3,21 @@
   "codeDirs": ["src"],
   "codeExt": ".ts",
   "baseBranch": "main",
-  "catalogs": {}
+  "catalogs": {
+    "state":      "src/state.ts",
+    "server":     "src/server.ts",
+    "checks":     "src/checks.ts",
+    "git":        "src/git.ts",
+    "approve":    "src/tools/approve.ts",
+    "branch":     "src/tools/branch.ts",
+    "chain":      "src/tools/chain.ts",
+    "ci":         "src/tools/ci.ts",
+    "commit":     "src/tools/commit.ts",
+    "edit":       "src/tools/edit.ts",
+    "init":       "src/tools/init.ts",
+    "merge":      "src/tools/merge.ts",
+    "plan":       "src/tools/plan.ts",
+    "status":     "src/tools/status.ts",
+    "verify":     "src/tools/verify.ts"
+  }
 }
