@@ -46,7 +46,7 @@ function findPython(): string {
 // ── 1. Lint (hard) ──────────────────────────────────────────
 
 export function runDocLint(root: string): CheckResult[] {
-  const r = execOr("npx --yes doclint-hy lint --json", root);
+  const r = execOr("npx --yes github:voxServalG/doclint lint --json", root);
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [report.failed === 0
@@ -58,7 +58,7 @@ export function runDocLint(root: string): CheckResult[] {
 }
 
 export function runCodeLint(root: string): CheckResult[] {
-  const r = execOr("npx --yes codelint-hy check --json", root);
+  const r = execOr("npx --yes github:voxServalG/codelint check --json", root);
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [report.errors === 0
