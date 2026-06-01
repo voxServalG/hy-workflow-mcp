@@ -54,3 +54,4 @@ export declare class StateError extends Error {
 }
 export declare function computeVerifyHash(state: WorkflowState): string;
 export declare function currentBranch(root: string): string;
+export declare function getBaseBranch(root: string): string;

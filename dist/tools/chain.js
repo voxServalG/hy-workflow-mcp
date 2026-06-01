@@ -1,12 +1,13 @@
-import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch } from "../state.js";
 import { checkout, pull, rebaseDev, pushForce } from "../git.js";
 export async function handleChain(args) {
     const state = readState();
     assertPhase(state, "chain");
     const root = projectRoot();
     const results = [];
-    // Pull latest dev
-    checkout(root, "dev");
+    const base = getBaseBranch(root);
+    // Pull latest base
+    checkout(root, base);
     pull(root);
     for (const br of args.branches) {
         checkout(root, br);
@@ -17,7 +18,7 @@ export async function handleChain(args) {
         pushForce(root, br);
         results.push(`${br}: rebased + pushed`);
     }
-    checkout(root, "dev");
+    checkout(root, base);
     const next = transition(state, "done");
     writeState(next);
     return { next: "done", done: results, message: `Rebased ${results.length} branches. Workflow complete. All downstream branches synced.` };

@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { getBaseBranch } from "./state.js";
 function run(cmd, cwd) {
     try {
         const stdout = execSync(cmd, { cwd, encoding: "utf-8", timeout: 120_000, stdio: ["pipe", "pipe", "pipe"] });
@@ -10,7 +11,8 @@ function run(cmd, cwd) {
 }
 export function createBranch(root, category, topic) {
     const name = `${category}/${topic}`;
-    const r = run(`git checkout -b ${name} dev`, root);
+    const base = getBaseBranch(root);
+    const r = run(`git checkout -b ${name} origin/${base}`, root);
     if (!r.ok)
         return { ok: false, branch: name, error: r.stderr };
     return { ok: true, branch: name };
@@ -69,11 +71,13 @@ export function checkout(root, branch) {
     return { ok: r.ok, error: r.stderr };
 }
 export function pull(root) {
-    const r = run("git pull origin dev", root);
+    const base = getBaseBranch(root);
+    const r = run(`git pull origin ${base}`, root);
     return { ok: r.ok, error: r.stderr };
 }
 export function rebaseDev(root) {
-    const r = run("git rebase origin/dev", root);
+    const base = getBaseBranch(root);
+    const r = run(`git rebase origin/${base}`, root);
     return { ok: r.ok, error: r.stderr };
 }
 //# sourceMappingURL=git.js.map
