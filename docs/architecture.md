@@ -28,8 +28,8 @@ server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状
 ## 数据流
 
 ```
-1. LLM 调用 hy_plan(task, plan)
-   └► tools/plan.ts 验证 PlanDoc → writeState(phase=plan)
+1. LLM 调用 hy_plan(task)
+   └► tools/plan.ts → llm.ts 调 DeepSeek API 生成 PlanDoc → 6 gate 校验 → writeState(phase=plan)
 
 2. 用户 hy_approve(approved="approve")
    └► tools/approve.ts → transition(plan→branch) → writeState
@@ -64,6 +64,25 @@ server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
 - **幂等 init**: `hy_init` 部署 hy-harness，已存在则跳过
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
+
+## 配置文件
+
+| 文件 | 用途 |
+|------|------|
+| `codelint.json` | 代码检查规则：`codeExt`（语言检测）、`baseBranch`（Git 基准分支）、`codeDirs`（源码目录）、`maxLines` |
+| `doclint.json` | 文档检查规则 |
+| `docs-gardener.json` | docs-gardener MCP 逻辑规则 |
+| `.env` / `.env.example` | `DEEPSEEK_API_KEY` —— 用于 `src/llm.ts` 调用 DeepSeek API 自动生成 PlanDoc。无 key 时 hy_plan 降级为手动模式 |
+
+## LLM 集成
+
+`src/llm.ts` 封装 DeepSeek API 调用（`@deepseek-v4-pro`，`response_format: json_object`），根据项目基线（garden-scan）和 task 描述，自动生成 100% 结构合法的 PlanDoc。API 失败时返回完整 JSON Schema，通知 LLM 手动构造。
+
+`src/tools/_base.ts` 定义 `ToolResult` 类型，所有 tool handler 返回统一 JSON 格式。
+
+## 构建与 CI
+
+`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。CI 由 `.github/workflows/code-quality.yml`（codelint + compile）和 `docs-check.yml`（doclint）组成。
 
 ## Related
 

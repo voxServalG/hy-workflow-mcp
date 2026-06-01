@@ -1,14 +1,14 @@
 # Tools Reference
 
-hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts:290-305`。
+hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts:211-226`。
 
 ## 概览
 
 | Tool | Phase 进入要求 | 参数 | 转换到 | 只读? |
 |------|---------------|------|--------|-------|
 | `hy_init`   | init | — | plan | 否 |
-| `hy_plan`   | plan | `{task, plan: PlanDoc}` | plan (返回 next=approve) | 否 |
-| `hy_approve` | plan, approve | `{approved: string, note?}` | branch (批准) / plan (驳回) | 否 |
+| `hy_plan`   | plan | `{task}` | plan (返回 next=approve) | 否 |
+| `hy_approve` | plan, approve | `{approved: string, note: string}` | branch (批准) / plan (驳回) | 否 |
 | `hy_branch` | approve, branch | `{category, topic}` | edit | 否 |
 | `hy_edit`   | branch, edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
@@ -31,13 +31,15 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **成功返回**: `{ next: "plan", message: "Harness deployed..." }`
 - **失败返回**: `{ next: "init", error: "Harness deployment failed..." }`
 
+**参见**: `src/tools/init.ts`, `src/state.ts:114-118`（writeState）
+
 ---
 
 ## hy_plan
 
-**资源**: `src/tools/plan.ts` (130 行)
+**资源**: `src/tools/plan.ts` (201 行)
 
-验证并持久化 PlanDoc。6 道校验关：
+分析 task 后自动调用 DeepSeek API（`src/llm.ts:93`）生成 PlanDoc，经历 6 道校验关：
 
 1. 必填字段完整性（task, scope, boundary, verify, risks, discussion）
 2. scope 非空（changes / new_files / delete 至少有一个非空）
@@ -46,12 +48,14 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 5. risks ≥ 1，discussion 非空
 6. 禁止空洞命令（`echo ok` 等）
 
-调用 `garden-scan` 获取基线上下文（非致命）。
+先调用 `garden-scan` 获取项目基线上下文（非致命）。API 失败时回退到手动 PlanDoc 模式，返回 JSON Schema 供 LLM 构造。
 
 - **进入 Phase**: `plan`
 - **转换到**: 保持 `plan`，返回 `next: "approve"`
-- **成功返回**: `{ next: "approve", baseline, plan, message }`
-- **失败返回**: `{ next: "plan", error }`
+- **成功返回**: `{ next: "approve", plan, message, source: "api" }`
+- **失败返回**: `{ next: "plan", error, fallback: {message, schema} }`
+
+**参见**: `src/tools/plan.ts:7-201`, `src/llm.ts:93-137`（DeepSeek API 调用）
 
 ---
 
@@ -67,6 +71,8 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_commit" }`
 - **驳回返回**: `{ next: "plan", approved: false, note }`
 
+**参见**: `src/tools/approve.ts:1-40`, `src/state.ts:146-155`（transition）
+
 ---
 
 ## hy_branch
@@ -78,6 +84,8 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **进入 Phase**: `approve`, `branch`
 - **转换到**: `edit`
 - **返回**: `{ next: "edit", branch }` 或 `{ error }`
+
+**参见**: `src/tools/branch.ts:5-26`, `src/git.ts:12-17`（createBranch）
 
 ---
 
@@ -91,11 +99,13 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **转换到**: 手动 `phase = edit`，返回 `next: "verify"`
 - **返回**: `{ next: "verify", branch, scope, boundary, message }`
 
+**参见**: `src/tools/edit.ts:11-45`, `.hy/scope.json`（scope 锁定文件）
+
 ---
 
 ## hy_verify
 
-**资源**: `src/tools/verify.ts` (40 行)
+**资源**: `src/tools/verify.ts` (43 行)
 
 执行 6 层全量校验（`src/checks.ts:runAllChecks`）。全部通过后计算 verifyHash 并转换到 commit。
 
@@ -105,11 +115,13 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash }`
 - **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks }`
 
+**参见**: `src/tools/verify.ts:5-43`, `src/checks.ts:193-207`（runAllChecks）
+
 ---
 
 ## hy_commit
 
-**资源**: `src/tools/commit.ts` (60 行)
+**资源**: `src/tools/commit.ts` (55 行)
 
 git add -A → commit → push → gh pr create。PR body 自动附加 scope/boundary/verify 元信息和 verifyHash。
 
@@ -117,11 +129,13 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **转换到**: `ci`
 - **返回**: `{ next: "ci", prNumber, url }` 或 `{ error }`
 
+**参见**: `src/tools/commit.ts:5-55`, `src/git.ts:19-43`（commitAll/push/createPr）
+
 ---
 
 ## hy_ci
 
-**资源**: `src/tools/ci.ts` (40 行)
+**资源**: `src/tools/ci.ts` (34 行)
 
 通过 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态。
 
@@ -130,6 +144,8 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **失败后转换到**: `edit`
 - **全绿返回**: `{ next: "merge", allGreen: true, checks }`
 - **失败返回**: `{ next: "edit", allGreen: false, checks }`
+
+**参见**: `src/tools/ci.ts:1-34`, `src/git.ts:51-67`（checkCi）
 
 ---
 
@@ -143,17 +159,21 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **转换到**: `chain`
 - **返回**: `{ next: "chain", prNumber }`
 
+**参见**: `src/tools/merge.ts:5-18`, `src/git.ts:46-49`（mergePr）
+
 ---
 
 ## hy_chain
 
-**资源**: `src/tools/chain.ts` (45 行)
+**资源**: `src/tools/chain.ts` (33 行)
 
-依次 checkout 每个下游分支 → rebase 到最新 dev → force push → 切回 dev。
+依次 checkout 每个下游分支 → rebase 到 `codelint.json: baseBranch` 对应的最新基准分支 → force push → 切回基准分支。
 
 - **进入 Phase**: `chain`
 - **转换到**: `done`
 - **返回**: `{ next: "done", done: [...完成的], message }`
+
+**参见**: `src/tools/chain.ts:5-31`, `src/git.ts:69-81`（checkout/pull/rebaseDev/pushForce）
 
 ---
 
@@ -166,6 +186,8 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **进入 Phase**: 无限制
 - **转换到**: 无（只读）
 - **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, action? }`
+
+**参见**: `src/tools/status.ts:1-26`, `src/state.ts:97-112`（readState）
 
 ## Related
 
