@@ -2,7 +2,7 @@ import { readState, writeState, transition, assertPhase } from "../state.js";
 import { execSync } from "node:child_process";
 export async function handleInit() {
     const state = readState();
-    assertPhase(state, "init");
+    assertPhase(state, "init", "plan");
     // Run hy-harness deploy
     try {
         execSync("npx --yes github:voxServalG/hy-harness", { stdio: "inherit", timeout: 60_000 });

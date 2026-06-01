@@ -46,7 +46,7 @@ export function writeState(state) {
 // ── Phase transitions ────────────────────────────────────────
 const VALID_TRANSITIONS = {
     init: ["init", "plan", "done"],
-    plan: ["plan", "approve", "branch", "done"],
+    plan: ["plan", "approve", "done"],
     approve: ["approve", "branch", "plan"], // plan = retry after reject
     branch: ["branch", "edit", "done"],
     edit: ["edit", "verify", "commit", "done"],
