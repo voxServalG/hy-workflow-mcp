@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch } from "../state.js";
 import { commitAll, push, createPr } from "../git.js";
 export async function handleCommit(args) {
     const state = readState();
@@ -35,7 +35,7 @@ export async function handleCommit(args) {
     const p = push(root, state.branch);
     if (!p.ok)
         return { next: "commit", error: p.error };
-    const pr = createPr(root, args.title, body, "dev", state.branch);
+    const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
     if (!pr.ok)
         return { next: "commit", error: pr.error };
     const next = transition(state, "ci");

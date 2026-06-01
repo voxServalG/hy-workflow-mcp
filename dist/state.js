@@ -49,7 +49,7 @@ const VALID_TRANSITIONS = {
     plan: ["plan", "approve", "branch", "done"],
     approve: ["approve", "branch", "plan"], // plan = retry after reject
     branch: ["branch", "edit", "done"],
-    edit: ["edit", "verify", "done"],
+    edit: ["edit", "verify", "commit", "done"],
     verify: ["verify", "edit", "commit", "done"], // edit = fix, commit = pass
     commit: ["commit", "ci", "done"],
     ci: ["ci", "edit", "merge", "done"], // edit = fix, merge = pass
@@ -99,5 +99,17 @@ export function currentBranch(root) {
     catch {
         return "unknown";
     }
+}
+export function getBaseBranch(root) {
+    try {
+        const configPath = path.join(root, "codelint.json");
+        if (fs.existsSync(configPath)) {
+            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+            if (config.baseBranch)
+                return config.baseBranch;
+        }
+    }
+    catch { }
+    return "dev";
 }
 //# sourceMappingURL=state.js.map

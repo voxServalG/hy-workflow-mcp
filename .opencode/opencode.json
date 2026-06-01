@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "hy-workflow": {
+      "type": "local",
+      "command": ["npx", "-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"],
+      "enabled": true
+    },
+    "docs-gardener": {
+      "type": "local",
+      "command": ["npx", "-y", "github:voxServalG/docs-gardener", "mcp"],
+      "enabled": true
+    }
+  }
+}
