@@ -93,10 +93,19 @@ export function runCompile(root: string): CheckResult[] {
 
 // ── 3. Scope (hard) ─────────────────────────────────────────
 
+function getBaseBranch(root: string): string {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
+    if (config.baseBranch) return config.baseBranch;
+  } catch {}
+  return "dev";
+}
+
 export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
   const branch = currentBranch(root);
-  const r = execOr(`git diff origin/dev..${branch} --name-only`, root);
+  const base = getBaseBranch(root);
+  const r = execOr(`git diff origin/${base}..${branch} --name-only`, root);
   if (!r.ok) return [fail("scope", "scope", `git diff failed: ${r.stderr}`)];
 
   const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());
@@ -118,18 +127,30 @@ export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
 
 // ── 4. Boundary ──────────────────────────────────────────────
 
+function getCodeExt(root: string): string {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
+    return config.codeExt ?? "";
+  } catch {}
+  return "";
+}
+
 export function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
+  const ext = getCodeExt(root);
 
   for (const ep of plan.boundary.entry_points) {
-    const r = execOr(`${findPython()} -c "${ep}"`, root);
+    const cmd = ext === ".py"
+      ? `${findPython()} -c "${ep}"`
+      : ep;
+    const r = execOr(cmd, root);
     res.push(r.ok
       ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
       : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", r.stderr || r.stdout));
   }
 
   if (plan.boundary.no_new_external) {
-    const r = execOr("git diff origin/dev.. -- pyproject.toml setup.cfg setup.py requirements.txt", root);
+    const r = execOr(`git diff origin/${getBaseBranch(root)}.. -- pyproject.toml setup.cfg setup.py requirements.txt policy.md`, root);
     res.push(r.stdout.trim()
       ? fail("no_new_external", "boundary", "Dependency file changed")
       : ok("no_new_external", "boundary", "No dep changes"));

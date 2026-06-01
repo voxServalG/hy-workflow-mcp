@@ -213,6 +213,13 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error(`hy-workflow MCP v0.1.0 running`);
+    if (!process.env.DEEPSEEK_API_KEY) {
+        console.error("⚠ DEEPSEEK_API_KEY not set. hy_plan will run in manual fallback mode.");
+        console.error("  Create a .env file in your project root:");
+        console.error("    echo 'DEEPSEEK_API_KEY=sk-...' >> .env");
+        console.error("  Or set it in your shell environment directly.");
+        console.error("  Get your key at https://platform.deepseek.com/api_keys");
+    }
 }
 main().catch(console.error);
 //# sourceMappingURL=server.js.map
