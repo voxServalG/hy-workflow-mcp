@@ -8,7 +8,8 @@ export async function handleApprove(args: { approved: string; note?: string }): 
 
   const input = (args.approved ?? "").trim();
 
-  if (input === "approve" || input === "true") {
+  const POSITIVE = new Set(["approve", "true", "yes", "ok", "1", "y"]);
+  if (POSITIVE.has(input.toLowerCase())) {
     const approval: Approval = {
       time: new Date().toISOString(),
       note: args.note ?? "",

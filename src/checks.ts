@@ -2,7 +2,9 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CheckItem, PlanDoc, WorkflowState } from "./state.js";
-import { currentBranch, getBaseBranch } from "./state.js";
+import { getBaseBranch } from "./state.js";
+
+const BUILD_EXCLUDE = [/^dist\//, /^build\//, /\.map$/, /^\.hy\//];
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -95,22 +97,25 @@ export function runCompile(root: string): CheckResult[] {
 
 export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
-  const branch = currentBranch(root);
-  const base = getBaseBranch(root);
-  const r = execOr(`git diff origin/${base}..${branch} --name-only`, root);
-  if (!r.ok) return [fail("scope", "scope", `git diff failed: ${r.stderr}`)];
 
-  const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());
+  const r1 = execOr(`git diff --name-only`, root);
+  const r2 = execOr(`git ls-files --others --exclude-standard`, root);
+  const untracked = r2.ok ? r2.stdout.split("\n").filter(Boolean).map(s => s.trim()) : [];
+  const diffFiles = r1.ok ? r1.stdout.split("\n").filter(Boolean).map(s => s.trim()) : [];
+  if (!r1.ok && !r2.ok) return [fail("scope", "scope", `git query failed`)];
+
+  const allActual = [...new Set([...diffFiles, ...untracked])];
+  const filtered = allActual.filter(f => !BUILD_EXCLUDE.some(re => re.test(f)));
   const declared = [...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete];
-  const extra = actual.filter(f => !declared.includes(f) && f !== ".hy/workflow.json");
+  const extra = filtered.filter(f => !declared.includes(f) && f !== ".hy/workflow.json");
 
   if (extra.length) {
     res.push(fail("scope", "scope", `Unexpected changes: ${extra.join(", ")}`));
   } else {
-    res.push(ok("scope", "scope", `${actual.length} files, all in plan.scope`));
+    res.push(ok("scope", "scope", `${filtered.length} files, all in plan.scope`));
   }
 
-  const missing = declared.filter(f => !actual.includes(f));
+  const missing = declared.filter(f => !filtered.includes(f));
   if (missing.length) {
     res.push(fail("scope", "scope", `Declared but not changed: ${missing.join(", ")}`, false));
   }

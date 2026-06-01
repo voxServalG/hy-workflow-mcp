@@ -97,26 +97,35 @@ TASK:
 ${task}
 
 Output the PlanDoc as valid JSON only. Do not wrap in markdown.`;
-    try {
-        const response = await client.chat.completions.create({
-            model: "deepseek-v4-pro",
-            response_format: { type: "json_object" },
-            messages: [
-                { role: "system", content: system + "\n\nOutput must conform to this JSON Schema:\n" + PLAN_SCHEMA },
-                { role: "user", content: task },
-            ],
-        });
-        const raw = response.choices[0]?.message?.content ?? "";
+    const maxAttempts = 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+            await new Promise(r => setTimeout(r, 2000));
+        }
         try {
-            const plan = JSON.parse(raw);
-            return { ok: true, plan };
+            const response = await client.chat.completions.create({
+                model: "deepseek-v4-pro",
+                response_format: { type: "json_object" },
+                messages: [
+                    { role: "system", content: system + "\n\nOutput must conform to this JSON Schema:\n" + PLAN_SCHEMA },
+                    { role: "user", content: task },
+                ],
+            });
+            const raw = response.choices[0]?.message?.content ?? "";
+            try {
+                const plan = JSON.parse(raw);
+                return { ok: true, plan };
+            }
+            catch {
+                return { ok: false, error: "Failed to parse PlanDoc JSON from API response: " + raw.slice(0, 200) };
+            }
         }
-        catch {
-            return { ok: false, error: "Failed to parse PlanDoc JSON from API response: " + raw.slice(0, 200) };
+        catch (e) {
+            if (attempt === maxAttempts - 1) {
+                return { ok: false, error: `DeepSeek API error after ${maxAttempts} attempts: ${e.message || String(e)}` };
+            }
         }
     }
-    catch (e) {
-        return { ok: false, error: `DeepSeek API error: ${e.message || String(e)}` };
-    }
+    return { ok: false, error: "Unexpected retry loop exit" };
 }
 //# sourceMappingURL=llm.js.map

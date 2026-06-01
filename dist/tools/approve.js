@@ -3,7 +3,8 @@ export async function handleApprove(args) {
     const state = readState();
     assertPhase(state, "plan", "approve");
     const input = (args.approved ?? "").trim();
-    if (input === "approve" || input === "true") {
+    const POSITIVE = new Set(["approve", "true", "yes", "ok", "1", "y"]);
+    if (POSITIVE.has(input.toLowerCase())) {
         const approval = {
             time: new Date().toISOString(),
             note: args.note ?? "",

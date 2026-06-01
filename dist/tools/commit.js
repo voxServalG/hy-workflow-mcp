@@ -10,9 +10,16 @@ export async function handleCommit(args) {
     if (!state.branch)
         return { next: "commit", error: "No active branch" };
     const root = projectRoot();
-    // Build enhanced PR body with plan context
+    // Build PR body from sections or fallback to raw body
+    let userBody = "";
+    if (args.sections?.length) {
+        userBody = args.sections.map(s => `## ${s.heading}\n\n${s.content}`).join("\n\n");
+    }
+    else if (args.body) {
+        userBody = args.body;
+    }
     const body = [
-        args.body,
+        userBody,
         "",
         "---",
         "",
@@ -31,13 +38,13 @@ export async function handleCommit(args) {
     ].join("\n");
     const c = commitAll(root, args.title, body);
     if (!c.ok)
-        return { next: "commit", error: c.error };
+        return { next: "edit", error: c.error };
     const p = push(root, state.branch);
     if (!p.ok)
-        return { next: "commit", error: p.error };
+        return { next: "edit", error: p.error };
     const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
     if (!pr.ok)
-        return { next: "commit", error: pr.error };
+        return { next: "edit", error: pr.error };
     const next = transition(state, "ci");
     next.prNumber = pr.prNumber ?? null;
     next.plan.pr_number = next.prNumber;

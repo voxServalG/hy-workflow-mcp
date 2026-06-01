@@ -229,16 +229,61 @@ export async function handlePlan(args: { task: string }): Promise<ToolResult> {
     }
   }
 
+  // ── Gate 7: command availability check (soft warning) ──────
+  let projectScripts: string[] = [];
+  try {
+    const pkgJson = JSON.parse(execSync("cat package.json", { encoding: "utf-8", timeout: 5_000 }));
+    projectScripts = Object.keys(pkgJson.scripts ?? {});
+  } catch {}
+
+  const KNOWN_RUNNERS = new Set([
+    ...EXECUTABLE_PREFIXES,
+    ...projectScripts.map(s => `npm run ${s}`),
+    ...projectScripts.map(s => `npx --yes ${s}`),
+  ]);
+
+  const unvalidated: string[] = [];
+  for (const ep of p.boundary.entry_points) {
+    const w = ep.trim().split(/\s+/)[0];
+    const full = ep.trim();
+    const inWhitelist = EXECUTABLE_PREFIXES.has(w) || projectScripts.includes(w) ||
+      KNOWN_RUNNERS.has(full) || full.includes("/") || full.includes("\\");
+    if (!inWhitelist) unvalidated.push(ep.trim());
+  }
+  for (const s of p.verify.smoke) {
+    const w = s.command.trim().split(/\s+/)[0];
+    const full = s.command.trim();
+    const inWhitelist = EXECUTABLE_PREFIXES.has(w) || projectScripts.includes(w) ||
+      KNOWN_RUNNERS.has(full) || full.includes("/") || full.includes("\\");
+    if (!inWhitelist) unvalidated.push(s.command.trim());
+  }
+  for (const t of p.verify.tests) {
+    const w = t.command.trim().split(/\s+/)[0];
+    const full = t.command.trim();
+    const inWhitelist = EXECUTABLE_PREFIXES.has(w) || projectScripts.includes(w) ||
+      KNOWN_RUNNERS.has(full) || full.includes("/") || full.includes("\\");
+    if (!inWhitelist) unvalidated.push(t.command.trim());
+  }
+
   const next = transition(state, "plan");
   next.phase = "plan";
   next.plan = p;
   writeState(next);
 
-  return {
+  const resultObj: any = {
     next: "approve",
     plan: p,
     summary: buildSummary(p),
     message: "PlanDoc generated via DeepSeek API. Review the plan, then call hy_approve to proceed or provide feedback to revise.",
     source: "api",
   };
+
+  if (unvalidated.length) {
+    resultObj.warnings = {
+      gate7: `Some commands may not be available in this project: ${unvalidated.join(", ")}`,
+      note: "These are soft warnings. The plan will still proceed but these commands should be verified.",
+    };
+  }
+
+  return resultObj;
 }

@@ -2,7 +2,12 @@ import { readState, writeState, transition, assertPhase, projectRoot, getBaseBra
 import { commitAll, push, createPr } from "../git.js";
 import type { ToolResult } from "./_base.js";
 
-export async function handleCommit(args: { title: string; body: string }): Promise<ToolResult> {
+interface Section {
+  heading: string;
+  content: string;
+}
+
+export async function handleCommit(args: { title: string; sections?: Section[]; body?: string }): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "commit");
 
@@ -12,9 +17,16 @@ export async function handleCommit(args: { title: string; body: string }): Promi
 
   const root = projectRoot();
 
-  // Build enhanced PR body with plan context
+  // Build PR body from sections or fallback to raw body
+  let userBody = "";
+  if (args.sections?.length) {
+    userBody = args.sections.map(s => `## ${s.heading}\n\n${s.content}`).join("\n\n");
+  } else if (args.body) {
+    userBody = args.body;
+  }
+
   const body = [
-    args.body,
+    userBody,
     "",
     "---",
     "",
@@ -33,13 +45,13 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   ].join("\n");
 
   const c = commitAll(root, args.title, body);
-  if (!c.ok) return { next: "commit", error: c.error };
+  if (!c.ok) return { next: "edit", error: c.error };
 
   const p = push(root, state.branch);
-  if (!p.ok) return { next: "commit", error: p.error };
+  if (!p.ok) return { next: "edit", error: p.error };
 
   const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
-  if (!pr.ok) return { next: "commit", error: pr.error };
+  if (!pr.ok) return { next: "edit", error: pr.error };
 
   const next = transition(state, "ci");
   next.prNumber = pr.prNumber ?? null;

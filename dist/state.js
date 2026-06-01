@@ -51,11 +51,11 @@ const VALID_TRANSITIONS = {
     branch: ["branch", "edit", "done"],
     edit: ["edit", "verify", "commit", "done"],
     verify: ["verify", "edit", "commit", "done"], // edit = fix, commit = pass
-    commit: ["commit", "ci", "done"],
+    commit: ["commit", "ci", "edit", "done"], // edit = fix after failed commit
     ci: ["ci", "edit", "merge", "done"], // edit = fix, merge = pass
     merge: ["merge", "chain", "done"],
     chain: ["chain", "done"],
-    done: ["done"],
+    done: ["done", "init"], // init = reset
 };
 export function assertPhase(state, ...expected) {
     if (!expected.includes(state.phase)) {

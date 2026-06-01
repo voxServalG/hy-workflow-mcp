@@ -1,6 +1,6 @@
 # Tools Reference
 
-hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts:211-226`。
+hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts`。
 
 ## 概览
 
@@ -12,17 +12,16 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 | `hy_branch` | approve, branch | `{category, topic}` | edit | 否 |
 | `hy_edit`   | branch, edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
-| `hy_commit` | commit | `{title, body}` | ci | 否 |
+| `hy_commit` | commit | `{title, sections?[{heading,content}], body?}` | ci | 否 |
 | `hy_ci`     | ci, edit | — | merge (全绿) / edit (失败) | 否 |
 | `hy_merge`  | merge | — | chain | 否 |
 | `hy_chain`  | chain | `{branches: string[]}` | done | 否 |
 | `hy_status` | 任意 | — | — | 是 |
+| `hy_reset`  | 任意 | — | init | 否 |
 
 ---
 
 ## hy_init
-
-**资源**: `src/tools/init.ts` (24 行)
 
 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows），60 秒超时。
 
@@ -31,15 +30,13 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **成功返回**: `{ next: "plan", message: "Harness deployed..." }`
 - **失败返回**: `{ next: "init", error: "Harness deployment failed..." }`
 
-**参见**: `src/tools/init.ts`, `src/state.ts:114-118`（writeState）
+
 
 ---
 
 ## hy_plan
 
-**资源**: `src/tools/plan.ts` (201 行)
-
-分析 task 后自动调用 DeepSeek API（`src/llm.ts:93`）生成 PlanDoc，经历 6 道校验关：
+分析 task 后自动调用 DeepSeek API 生成 PlanDoc，经历 7 道校验关（含重试）：
 
 1. 必填字段完整性（task, scope, boundary, verify, risks, discussion）
 2. scope 非空（changes / new_files / delete 至少有一个非空）
@@ -47,6 +44,7 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 4. verify 有实质内容（platform, smoke, tests 各 ≥ 1）
 5. risks ≥ 1，discussion 非空
 6. 禁止空洞命令（`echo ok` 等）
+7. 命令可用性检查（读 package.json scripts 白名单验证，未匹配的标记为软警告）
 
 先调用 `garden-scan` 获取项目基线上下文（非致命）。API 失败时回退到手动 PlanDoc 模式，返回 JSON Schema 供 LLM 构造。
 
@@ -55,15 +53,13 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **成功返回**: `{ next: "approve", plan, summary, message, source: "api" }`
 - **失败返回**: `{ next: "plan", error, fallback: {message, schema} }`
 
-**参见**: `src/tools/plan.ts:7-201`, `src/llm.ts:93-137`（DeepSeek API 调用）
 
 ---
 
 ## hy_approve
 
-**资源**: `src/tools/approve.ts` (40 行)
 
-用户审视 PlanDoc 的入口。`approved` 必须传字符串 `"approve"` 才放行（严格匹配，同时容错 `"true"`）。其他任何内容视为驳回理由，回到 `plan`。
+用户审视 PlanDoc 的入口。`approved` 接受以下任意值视为批准：`"approve"`, `"true"`, `"yes"`, `"ok"`, `"1"`, `"y"`（大小写不敏感）。其他任何内容视为驳回理由，回到 `plan`。
 
 - **进入 Phase**: `plan`, `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录
@@ -71,13 +67,11 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_commit" }`
 - **驳回返回**: `{ next: "plan", approved: false, note }`
 
-**参见**: `src/tools/approve.ts:1-40`, `src/state.ts:146-155`（transition）
 
 ---
 
 ## hy_branch
 
-**资源**: `src/tools/branch.ts` (26 行)
 
 创建 git 分支，格式 `{category}/{topic}`。category 必须在 `["refactor","feat","chore","docs","ci","fix","test"]` 中。
 
@@ -85,13 +79,11 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **转换到**: `edit`
 - **返回**: `{ next: "edit", branch }` 或 `{ error }`
 
-**参见**: `src/tools/branch.ts:5-26`, `src/git.ts:12-17`（createBranch）
 
 ---
 
 ## hy_edit
 
-**资源**: `src/tools/edit.ts` (45 行)
 
 锁定 scope 到 `.hy/scope.json`。不推进 Phase（手动设为 edit），返回 `next: "verify"` 提示 LLM 开始编写代码。
 
@@ -99,13 +91,11 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **转换到**: 手动 `phase = edit`，返回 `next: "verify"`
 - **返回**: `{ next: "verify", branch, scope, boundary, message }`
 
-**参见**: `src/tools/edit.ts:11-45`, `.hy/scope.json`（scope 锁定文件）
 
 ---
 
 ## hy_verify
 
-**资源**: `src/tools/verify.ts` (43 行)
 
 执行 6 层全量校验（`src/checks.ts:runAllChecks`）。全部通过后计算 verifyHash 并转换到 commit。
 
@@ -115,27 +105,24 @@ hy-workflow MCP server 注册了 11 个工具，定义在 `src/tools/` 中。分
 - **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash }`
 - **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks }`
 
-**参见**: `src/tools/verify.ts:5-43`, `src/checks.ts:193-207`（runAllChecks）
 
 ---
 
 ## hy_commit
 
-**资源**: `src/tools/commit.ts` (55 行)
 
 git add -A → commit → push → gh pr create。PR body 自动附加 scope/boundary/verify 元信息和 verifyHash。
 
-- **进入 Phase**: `commit`
+- **进入 Phase**: `commit` (失败回退到 `edit`)
 - **转换到**: `ci`
-- **返回**: `{ next: "ci", prNumber, url }` 或 `{ error }`
+- **参数**: `{title, sections?: [{heading, content}], body?: string}` (sections 优先，body 为废弃兼容)
+- **返回**: `{ next: "ci", prNumber, url }` 或 `{ next: "edit", error }`
 
-**参见**: `src/tools/commit.ts:5-55`, `src/git.ts:19-43`（commitAll/push/createPr）
 
 ---
 
 ## hy_ci
 
-**资源**: `src/tools/ci.ts` (34 行)
 
 通过 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态。
 
@@ -145,13 +132,11 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **全绿返回**: `{ next: "merge", allGreen: true, checks }`
 - **失败返回**: `{ next: "edit", allGreen: false, checks }`
 
-**参见**: `src/tools/ci.ts:1-34`, `src/git.ts:51-67`（checkCi）
 
 ---
 
 ## hy_merge
 
-**资源**: `src/tools/merge.ts` (22 行)
 
 通过 `gh pr merge --merge --delete-branch` 合并 PR。
 
@@ -159,13 +144,11 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **转换到**: `chain`
 - **返回**: `{ next: "chain", prNumber }`
 
-**参见**: `src/tools/merge.ts:5-18`, `src/git.ts:46-49`（mergePr）
 
 ---
 
 ## hy_chain
 
-**资源**: `src/tools/chain.ts` (33 行)
 
 依次 checkout 每个下游分支 → rebase 到 `codelint.json: baseBranch` 对应的最新基准分支 → force push → 切回基准分支。
 
@@ -173,21 +156,28 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **转换到**: `done`
 - **返回**: `{ next: "done", done: [...完成的], message }`
 
-**参见**: `src/tools/chain.ts:5-31`, `src/git.ts:69-81`（checkout/pull/rebaseDev/pushForce）
 
 ---
 
 ## hy_status
 
-**资源**: `src/tools/status.ts` (26 行)
 
-只读工具，可任意阶段调用。返回当前 WorkflowState 快照。
+只读工具，可任意阶段调用。返回当前 WorkflowState 快照 + 下一步操作指引。
 
 - **进入 Phase**: 无限制
 - **转换到**: 无（只读）
-- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, action? }`
+- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, action: {verb, instructions, triggerWords} }`
 
-**参见**: `src/tools/status.ts:1-26`, `src/state.ts:97-112`（readState）
+---
+
+## hy_reset
+
+
+重置工作流到初始状态。删除 `.hy/workflow.json`，回到 `init` 阶段。任意阶段可调用。
+
+- **进入 Phase**: 无限制
+- **转换到**: `init`
+- **返回**: `{ next: "init", message }`
 
 ## Related
 
