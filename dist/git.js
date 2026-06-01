@@ -29,16 +29,16 @@ export function commitAll(root, title, body) {
     const r1 = run("git add -A", root);
     if (!r1.ok)
         return { ok: false, error: r1.stderr };
-    const bodyFile = writeTempFile(body);
+    const msgFile = writeTempFile(`${title}\n\n${body}`);
     try {
-        const r2 = run(`git commit -m "${title}" -F "${bodyFile}"`, root);
+        const r2 = run(`git commit -F "${msgFile}"`, root);
         if (!r2.ok)
             return { ok: false, error: r2.stderr };
         const r3 = run("git rev-parse HEAD", root);
         return { ok: true, hash: r3.stdout };
     }
     finally {
-        fs.unlinkSync(bodyFile);
+        fs.unlinkSync(msgFile);
     }
 }
 export function push(root, branch) {
