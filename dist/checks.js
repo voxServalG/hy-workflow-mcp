@@ -31,27 +31,27 @@ function findPython() {
 }
 // ── 1. Lint (hard) ──────────────────────────────────────────
 export function runDocLint(root) {
-    const r = execOr("npx --yes doclint lint --json", root);
+    const r = execOr("npx --yes doclint-hy lint --json", root);
     try {
         const report = JSON.parse(r.stdout || "{}");
         return [report.failed === 0
                 ? ok("doclint", "lint", `0 errors (${report.total ?? 0} files)`)
-                : fail("doclint", "lint", `${report.failed} errors`, false)];
+                : fail("doclint", "lint", `${report.failed} errors`, true)];
     }
     catch {
-        return [fail("doclint", "lint", "Could not parse doclint report", false)];
+        return [fail("doclint", "lint", "Could not parse doclint report", true)];
     }
 }
 export function runCodeLint(root) {
-    const r = execOr("npx --yes codelint check --json", root);
+    const r = execOr("npx --yes codelint-hy check --json", root);
     try {
         const report = JSON.parse(r.stdout || "{}");
         return [report.errors === 0
                 ? ok("codelint", "lint", `${report.errors ?? 0} errors, ${report.warnings ?? 0} warnings`)
-                : fail("codelint", "lint", `${report.errors} errors`, false)];
+                : fail("codelint", "lint", `${report.errors} errors`, true)];
     }
     catch {
-        return [fail("codelint", "lint", "Could not parse codelint report", false)];
+        return [fail("codelint", "lint", "Could not parse codelint report", true)];
     }
 }
 // ── 2. Compile (hard) ───────────────────────────────────────
