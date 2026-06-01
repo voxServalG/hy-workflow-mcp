@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CheckItem, PlanDoc, WorkflowState } from "./state.js";
-import { currentBranch, getBaseBranch } from "./state.js";
+import { getBaseBranch } from "./state.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -51,9 +51,9 @@ export function runDocLint(root: string): CheckResult[] {
     const report = JSON.parse(r.stdout || "{}");
     return [report.failed === 0
       ? ok("doclint", "lint", `0 errors (${report.total ?? 0} files)`)
-      : fail("doclint", "lint", `${report.failed} errors`, true)];
+      : fail("doclint", "lint", `${report.failed} errors`, false)];
   } catch {
-    return [fail("doclint", "lint", "Could not parse doclint report", true)];
+    return [fail("doclint", "lint", "Could not parse doclint report", false)];
   }
 }
 
@@ -63,9 +63,9 @@ export function runCodeLint(root: string): CheckResult[] {
     const report = JSON.parse(r.stdout || "{}");
     return [report.errors === 0
       ? ok("codelint", "lint", `${report.errors ?? 0} errors, ${report.warnings ?? 0} warnings`)
-      : fail("codelint", "lint", `${report.errors} errors`, true)];
+      : fail("codelint", "lint", `${report.errors} errors`, false)];
   } catch {
-    return [fail("codelint", "lint", "Could not parse codelint report", true)];
+    return [fail("codelint", "lint", "Could not parse codelint report", false)];
   }
 }
 
@@ -95,9 +95,8 @@ export function runCompile(root: string): CheckResult[] {
 
 export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
   const res: CheckResult[] = [];
-  const branch = currentBranch(root);
   const base = getBaseBranch(root);
-  const r = execOr(`git diff origin/${base}..${branch} --name-only`, root);
+  const r = execOr(`git diff origin/${base} --name-only -- . ":(exclude)dist/*" ":(exclude)node_modules/*"`, root);
   if (!r.ok) return [fail("scope", "scope", `git diff failed: ${r.stderr}`)];
 
   const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());
