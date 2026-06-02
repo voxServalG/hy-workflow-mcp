@@ -111,17 +111,4 @@ cat <<PROMPT
 
 PROMPT
 
-cat <<ENV
 
-  ⚠️  PlanDoc 自动生成需要 DeepSeek API Key:
-
-      1. 在项目根目录创建 .env:
-         cp .env.example .env
-
-      2. 编辑 .env 填入你的 key:
-         DEEPSEEK_API_KEY=sk-your-key-here
-
-      获取 key: https://platform.deepseek.com/api_keys
-      没有 key 时 hy_plan 会自动降级为手动构造模式。
-
-ENV
