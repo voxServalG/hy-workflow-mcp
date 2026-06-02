@@ -1,7 +1,7 @@
 import { readState, writeState, transition, assertPhase } from "../state.js";
 export async function handleApprove(args) {
     const state = readState();
-    assertPhase(state, "plan", "approve");
+    assertPhase(state, "approve");
     const input = (args.approved ?? "").trim();
     if (input === "approve" || input === "true") {
         const approval = {

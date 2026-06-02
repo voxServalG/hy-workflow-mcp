@@ -222,8 +222,7 @@ export async function handlePlan(args) {
     if (p.discussion.length < 50) {
         warnings.push("discussion 建议说明备选方案及否定理由");
     }
-    const next = transition(state, "plan");
-    next.phase = "plan";
+    const next = transition(state, "approve");
     next.plan = p;
     writeState(next);
     return {

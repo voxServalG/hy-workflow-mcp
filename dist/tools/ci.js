@@ -10,6 +10,8 @@ export async function handleCi() {
         return { next: "ci", error: result.error, checks: result.checks };
     if (!result.allGreen) {
         const failedNames = (result.checks || []).filter((c) => c.status !== "pass").map((c) => c.name);
+        const next = transition(state, "edit");
+        writeState(next);
         return {
             next: "edit",
             allGreen: false,

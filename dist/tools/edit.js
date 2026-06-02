@@ -1,4 +1,4 @@
-import { readState, writeState, assertPhase } from "../state.js";
+import { readState, writeState, transition, assertPhase } from "../state.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { projectRoot } from "../state.js";
@@ -24,9 +24,9 @@ export async function handleEdit() {
         branch: state.branch,
     };
     fs.writeFileSync(path.join(hyDir, "scope.json"), JSON.stringify(scopeJson, null, 2));
-    // Transition to edit if coming from branch
+    // Transition to edit if coming from branch or verify
     if (state.phase === "branch" || state.phase === "verify") {
-        const next = { ...state, phase: "edit" };
+        const next = transition(state, "edit");
         writeState(next);
     }
     return {

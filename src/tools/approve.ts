@@ -4,7 +4,7 @@ import type { Approval } from "../state.js";
 
 export async function handleApprove(args: { approved: string; note?: string }): Promise<ToolResult> {
   const state = readState();
-  assertPhase(state, "plan", "approve");
+  assertPhase(state, "approve");
 
   const input = (args.approved ?? "").trim();
 
