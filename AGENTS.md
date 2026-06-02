@@ -1,11 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
-import { execSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
-const MARKER_START = "<!-- hy-workflow-rules -->";
-const MARKER_END = "<!-- /hy-workflow-rules -->";
-const WORKFLOW_INSTRUCTIONS = `
-${MARKER_START}
+<!-- hy-workflow-rules -->
 
 ## hy-workflow 硬性流程
 
@@ -83,75 +76,4 @@ hy_status 随时可查看当前阶段。
 
 所有工具返回均为 JSON，含 next 字段指示下一阶段。
 
-${MARKER_END}
-`;
-function upsertInstructions(root) {
-    const filePath = path.join(root, "AGENTS.md");
-    let existing = "";
-    let changed = false;
-    if (fs.existsSync(filePath)) {
-        existing = fs.readFileSync(filePath, "utf-8");
-        const startIdx = existing.indexOf(MARKER_START);
-        const endIdx = existing.indexOf(MARKER_END);
-        if (startIdx !== -1 && endIdx !== -1) {
-            const before = existing.substring(0, startIdx);
-            const after = existing.substring(endIdx + MARKER_END.length);
-            const updated = before + WORKFLOW_INSTRUCTIONS.trim() + "\n" + after;
-            if (updated !== existing) {
-                fs.writeFileSync(filePath, updated, "utf-8");
-                changed = true;
-            }
-        }
-        else {
-            const append = existing.endsWith("\n") ? WORKFLOW_INSTRUCTIONS.trim() + "\n" : "\n" + WORKFLOW_INSTRUCTIONS.trim() + "\n";
-            fs.writeFileSync(filePath, existing + append, "utf-8");
-            changed = true;
-        }
-    }
-    else {
-        fs.writeFileSync(filePath, WORKFLOW_INSTRUCTIONS.trim() + "\n", "utf-8");
-        changed = true;
-    }
-    return changed;
-}
-function cleanupOldPath(root) {
-    const oldPath = path.join(root, ".opencode", "instructions.md");
-    if (!fs.existsSync(oldPath))
-        return;
-    const content = fs.readFileSync(oldPath, "utf-8");
-    const startIdx = content.indexOf(MARKER_START);
-    const endIdx = content.indexOf(MARKER_END);
-    if (startIdx === -1 || endIdx === -1)
-        return;
-    const before = content.substring(0, startIdx).trimEnd();
-    const after = content.substring(endIdx + MARKER_END.length);
-    const cleaned = (before + after).trim();
-    if (cleaned) {
-        fs.writeFileSync(oldPath, cleaned + "\n", "utf-8");
-    }
-    else {
-        fs.unlinkSync(oldPath);
-    }
-}
-export async function handleInit() {
-    const state = readState();
-    assertPhase(state, "init", "plan");
-    try {
-        execSync("npx --yes github:voxServalG/hy-harness", { stdio: "inherit", timeout: 60_000 });
-    }
-    catch {
-        return { next: "init", error: "Harness deployment failed. Check Node.js >= 18 and Python >= 3.10." };
-    }
-    // Generate .opencode/instructions.md with hy-workflow rules
-    const root = projectRoot();
-    const instructionsChanged = upsertInstructions(root);
-    cleanupOldPath(root);
-    const next = state.phase === "init" ? transition(state, "plan") : state;
-    writeState(next);
-    const verb = instructionsChanged ? "created/updated" : "up to date";
-    return {
-        next: "plan",
-        message: `Harness deployed. AGENTS.md ${verb}. Run hy_plan to define your task.`,
-    };
-}
-//# sourceMappingURL=init.js.map
+<!-- /hy-workflow-rules -->
