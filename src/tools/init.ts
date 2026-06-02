@@ -90,10 +90,7 @@ ${MARKER_END}
 `;
 
 function upsertInstructions(root: string): boolean {
-  const dir = path.join(root, ".opencode");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  const filePath = path.join(dir, "instructions.md");
+  const filePath = path.join(root, "AGENTS.md");
   let existing = "";
   let changed = false;
 
@@ -122,6 +119,24 @@ function upsertInstructions(root: string): boolean {
   return changed;
 }
 
+function cleanupOldPath(root: string): void {
+  const oldPath = path.join(root, ".opencode", "instructions.md");
+  if (!fs.existsSync(oldPath)) return;
+  const content = fs.readFileSync(oldPath, "utf-8");
+  const startIdx = content.indexOf(MARKER_START);
+  const endIdx = content.indexOf(MARKER_END);
+  if (startIdx === -1 || endIdx === -1) return;
+
+  const before = content.substring(0, startIdx).trimEnd();
+  const after = content.substring(endIdx + MARKER_END.length);
+  const cleaned = (before + after).trim();
+  if (cleaned) {
+    fs.writeFileSync(oldPath, cleaned + "\n", "utf-8");
+  } else {
+    fs.unlinkSync(oldPath);
+  }
+}
+
 export async function handleInit(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "init", "plan");
@@ -138,6 +153,7 @@ export async function handleInit(): Promise<ToolResult> {
   // Generate .opencode/instructions.md with hy-workflow rules
   const root = projectRoot();
   const instructionsChanged = upsertInstructions(root);
+  cleanupOldPath(root);
 
   const next = state.phase === "init" ? transition(state, "plan") : state;
   writeState(next);
@@ -145,6 +161,6 @@ export async function handleInit(): Promise<ToolResult> {
   const verb = instructionsChanged ? "created/updated" : "up to date";
   return {
     next: "plan",
-    message: `Harness deployed. .opencode/instructions.md ${verb}. Run hy_plan to define your task.`,
+    message: `Harness deployed. AGENTS.md ${verb}. Run hy_plan to define your task.`,
   };
 }
