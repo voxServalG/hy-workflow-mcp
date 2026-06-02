@@ -60,9 +60,11 @@ if [ "$_mcp_found" = true ]; then
   ℹ️  已检测到 MCP 配置: ${_mcp_file}
       请确保其中同时包含 hy-workflow 和 docs-gardener 条目，
       否则把下方配置合并进去。
-      另请确认 hy-workflow 的 command 数组包含 "--prefer-online"，
-      否则每次重启不会拉取最新 MCP 代码：
-      ["npx", "-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"]
+
+      重要：两个 MCP 的 command 都必须包含 "--prefer-online"，
+      否则重启不会拉取最新代码：
+        hy-workflow:    ["npx", "-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"]
+        docs-gardener:  ["npx", "-y", "--prefer-online", "github:voxServalG/docs-gardener", "mcp"]
 
 ALREADY
 fi
@@ -93,7 +95,7 @@ cat <<PROMPT
       },
       "docs-gardener": {
         "type": "local",
-        "command": ["npx", "-y", "github:voxServalG/docs-gardener", "mcp"],
+        "command": ["npx", "-y", "--prefer-online", "github:voxServalG/docs-gardener", "mcp"],
         "enabled": true
       }
     }
