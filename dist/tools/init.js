@@ -86,10 +86,7 @@ hy_status 随时可查看当前阶段。
 ${MARKER_END}
 `;
 function upsertInstructions(root) {
-    const dir = path.join(root, ".opencode");
-    if (!fs.existsSync(dir))
-        fs.mkdirSync(dir, { recursive: true });
-    const filePath = path.join(dir, "instructions.md");
+    const filePath = path.join(root, "AGENTS.md");
     let existing = "";
     let changed = false;
     if (fs.existsSync(filePath)) {
@@ -117,6 +114,25 @@ function upsertInstructions(root) {
     }
     return changed;
 }
+function cleanupOldPath(root) {
+    const oldPath = path.join(root, ".opencode", "instructions.md");
+    if (!fs.existsSync(oldPath))
+        return;
+    const content = fs.readFileSync(oldPath, "utf-8");
+    const startIdx = content.indexOf(MARKER_START);
+    const endIdx = content.indexOf(MARKER_END);
+    if (startIdx === -1 || endIdx === -1)
+        return;
+    const before = content.substring(0, startIdx).trimEnd();
+    const after = content.substring(endIdx + MARKER_END.length);
+    const cleaned = (before + after).trim();
+    if (cleaned) {
+        fs.writeFileSync(oldPath, cleaned + "\n", "utf-8");
+    }
+    else {
+        fs.unlinkSync(oldPath);
+    }
+}
 export async function handleInit() {
     const state = readState();
     assertPhase(state, "init", "plan");
@@ -129,6 +145,7 @@ export async function handleInit() {
     // Generate .opencode/instructions.md with hy-workflow rules
     const root = projectRoot();
     const instructionsChanged = upsertInstructions(root);
+    cleanupOldPath(root);
     const next = state.phase === "init" ? transition(state, "plan") : state;
     writeState(next);
     const verb = instructionsChanged ? "created/updated" : "up to date";
