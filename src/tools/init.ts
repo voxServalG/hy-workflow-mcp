@@ -139,8 +139,7 @@ export async function handleInit(): Promise<ToolResult> {
   const root = projectRoot();
   const instructionsChanged = upsertInstructions(root);
 
-  const next = transition(state, "plan");
-  next.phase = "plan";
+  const next = state.phase === "init" ? transition(state, "plan") : state;
   writeState(next);
 
   const verb = instructionsChanged ? "created/updated" : "up to date";

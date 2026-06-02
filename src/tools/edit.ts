@@ -1,4 +1,4 @@
-import { readState, writeState, assertPhase } from "../state.js";
+import { readState, writeState, transition, assertPhase } from "../state.js";
 import type { ToolResult } from "./_base.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -29,9 +29,9 @@ export async function handleEdit(): Promise<ToolResult> {
   };
   fs.writeFileSync(path.join(hyDir, "scope.json"), JSON.stringify(scopeJson, null, 2));
 
-  // Transition to edit if coming from branch
+  // Transition to edit if coming from branch or verify
   if (state.phase === "branch" || state.phase === "verify") {
-    const next = { ...state, phase: "edit" as const };
+    const next = transition(state, "edit");
     writeState(next);
   }
 

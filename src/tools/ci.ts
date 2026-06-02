@@ -13,6 +13,10 @@ export async function handleCi(): Promise<ToolResult> {
 
   if (!result.allGreen) {
     const failedNames = (result.checks || []).filter((c: any) => c.status !== "pass").map((c: any) => c.name);
+
+    const next = transition(state, "edit");
+    writeState(next);
+
     return {
       next: "edit",
       allGreen: false,
