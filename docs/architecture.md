@@ -5,7 +5,7 @@ hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走 **9 阶段闭环工�
 ## 组件关系
 
 ```
-server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状态 ──►  state.ts
+server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状态 ──►  state.ts
     │                                      │                       │
     │                              ┌───┬───┼───┬───┐               │
     │                              │   │       │   │               │
@@ -28,17 +28,17 @@ server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状
 ## 数据流
 
 ```
-1. LLM 调用 hy_plan(task)
-   └► tools/plan.ts → llm.ts 调 DeepSeek API 生成 PlanDoc → 6 gate 校验 → writeState(phase=plan)
+1. LLM 调用 hy_plan({task, plan})，自行构造 PlanDoc JSON
+   └► tools/plan.ts → 7 gate 校验 → writeState(phase=plan)
 
 2. 用户 hy_approve(approved="approve")
-   └► tools/approve.ts → transition(plan→branch) → writeState
+   └► tools/approve.ts → transition(approve→branch) → writeState
 
 3. LLM hy_branch(category, topic)
    └► tools/branch.ts → git.ts.createBranch() → transition(branch→edit)
 
 4. LLM hy_edit()
-   └► tools/edit.ts 锁定 scope 到 .hy/scope.json → phase=edit
+   └► tools/edit.ts 锁定 scope 到 .hy/scope.json → transition(state, "edit")
 
 5. LLM 编辑代码...
 
@@ -49,7 +49,7 @@ server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状
    └► tools/commit.ts → git add/commit/push/gh pr create → phase=ci
 
 8. LLM hy_ci()
-   └► tools/ci.ts → gh pr checks 轮询 → transition(ci→merge)
+   └► tools/ci.ts → gh pr checks 轮询 → 全绿则 transition(ci→merge)；失败则 transition(ci→edit) 回到 edit 修复
 
 9. LLM hy_merge()
    └► tools/merge.ts → gh pr merge → phase=chain
@@ -62,7 +62,7 @@ server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 - **状态文件**: `.hy/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
-- **幂等 init**: `hy_init` 部署 hy-harness，已存在则跳过
+- **幂等 init**: `hy_init` 部署 hy-harness + .opencode instructions，已存在则跳过
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 
 ## 配置文件
@@ -72,13 +72,7 @@ server.ts  ── 注册 11 个 MCP Tool ──►  tools/*.ts  ── 读写状
 | `codelint.json` | 代码检查规则：`codeExt`（语言检测）、`baseBranch`（Git 基准分支）、`codeDirs`（源码目录）、`maxLines` |
 | `doclint.json` | 文档检查规则 |
 | `docs-gardener.json` | docs-gardener MCP 逻辑规则 |
-| `.env` / `.env.example` | `DEEPSEEK_API_KEY` —— 用于 `src/llm.ts` 调用 DeepSeek API 自动生成 PlanDoc。无 key 时 hy_plan 降级为手动模式 |
 
-## LLM 集成
-
-`src/llm.ts` 封装 DeepSeek API 调用（`@deepseek-v4-pro`，`response_format: json_object`），根据项目基线（garden-scan）和 task 描述，自动生成 100% 结构合法的 PlanDoc。API 失败时返回完整 JSON Schema，通知 LLM 手动构造。
-
-`src/tools/_base.ts` 定义 `ToolResult` 类型，所有 tool handler 返回统一 JSON 格式。
 
 ## 构建与 CI
 
