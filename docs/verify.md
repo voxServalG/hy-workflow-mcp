@@ -1,19 +1,19 @@
 # Verify Pipeline
 
-`hy_verify` 调用 `src/checks.ts:runAllChecks` 执行 **6 层全量校验**。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 调用 `src/checks.ts:runAllChecks` 执行 **7 层（lint, compile, scope, boundary, platform, smoke, tests）全量校验**。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 
 ```
 Layer 1: lint
-├── doclint  — npx doclint lint --json
-└── codelint — npx codelint check --json
+├── doclint  — npx --yes github:voxServalG/doclint lint --json
+└── codelint — npx --yes github:voxServalG/codelint check --json
 
 Layer 2: compile
 └── npx tsc --noEmit (.ts) / py_compile (.py)
 
 Layer 3: scope
-├── git diff origin/${baseBranch}..<branch> 文件 ⊆ plan.scope 声明
+├── git diff origin/${baseBranch} --name-only 文件 ⊆ plan.scope 声明
 └── plan.scope 声明的文件都实际变更了 (软)
 
 Layer 4: boundary
@@ -23,14 +23,15 @@ Layer 4: boundary
 Layer 5: platform
 └── plan.verify.platform.setup 命令逐条执行
 
-Layer 6: smoke + tests
-├── plan.verify.smoke 命令逐条执行
+Layer 6: smoke
+└── plan.verify.smoke 命令逐条执行
+Layer 7: tests
 └── plan.verify.tests 命令逐条执行
 ```
 
 ## 判定逻辑
 
-`src/checks.ts:193-207`
+`src/checks.ts:192-213`
 
 ```typescript
 allPassed = 所有 hard 检查都通过
@@ -78,7 +79,7 @@ interface VerifyReport {
 
 ## verifyHash
 
-全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + verify 字段做 SHA256，取前 12 位 hex。此哈希存入 `WorkflowState.verifyHash`，`hy_commit` 校验防止篡改。
+全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256，取前 12 位 hex。此哈希存入 `WorkflowState.verifyHash`，`hy_commit` 检查 verifyHash 存在性。
 
 ## 配置依赖
 

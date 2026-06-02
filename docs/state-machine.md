@@ -24,7 +24,7 @@
 
 ```
 init     → init, plan, done
-plan     → plan, approve, branch, done
+plan     → plan, approve, done
 approve  → approve, branch, plan
 branch   → branch, edit, done
 edit     → edit, verify, commit, done
@@ -72,16 +72,7 @@ interface WorkflowState {
 
 ## verifyHash
 
-`computeVerifyHash()` (`src/state.ts:166`) 对 PlanDoc 的 task + scope + boundary + verify 字段做 SHA256 取前 12 位。`hy_commit` 校验此哈希，确保 PlanDoc 未被篡改。
-
-## PlanDoc 生成
-
-PlanDoc 有两种生成路径：
-
-| 路径 | 条件 | 流程 |
-|------|------|------|
-| **API 自动** | `DEEPSEEK_API_KEY` 已设置 | `src/llm.ts:93` → 调 DeepSeek API（`deepseek-v4-pro`，`response_format: json_object`）→ 返回 PlanDoc → `src/tools/plan.ts` 6 gate 校验 |
-| **手动构造** | 无 API Key 或 API 失败 | 服务端返回 PlanDoc JSON Schema → LLM 手动构造 PlanDoc 再次调用 hy_plan |
+`computeVerifyHash()` (`src/state.ts:166`) 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_commit` 校验此哈希，确保 PlanDoc 未被篡改。
 
 ## ToolResult 类型
 
@@ -89,9 +80,8 @@ PlanDoc 有两种生成路径：
 
 ```typescript
 interface ToolResult {
-  next?: string;     // 下一阶段提示
-  error?: string;    // 错误信息
-  [key: string]: unknown;  // 扩展字段
+  next: Phase;     // 下一阶段标识
+  [key: string]: any;  // 扩展字段
 }
 ```
 
