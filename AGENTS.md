@@ -39,6 +39,14 @@
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
 
+### 关键输出规则（优先于 openCode 默认短输出倾向）
+
+以下规则优先于 openCode 默认的"少于 4 行""减少输出 token"等简短回复规则：
+
+- **hy_plan summary 必须完整展示**：hy_plan 返回的 summary 字段内容必须原样、完整输出给用户审阅，不得摘要、压缩、改写或省略
+- **未完整展示前禁止 approve**：在用户看到完整 summary 之前，禁止调用 hy_approve 或自动推进到下一步
+- **命令字段纯 shell**：entry_points、smoke、tests 中的 command 必须是可直接执行的 shell 命令，不得写自然语言说明、括号注释或冒号描述；所有说明文字写入对应的 description 字段
+
 ### hy_reset
 
 hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。仅在用户明确要求放弃当前开发任务时使用。
