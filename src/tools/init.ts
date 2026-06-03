@@ -24,7 +24,7 @@ ${MARKER_START}
 **0. hy_init** — 项目首次使用时调用。部署 hy-harness。已部署则跳过，自动进 plan。
 
 **1. hy_plan** — 调用时传入 {task, plan}。自行利用工作区上下文构造 PlanDoc JSON。服务端通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
-**重要**: hy_plan 返回后，原样输出 summary 字段的内容向用户展示。禁止在用户查看前自行推进到下一步。
+**重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
 
 **2. hy_approve** — 用户审视 plan。严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。必须等待用户对展示的 plan 做出认可。犹豫时反问用户确认。
 
@@ -60,6 +60,8 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 - task：描述解决的问题和动机，不是操作步骤列表
 - dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
 - entry_points：覆盖编译+lint+测试，每条对应一个验证维度
+- entry_points、smoke.command、tests.command 必须是纯 shell 命令，命令后不得加括号说明、冒号说明或自然语言说明
+- 说明文字统一写到 description 字段；PlanDoc JSON 字符串尽量避免未转义的反斜杠、反引号、引号和换行
 - risks：每条含场景+影响+缓解措施，不写一句话标签
 - discussion：含至少一个备选方案及否定理由
 
