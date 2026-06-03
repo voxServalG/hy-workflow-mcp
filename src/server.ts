@@ -37,7 +37,7 @@ const SYSTEM_PROMPT = `
 **0. hy_init — 项目首次使用时调用。** 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。已部署则跳过，自动进 plan。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补装 harness。
 
 1. hy_plan — 调用时传入 {task, plan}。你需要自行利用工作区上下文构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
-   **重要**: hy_plan 返回后，原样输出 summary 字段的内容向用户展示。禁止在用户查看前自行推进到下一步。
+   **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
 2. hy_approve — 用户审视 plan。传 approved="approve" 放行，其他内容=驳回。
    **重要**: 严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。你必须等待用户对展示的 plan 做出认可。犹豫时反问用户确认。用户明确拒绝时，将拒绝理由填入 approved 参数传回。
 3. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
@@ -68,6 +68,8 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 - task：描述解决的**问题**和**动机**，不是操作步骤列表
 - dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
 - entry_points：覆盖编译+lint+测试，每条对应一个验证维度
+- entry_points、smoke.command、tests.command 必须是纯 shell 命令，命令后不得加括号说明、冒号说明或自然语言说明
+- 说明文字统一写到 description 字段；PlanDoc JSON 字符串尽量避免未转义的反斜杠、反引号、引号和换行
 - risks：每条含场景+影响+缓解措施，不写一句话标签
 - discussion：含至少一个备选方案及否定理由
 
@@ -123,7 +125,7 @@ const TOOLS = [
           type: "object",
           required: ["task", "scope", "boundary", "verify", "risks", "discussion"],
           additionalProperties: false,
-          description: "PlanDoc JSON。scope 里文件路径必须是经 Read/Glob 确认存在的真实路径；entry_points/smoke/tests 命令必须覆盖编译+lint+测试三个验证维度，禁止 echo ok 等空洞占位。",
+          description: "PlanDoc JSON。scope 里文件路径必须是经 Read/Glob 确认存在的真实路径；entry_points/smoke/tests 命令必须覆盖编译+lint+测试三个验证维度，且必须是纯 shell 命令，禁止 echo ok、括号说明、冒号说明或自然语言说明。",
           properties: {
             task: { type: "string", description: "描述要解决的问题和动机，而非仅列操作步骤。如 '修复 approve 不校验 plan 就切 phase 的问题' 优于 '修改 approve.ts'。" },
             scope: {
@@ -142,7 +144,7 @@ const TOOLS = [
               additionalProperties: false,
               properties: {
                 dependency_dag: { type: "string", description: "列出直接受影响的模块、间接受波及的下游、以及明确不受影响的模块。如 'plan.ts 不再依赖 llm.ts；server.ts 引用不变；无其他模块受波及'。" },
-                entry_points:   { type: "array", items: { type: "string" }, description: "必须覆盖改动的关键验证面：编译、lint、确定性测试。每条对应一个验证维度，禁止凑数。" },
+                entry_points:   { type: "array", items: { type: "string" }, description: "必须覆盖改动的关键验证面：编译、lint、确定性测试。每条必须是纯 shell 命令，说明文字写入 description，禁止凑数。" },
                 no_new_external: { type: "boolean", description: "是否引入新的外部依赖（npm 包、API、服务）" },
               },
             },
@@ -168,7 +170,7 @@ const TOOLS = [
                     required: ["command", "expected_exit", "description"],
                     additionalProperties: false,
                     properties: {
-                      command:      { type: "string", description: "Shell command to run" },
+                      command:      { type: "string", description: "Pure shell command to run. Do not append parenthetical, colon-prefixed, or natural-language explanations." },
                       expected_exit: { type: "number", description: "Expected exit code (0 for success)" },
                       description:  { type: "string", description: "What this check verifies" },
                     },
@@ -182,7 +184,7 @@ const TOOLS = [
                     required: ["command", "expected_exit", "description"],
                     additionalProperties: false,
                     properties: {
-                      command:      { type: "string", description: "Shell command to run" },
+                      command:      { type: "string", description: "Pure shell command to run. Do not append parenthetical, colon-prefixed, or natural-language explanations." },
                       expected_exit: { type: "number", description: "Expected exit code" },
                       description:  { type: "string", description: "What this check verifies" },
                     },
@@ -296,8 +298,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await dispatch(name, a);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
+    const message = e instanceof SyntaxError
+      ? `PlanDoc JSON 解析失败：${e.message}. 请检查 risks / discussion / command 等字符串字段中的反斜杠、反引号、换行和未转义引号；建议重新生成不含 Markdown inline-code 的纯 JSON。`
+      : e.message || String(e);
     return {
-      content: [{ type: "text", text: JSON.stringify({ error: e.message || String(e) }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({ error: message }, null, 2) }],
       isError: true,
     };
   }

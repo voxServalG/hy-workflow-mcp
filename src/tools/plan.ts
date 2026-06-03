@@ -194,27 +194,48 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
     const firstWord = cmd.trim().split(/\s+/)[0];
     return EXECUTABLE_PREFIXES.has(firstWord) || cmd.includes("/") || cmd.includes("\\");
   };
+  const describeImpureCommand = (cmd: string): string | null => {
+    const trimmed = cmd.trim();
+    if (/^.+[（(][^)）]+[)）]$/.test(trimmed)) {
+      return "contains parenthetical explanation";
+    }
+    if (/^[\p{L}\p{N}_ -]{1,40}[:：]\s+\S/u.test(trimmed) && !hasExecutable(trimmed)) {
+      return "looks like a colon-prefixed description";
+    }
+    if (!hasExecutable(trimmed)) {
+      return "does not start with a recognized executable";
+    }
+    return null;
+  };
+  const rejectImpureCommand = (field: string, cmd: string): ToolResult | null => {
+    const reason = describeImpureCommand(cmd);
+    if (!reason) return null;
+    return {
+      next: "plan",
+      error: `${field} must be a pure executable shell command, but "${cmd}" ${reason}. Put explanations in description and write an executable command only.`,
+    };
+  };
 
   for (const ep of p.boundary.entry_points) {
     if (hollow.has(ep.trim())) {
       return { next: "plan", error: `boundary.entry_points contains hollow command: "${ep}". Use real executable commands.` };
     }
+    const rejected = rejectImpureCommand("boundary.entry_points", ep);
+    if (rejected) return rejected;
   }
   for (const s of p.verify.smoke) {
     if (hollow.has(s.command.trim())) {
       return { next: "plan", error: `verify.smoke contains hollow command: "${s.command}". Use real executable commands.` };
     }
-    if (!hasExecutable(s.command)) {
-      return { next: "plan", error: `verify.smoke command "${s.command}" is not executable. Use a recognized command prefix (npx, node, python, etc).` };
-    }
+    const rejected = rejectImpureCommand("verify.smoke.command", s.command);
+    if (rejected) return rejected;
   }
   for (const t of p.verify.tests) {
     if (hollow.has(t.command.trim())) {
       return { next: "plan", error: `verify.tests contains hollow command: "${t.command}". Use real executable commands.` };
     }
-    if (!hasExecutable(t.command)) {
-      return { next: "plan", error: `verify.tests command "${t.command}" is not executable. Use a recognized command prefix (npx, node, python, etc).` };
-    }
+    const rejected = rejectImpureCommand("verify.tests.command", t.command);
+    if (rejected) return rejected;
   }
 
   // Gate 7: semantic quality (soft — warnings only, do not block)
