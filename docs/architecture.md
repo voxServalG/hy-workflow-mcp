@@ -10,7 +10,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
     │                              ┌───┬───┼───┬───┐               │
     │                              │   │       │   │               │
     ▼                              ▼   ▼       ▼   ▼               ▼
- MCP Client                  git.ts  checks.ts     ── exec ──►  .hy/workflow.json
+ MCP Client                  git.ts  checks.ts     ── exec ──►  .git/hy-workflow/workflow.json
  (stdio transport)               │       │
                                  │       ├── doclint
                                  │       ├── codelint
@@ -60,7 +60,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 关键设计决策
 
-- **状态文件**: `.hy/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash
+- **状态文件**: `.git/hy-workflow/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash，不进入 git 工作树；旧 `.hy/workflow.json` 仅作为迁移来源
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
 - **幂等 init**: `hy_init` 部署 hy-harness + .opencode instructions，已存在则跳过
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
