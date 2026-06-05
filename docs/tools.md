@@ -93,7 +93,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 **资源**: `src/tools/edit.ts` (45 行)
 
-锁定 scope 到 `.hy/scope.json`。不推进 Phase（手动设为 edit），返回 `next: "verify"` 提示 LLM 开始编写代码。
+锁定 scope 到 `.hy/scope.json` 作为 agent 可见提示。workflow phase 本身写入 Git 私有状态文件，不推进 Phase（手动设为 edit），返回 `next: "verify"` 提示 LLM 开始编写代码。
 
 - **进入 Phase**: `branch`, `edit`, `verify`
 - **转换到**: `transition(state, "edit")`，返回 `next: "verify"`

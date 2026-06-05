@@ -46,7 +46,7 @@ init → plan → approve → branch → edit → verify → commit → ci → m
 
 ## 状态持久化
 
-状态文件: `.hy/workflow.json`
+状态文件: `.git/hy-workflow/workflow.json`
 
 ```typescript
 interface WorkflowState {
@@ -60,19 +60,19 @@ interface WorkflowState {
 }
 ```
 
-- `readState()` (`src/state.ts:97`): 文件不存在时返回 `phase: init` 默认值
-- `writeState()` (`src/state.ts:114`): 自动创建 `.hy/` 目录
-- `projectRoot()` (`src/state.ts:84`): 向上查找 `.git`，找不到则用 `cwd`
+- `readState()` (`src/state.ts:112`): 文件不存在时返回 `phase: init` 默认值
+- `writeState()` (`src/state.ts:136`): 自动创建 Git 私有运行态目录
+- `projectRoot()` (`src/state.ts:99`): 向上查找 `.git`，找不到则用 `cwd`
 
 ## 状态守卫
 
-- `assertPhase(state, ...expected)` (`src/state.ts:136`): 当前 Phase 不在期望列表中时抛 `StateError`
-- `transition(state, to)` (`src/state.ts:146`): 转换不在 VALID_TRANSITIONS 中时抛 `StateError`
+- `assertPhase(state, ...expected)` (`src/state.ts:158`): 当前 Phase 不在期望列表中时抛 `StateError`
+- `transition(state, to)` (`src/state.ts:168`): 转换不在 VALID_TRANSITIONS 中时抛 `StateError`
 - 所有工具 handler 都在入口处调用 `assertPhase`，确保按序执行
 
 ## verifyHash
 
-`computeVerifyHash()` (`src/state.ts:166`) 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_commit` 校验此哈希，确保 PlanDoc 未被篡改。
+`computeVerifyHash()` (`src/state.ts:188`) 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_commit` 校验此哈希，确保 PlanDoc 未被篡改。
 
 ## ToolResult 类型
 
@@ -100,9 +100,9 @@ interface PlanDoc {
   pr_number: number | null;     // runtime
 }
 
-## .hy/workflow.json
+## workflow.json
 
-状态持久化在项目根目录的 `.hy/workflow.json`。`readState()`（`src/state.ts:97`）在文件不存在时返回 `phase: init` 默认值；`writeState()`（`src/state.ts:114`）自动创建 `.hy/` 目录。项目根通过 `projectRoot()`（`src/state.ts:84`）向上查找 `.git` 目录确定。
+状态持久化在 Git 私有目录 `.git/hy-workflow/workflow.json`，通过 `git rev-parse --git-path` 解析真实路径，避免运行态文件进入工作树、PR diff 或 checkout 冲突。`readState()`（`src/state.ts:112`）在新文件不存在时会读取旧 `.hy/workflow.json` 并迁移；没有任何状态文件时返回 `phase: init` 默认值。项目根通过 `projectRoot()`（`src/state.ts:99`）向上查找 `.git` 目录确定。
 
 `hy_edit` 额外写入 `.hy/scope.json` 锁定当前 scope 边界，供 LLM 参考。
 

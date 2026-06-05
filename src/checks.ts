@@ -101,7 +101,7 @@ export function runScopeCheck(root: string, plan: PlanDoc): CheckResult[] {
 
   const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());
   const declared = [...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete];
-  const extra = actual.filter(f => !declared.includes(f) && f !== ".hy/workflow.json");
+  const extra = actual.filter(f => !declared.includes(f) && !f.startsWith(".hy/"));
 
   if (extra.length) {
     res.push(fail("scope", "scope", `Unexpected changes: ${extra.join(", ")}`));

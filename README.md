@@ -106,7 +106,7 @@ LLM 连接 MCP 时会自动注入以下约束：
 
 ## 自举
 
-本项目自身也用 hy-workflow 管理。看到 `.hy/workflow.json`？那就是状态文件。
+本项目自身也用 hy-workflow 管理。运行态状态写入 Git 私有目录 `.git/hy-workflow/workflow.json`，不会进入业务 diff；`.hy/scope.json` 仅作为当前 scope 的可见提示文件。
 
 ## 许可
 

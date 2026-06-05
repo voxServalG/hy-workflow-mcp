@@ -74,11 +74,26 @@ export interface WorkflowState {
 
 // ── State path ───────────────────────────────────────────────
 
-const STATE_DIR = ".hy";
-const STATE_FILE = path.join(STATE_DIR, "workflow.json");
+const RUNTIME_STATE_FILE = path.join("hy-workflow", "workflow.json");
+const LEGACY_STATE_FILE = path.join(".hy", "workflow.json");
 
 export function statePath(): string {
-  return path.join(projectRoot(), STATE_FILE);
+  return gitPrivatePath(projectRoot(), RUNTIME_STATE_FILE);
+}
+
+function legacyStatePath(root: string): string {
+  return path.join(root, LEGACY_STATE_FILE);
+}
+
+function gitPrivatePath(root: string, relativePath: string): string {
+  try {
+    const resolved = execSync(`git rev-parse --git-path ${relativePath}`, { cwd: root })
+      .toString()
+      .trim();
+    return path.isAbsolute(resolved) ? resolved : path.join(root, resolved);
+  } catch {
+    return path.join(root, ".git", relativePath);
+  }
 }
 
 export function projectRoot(): string {
@@ -95,8 +110,15 @@ export function projectRoot(): string {
 // ── Read / Write ─────────────────────────────────────────────
 
 export function readState(): WorkflowState {
+  const root = projectRoot();
   const p = statePath();
   if (!fs.existsSync(p)) {
+    const legacy = legacyStatePath(root);
+    if (fs.existsSync(legacy)) {
+      const state = JSON.parse(fs.readFileSync(legacy, "utf-8")) as WorkflowState;
+      try { writeState(state); } catch {}
+      return state;
+    }
     return {
       version: "1",
       phase: "init",
@@ -112,7 +134,7 @@ export function readState(): WorkflowState {
 }
 
 export function writeState(state: WorkflowState): void {
-  const dir = path.join(projectRoot(), STATE_DIR);
+  const dir = path.dirname(statePath());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(statePath(), JSON.stringify(state, null, 2) + "\n", "utf-8");
 }
