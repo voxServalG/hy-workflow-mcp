@@ -2,6 +2,8 @@
 
 MCP server 强制 LLM 走 **9 阶段闭环工作流**。硬规则（状态机锁定 + lint 校验）和软规则（用户 approve gate + 自定义 rubrics）结合。
 
+测试说明：此行用于验证 hy_commit 创建 PR 时会使用配置文件中的 baseBranch。
+
 ## 一键部署
 
 在项目根目录执行：
