@@ -36,16 +36,7 @@ npx --yes github:voxServalG/hy-harness && _created "hy-harness deployment" || {
 PROJECT_ROOT=$(pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 
-_mcp_found=false
-for f in ".opencode/opencode.json" ".mcp.json" ".opencode.json"; do
-  if [ -f "$f" ]; then
-    _mcp_found=true
-    _mcp_file="$f"
-    break
-  fi
-done
-
-# ── Step 2: Output the LLM prompt ────────────────────────────
+# ── Output the LLM prompt ────────────────────────────────────
 
 cat <<PROMPT
 
@@ -54,20 +45,6 @@ cat <<PROMPT
   ═══════════════════════════════════════════════════
 
 PROMPT
-
-if [ "$_mcp_found" = true ]; then
-  cat <<ALREADY
-  ℹ️  已检测到 MCP 配置: ${_mcp_file}
-      请确保其中同时包含 hy-workflow 和 docs-gardener 条目，
-      否则把下方配置合并进去。
-
-      重要：两个 MCP 的 command 都必须包含 "--prefer-online"，
-      否则重启不会拉取最新代码：
-        hy-workflow:    ["npx", "-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"]
-        docs-gardener:  ["npx", "-y", "--prefer-online", "github:voxServalG/docs-gardener", "mcp"]
-
-ALREADY
-fi
 
 cat <<PROMPT
   📋 请将以下文字发送给你的 LLM agent：
