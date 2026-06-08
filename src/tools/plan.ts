@@ -186,7 +186,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   const hollow = new Set(["echo ok","echo \"ok\"","echo 'ok'","echo test","echo \"test\"","echo 'test'"]);
   const EXECUTABLE_PREFIXES = new Set([
     "sh","bash","node","npx","npm","yarn","pnpm","bun","deno","tsx","tsc","jest","vitest",
-    "python","python3","py","pip","pip3","pytest","tox","mypy","ruff","black",
+    "python","python3","py","pip","pip3","pytest","tox","mypy","ruff","black","uv",
     "cargo","rustc","go","gofmt","gcc","g++","make","cmake","java","mvn","gradle",
     "git","gh","docker","curl","wget",
   ]);

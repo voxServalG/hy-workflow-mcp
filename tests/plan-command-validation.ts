@@ -73,6 +73,18 @@ async function expectAccepted(): Promise<void> {
   }
 }
 
+async function expectUvAccepted(): Promise<void> {
+  resetPlanState();
+  const plan = basePlan();
+  plan.boundary.entry_points = ["uv run python -m compileall -q src tests"];
+  plan.verify.smoke[0].command = "uv run python -m compileall -q src";
+  plan.verify.tests[0].command = "uv run python -m pytest tests";
+  const result = await handlePlan({ task: plan.task, plan });
+  if (result.next !== "approve" || !result.summary) {
+    throw new Error("uv run commands should be accepted as pure executable shell commands");
+  }
+}
+
 try {
   await expectRejected("entry_points parenthetical", plan => {
     plan.boundary.entry_points = ["npx tsc --noEmit (compile check)"];
@@ -84,6 +96,7 @@ try {
     plan.verify.tests[0].command = "Run npm test";
   });
   await expectAccepted();
+  await expectUvAccepted();
 } finally {
   restoreState();
 }
