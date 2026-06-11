@@ -6,7 +6,7 @@
 
 | # | Phase | 含义 |
 |---|-------|------|
-| 1 | `init` | 初始状态，等待 `hy_init` 部署 harness |
+| 1 | `init` | 初始状态，等待 `hy_init` 验证 setup 已部署的 harness 产物 |
 | 2 | `plan` | 任务规划，等待 LLM 生成 PlanDoc |
 | 3 | `approve` | 用户审视 PlanDoc，输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |

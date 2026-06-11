@@ -43,8 +43,17 @@ export interface WorkflowState {
     approval: Approval | null;
     verifyHash: string | null;
 }
+export interface LegacyRuntimeDiagnostic {
+    file: string;
+    tracked: boolean;
+    message: string;
+    remediation?: string;
+}
 export declare function statePath(): string;
+export declare function scopePath(): string;
 export declare function projectRoot(): string;
+export declare function legacyRuntimeDiagnostics(root?: string): LegacyRuntimeDiagnostic[];
+export declare function cleanupLegacyRuntimeFiles(root?: string): void;
 export declare function readState(): WorkflowState;
 export declare function writeState(state: WorkflowState): void;
 export declare function assertPhase(state: WorkflowState, ...expected: Phase[]): void;

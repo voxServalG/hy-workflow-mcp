@@ -11,7 +11,7 @@
 
 ### 各工具说明
 
-**0. hy_init** — 项目首次使用时调用。部署 hy-harness。已部署则跳过，自动进 plan。
+**0. hy_init** — 项目首次使用时调用。验证 setup 已部署 hy-harness 产物，写入/更新 workflow 规则和本地忽略项，自动进 plan。不会在 MCP 内启动交互式 harness。
 
 **1. hy_plan** — 调用时传入 {task, plan}。自行利用工作区上下文构造 PlanDoc JSON。服务端通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
 **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。

@@ -17,6 +17,9 @@ function writeTempFile(content) {
     fs.writeFileSync(tmpPath, content, "utf-8");
     return tmpPath;
 }
+function shellQuote(value) {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 export function createBranch(root, category, topic) {
     const name = `${category}/${topic}`;
     const base = getBaseBranch(root);
@@ -27,6 +30,25 @@ export function createBranch(root, category, topic) {
 }
 export function commitAll(root, title, body) {
     const r1 = run("git add -A", root);
+    if (!r1.ok)
+        return { ok: false, error: r1.stderr };
+    const msgFile = writeTempFile(`${title}\n\n${body}`);
+    try {
+        const r2 = run(`git commit -F "${msgFile}"`, root);
+        if (!r2.ok)
+            return { ok: false, error: r2.stderr };
+        const r3 = run("git rev-parse HEAD", root);
+        return { ok: true, hash: r3.stdout };
+    }
+    finally {
+        fs.unlinkSync(msgFile);
+    }
+}
+export function commitScope(root, scope, title, body) {
+    const files = [...scope.changes, ...scope.new_files, ...scope.delete];
+    if (!files.length)
+        return { ok: false, error: "No files declared in PlanDoc scope" };
+    const r1 = run(`git add -A -- ${files.map(shellQuote).join(" ")}`, root);
     if (!r1.ok)
         return { ok: false, error: r1.stderr };
     const msgFile = writeTempFile(`${title}\n\n${body}`);
