@@ -1,2 +1,7 @@
 import { type ToolResult } from "./_base.js";
-export declare function handleCi(): Promise<ToolResult>;
+type CiArgs = {
+    timeoutSeconds?: number;
+    intervalSeconds?: number;
+};
+export declare function handleCi(args?: CiArgs): Promise<ToolResult>;
+export {};
