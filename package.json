@@ -1,7 +1,7 @@
 {
   "name": "hy-workflow-mcp",
   "version": "0.1.0",
-  "description": "MCP server enforcing a 9-phase closed-loop workflow for LLM-assisted development with harzard harness",
+  "description": "MCP server enforcing a 9-phase closed-loop workflow for LLM-assisted development",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
@@ -13,7 +13,8 @@
     "dev": "npx tsx src/server.ts",
     "test": "npx tsc --noEmit",
     "test:dist": "npx tsx tests/dist-artifacts.ts",
-    "test:doclint-output": "npx tsx tests/doclint-output.ts"
+    "test:doclint-output": "npx tsx tests/doclint-output.ts",
+    "test:setup-update": "npx tsx tests/setup-update-check.ts"
   },
   "author": "Haiyi",
   "license": "MIT",
