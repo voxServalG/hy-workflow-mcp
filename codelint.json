@@ -1,5 +1,10 @@
 {
-  "codeDirs": ["src"],
+  "lintDirs": [
+    "src"
+  ],
+  "codeDirs": [
+    "src"
+  ],
   "codeExt": ".ts",
   "baseBranch": "dev",
   "maxLines": 500
