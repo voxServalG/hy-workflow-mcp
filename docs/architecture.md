@@ -38,7 +38,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
    └► tools/branch.ts → git.ts.createBranch() → transition(branch→edit)
 
 4. LLM hy_edit()
-   └► tools/edit.ts 锁定 scope 到 .hy/scope.json → transition(state, "edit")
+   └► tools/edit.ts 锁定 scope 到 .git/hy-workflow/scope.json → transition(state, "edit")
 
 5. LLM 编辑代码...
 
@@ -60,7 +60,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 关键设计决策
 
-- **状态文件**: `.git/hy-workflow/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash，不进入 git 工作树；旧 `.hy/workflow.json` 仅作为迁移来源
+- **状态文件**: `.git/hy-workflow/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash，`.git/hy-workflow/scope.json` 锁定当前 scope；旧 `.hy/workflow.json` / `.hy/scope.json` 仅作为迁移来源或诊断对象
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
 - **幂等 init**: `setup` 直接部署 lint/docs/docs-gardener bootstrap 产物并写 setup stamp；MCP runtime 每 session 首次只读检查 stamp；`hy_init` 验证产物、写入 workflow rules 并维护本地忽略项，不在 MCP 内运行 setup 或启动交互式 TUI
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
