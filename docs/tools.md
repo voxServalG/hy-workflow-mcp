@@ -93,13 +93,17 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 **资源**: `src/tools/edit.ts` (45 行)
 
-锁定 scope 到 `.hy/scope.json` 作为 agent 可见提示。workflow phase 本身写入 Git 私有状态文件，不推进 Phase（手动设为 edit），返回 `next: "verify"`、`phase: "edit"` 提示 LLM 开始编写代码。
+锁定 scope 到 Git 私有状态文件 `.git/hy-workflow/scope.json`，避免 runtime metadata 污染工作区。workflow phase 本身也写入 Git 私有状态文件，不推进 Phase（手动设为 edit），返回 `next: "verify"`、`phase: "edit"` 提示 LLM 开始编写代码。
 
 - **进入 Phase**: `branch`, `edit`, `verify`
 - **转换到**: `transition(state, "edit")`，返回 `next: "verify"`
 - **返回**: `{ next: "verify", phase: "edit", branch, scope, boundary, display, hint, allowedTools, blockedTools, message }`
 
-**参见**: `src/tools/edit.ts:11-45`（通过 transition(state, "edit") 切换状态）, `.hy/scope.json`（scope 锁定文件）
+**参见**: `src/tools/edit.ts:11-45`（通过 transition(state, "edit") 切换状态）, `.git/hy-workflow/scope.json`（scope 锁定文件）
+
+## Legacy runtime metadata
+
+旧版本可能在工作区留下 `.hy/workflow.json` 或 `.hy/scope.json`。当前版本会在迁移到 `.git/hy-workflow/` 后静默删除未被 Git 跟踪的 legacy runtime 文件，避免它们阻挡 `git checkout`。如果这些 legacy 文件已被 Git 跟踪，hy-workflow 不会自动删除；`hy_status` / `hy_init` 会返回 `legacyDiagnostics`，提示运行 `git rm --cached .hy/workflow.json .hy/scope.json` 并忽略 `.hy/`。
 
 ---
 
@@ -190,7 +194,6 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 **参见**: `src/tools/status.ts:1-26`, `src/state.ts:97-112`（readState）
 
 ## Related
-
 - [Architecture](./architecture.md)
 - [State Machine](./state-machine.md)
 - [Verify Pipeline](./verify.md)

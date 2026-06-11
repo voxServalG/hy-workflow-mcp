@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { commitScope } from "../src/git.js";
-import { readState, scopePath, statePath, writeState } from "../src/state.js";
+import { cleanupLegacyRuntimeFiles, legacyRuntimeDiagnostics, readState, scopePath, statePath, writeState } from "../src/state.js";
 import { runScopeCheck } from "../src/checks.js";
 import { handleEdit } from "../src/tools/edit.js";
 import type { PlanDoc, WorkflowState } from "../src/state.js";
@@ -78,14 +78,35 @@ try {
   if (migratedRaw.phase !== "approve") {
     throw new Error("readState should migrate legacy state into git-private workflow.json");
   }
+  if (existsSync(join(legacyDir, "workflow.json"))) {
+    throw new Error("readState should delete untracked legacy .hy/workflow.json after migration");
+  }
 
   writeFileSync(join(root, "README.md"), "changed\n");
+  writeFileSync(join(legacyDir, "scope.json"), "{}\n");
+  cleanupLegacyRuntimeFiles(root);
+  if (existsSync(join(legacyDir, "scope.json"))) {
+    throw new Error("cleanupLegacyRuntimeFiles should delete untracked legacy .hy/scope.json");
+  }
   writeFileSync(join(legacyDir, "scope.json"), "{}\n");
   const results = runScopeCheck(root, basePlan());
   const hardFailure = results.find(result => !result.passed && result.hard);
   if (hardFailure) {
     throw new Error(`.hy runtime files should not fail scope check: ${hardFailure.detail}`);
   }
+
+  writeFileSync(join(legacyDir, "workflow.json"), JSON.stringify(baseState(), null, 2));
+  run("git add .hy/workflow.json", root);
+  cleanupLegacyRuntimeFiles(root);
+  if (!existsSync(join(legacyDir, "workflow.json"))) {
+    throw new Error("cleanupLegacyRuntimeFiles should preserve tracked legacy .hy/workflow.json");
+  }
+  const diagnostics = legacyRuntimeDiagnostics(root);
+  if (!diagnostics.some(d => d.file === ".hy/workflow.json" && d.tracked && d.remediation)) {
+    throw new Error("legacyRuntimeDiagnostics should report tracked legacy workflow metadata with remediation");
+  }
+  run("git reset -- .hy/workflow.json", root);
+  run("rm -f .hy/workflow.json .hy/scope.json", root);
 
   const editState = { ...baseState(), phase: "branch" as const, branch: "fix/runtime", plan: basePlan() };
   writeState(editState);
