@@ -1,9 +1,15 @@
+import type { PlanDoc } from "./state.js";
 export declare function createBranch(root: string, category: string, topic: string): {
     ok: boolean;
     branch: string;
     error?: string;
 };
 export declare function commitAll(root: string, title: string, body: string): {
+    ok: boolean;
+    hash?: string;
+    error?: string;
+};
+export declare function commitScope(root: string, scope: PlanDoc["scope"], title: string, body: string): {
     ok: boolean;
     hash?: string;
     error?: string;

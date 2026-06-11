@@ -1,14 +1,15 @@
 import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch } from "../state.js";
-import { commitAll, push, createPr } from "../git.js";
+import { commitScope, push, createPr } from "../git.js";
+import { toolResult } from "./_base.js";
 export async function handleCommit(args) {
     const state = readState();
     assertPhase(state, "commit");
     if (!state.plan)
-        return { next: "commit", error: "No plan" };
+        return toolResult("commit", { error: "No plan", allowedTools: ["hy_status"] });
     if (!state.verifyHash)
-        return { next: "commit", error: "Missing verifyHash" };
+        return toolResult("commit", { error: "Missing verifyHash", hint: "Run hy_verify successfully before hy_commit.", allowedTools: ["hy_verify", "hy_status"] });
     if (!state.branch)
-        return { next: "commit", error: "No active branch" };
+        return toolResult("commit", { error: "No active branch", allowedTools: ["hy_status"] });
     const root = projectRoot();
     // Build enhanced PR body with plan context
     const body = [
@@ -29,24 +30,31 @@ export async function handleCommit(args) {
         `- smoke: ${state.plan.verify.smoke.length} checks, tests: ${state.plan.verify.tests.length} checks`,
         `- hash: \`${state.verifyHash}\``,
     ].join("\n");
-    const c = commitAll(root, args.title, body);
+    const c = commitScope(root, state.plan.scope, args.title, body);
     if (!c.ok)
-        return { next: "commit", error: c.error };
+        return toolResult("commit", { error: c.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
     const p = push(root, state.branch);
     if (!p.ok)
-        return { next: "commit", error: p.error };
+        return toolResult("commit", { error: p.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry or manually recover the already-created local commit if needed." }, allowedTools: ["hy_commit", "hy_status"] });
     const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
     if (!pr.ok)
-        return { next: "commit", error: pr.error };
+        return toolResult("commit", { error: pr.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR creation failure. If the branch is already pushed, create the PR without recommitting only with user approval." }, allowedTools: ["hy_commit", "hy_status"] });
     const next = transition(state, "ci");
     next.prNumber = pr.prNumber ?? null;
     next.plan.pr_number = next.prNumber;
     writeState(next);
-    return {
-        next: "ci",
+    return toolResult("ci", {
         prNumber: pr.prNumber,
         url: pr.url,
+        display: {
+            title: "Pull request created",
+            body: `PR #${pr.prNumber} created.`,
+            urls: pr.url ? [pr.url] : [],
+        },
+        hint: "Show the PR URL briefly, then continue to hy_ci. Do not stop here unless a later tool reports CI or merge problems.",
+        allowedTools: ["hy_ci", "hy_status"],
+        blockedTools: ["hy_merge", "hy_chain"],
         message: `PR #${pr.prNumber} created. Waiting for CI...`,
-    };
+    });
 }
 //# sourceMappingURL=commit.js.map

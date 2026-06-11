@@ -1,4 +1,5 @@
 import { readState, writeState } from "../state.js";
+import { toolResult } from "./_base.js";
 export async function handleReset() {
     const state = readState();
     state.phase = "plan";
@@ -7,9 +8,14 @@ export async function handleReset() {
     state.plan = null;
     state.verifyHash = null;
     writeState(state);
-    return {
-        next: "plan",
+    return toolResult("plan", {
+        display: {
+            title: "Workflow reset",
+            body: "Workflow state was reset to plan phase.",
+        },
+        hint: "Start a new task with hy_plan only when the user requests a repository change.",
+        allowedTools: ["hy_plan", "hy_status"],
         message: "Reset to plan phase. Run hy_plan to start a new task.",
-    };
+    });
 }
 //# sourceMappingURL=reset.js.map
