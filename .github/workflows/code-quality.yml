@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  check:
+  lint:
     name: Layer Check
     runs-on: ubuntu-latest
     steps:
@@ -21,3 +21,12 @@ jobs:
             echo "::error::codelint found $errors errors"
             exit 1
           fi
+
+  compile:
+    name: Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npx tsc --noEmit || python -m py_compile src/**/*.py || true

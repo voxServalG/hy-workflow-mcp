@@ -45,13 +45,39 @@ function findPython(): string {
 
 // ── 1. Lint (hard) ──────────────────────────────────────────
 
+function numberFrom(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function parseDocLintReport(report: any): CheckResult {
+  const counts = report?.data?.counts ?? report?.counts ?? {};
+  const summary = report?.data?.summary ?? report?.summary ?? {};
+  const failed = numberFrom(counts.failed, summary.failed, report?.failed);
+  const errors = numberFrom(counts.errors, report?.errors, failed);
+  const warnings = numberFrom(counts.warnings, report?.warnings, 0) ?? 0;
+  const files = numberFrom(counts.files, summary.total, report?.total, 0) ?? 0;
+
+  if (failed === null && errors === null && typeof report?.ok !== "boolean") {
+    return fail("doclint", "lint", "Could not understand doclint JSON report", true);
+  }
+
+  const effectiveErrors = errors ?? failed ?? 0;
+  const effectiveFailed = failed ?? effectiveErrors;
+  const passed = report?.ok === false ? false : effectiveErrors === 0 && effectiveFailed === 0;
+  const detail = `${effectiveErrors} errors, ${warnings} warnings (${files} files, ${effectiveFailed} failed)`;
+  return passed
+    ? ok("doclint", "lint", detail)
+    : fail("doclint", "lint", detail, true);
+}
+
 export function runDocLint(root: string): CheckResult[] {
   const r = execOr("npx --yes github:voxServalG/doclint lint --json", root);
   try {
     const report = JSON.parse(r.stdout || "{}");
-    return [report.failed === 0
-      ? ok("doclint", "lint", `0 errors (${report.total ?? 0} files)`)
-      : fail("doclint", "lint", `${report.failed} errors`, true)];
+    return [parseDocLintReport(report)];
   } catch {
     return [fail("doclint", "lint", "Could not parse doclint report", true)];
   }
