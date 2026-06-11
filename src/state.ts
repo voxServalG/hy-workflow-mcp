@@ -75,10 +75,15 @@ export interface WorkflowState {
 // ── State path ───────────────────────────────────────────────
 
 const RUNTIME_STATE_FILE = path.join("hy-workflow", "workflow.json");
+const RUNTIME_SCOPE_FILE = path.join("hy-workflow", "scope.json");
 const LEGACY_STATE_FILE = path.join(".hy", "workflow.json");
 
 export function statePath(): string {
   return gitPrivatePath(projectRoot(), RUNTIME_STATE_FILE);
+}
+
+export function scopePath(): string {
+  return gitPrivatePath(projectRoot(), RUNTIME_SCOPE_FILE);
 }
 
 function legacyStatePath(root: string): string {

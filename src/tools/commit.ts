@@ -1,5 +1,5 @@
 import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch } from "../state.js";
-import { commitAll, push, createPr } from "../git.js";
+import { commitScope, push, createPr } from "../git.js";
 import type { ToolResult } from "./_base.js";
 
 export async function handleCommit(args: { title: string; body: string }): Promise<ToolResult> {
@@ -32,7 +32,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     `- hash: \`${state.verifyHash}\``,
   ].join("\n");
 
-  const c = commitAll(root, args.title, body);
+  const c = commitScope(root, state.plan.scope, args.title, body);
   if (!c.ok) return { next: "commit", error: c.error };
 
   const p = push(root, state.branch);

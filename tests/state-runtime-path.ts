@@ -3,8 +3,10 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
-import { readState, statePath, writeState } from "../src/state.js";
+import { commitScope } from "../src/git.js";
+import { readState, scopePath, statePath, writeState } from "../src/state.js";
 import { runScopeCheck } from "../src/checks.js";
+import { handleEdit } from "../src/tools/edit.js";
 import type { PlanDoc, WorkflowState } from "../src/state.js";
 
 function run(cmd: string, root: string): void {
@@ -42,6 +44,8 @@ const root = mkdtempSync(join(tmpdir(), "hy-state-runtime-"));
 
 try {
   run("git init -b main", root);
+  run("git config user.name test", root);
+  run("git config user.email test@example.com", root);
   writeFileSync(join(root, "README.md"), "initial\n");
   writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "main", codeExt: ".ts" }, null, 2));
   run("git add README.md codelint.json", root);
@@ -81,6 +85,28 @@ try {
   const hardFailure = results.find(result => !result.passed && result.hard);
   if (hardFailure) {
     throw new Error(`.hy runtime files should not fail scope check: ${hardFailure.detail}`);
+  }
+
+  const editState = { ...baseState(), phase: "branch" as const, branch: "fix/runtime", plan: basePlan() };
+  writeState(editState);
+  await handleEdit();
+  const runtimeScopePath = scopePath();
+  if (!runtimeScopePath.includes(join(".git", "hy-workflow", "scope.json"))) {
+    throw new Error(`scopePath should use git-private storage, got ${runtimeScopePath}`);
+  }
+  if (!existsSync(runtimeScopePath)) {
+    throw new Error("handleEdit should create git-private scope.json");
+  }
+
+  writeFileSync(join(root, "README.md"), "committed change\n");
+  writeFileSync(join(root, "UNDECLARED.md"), "should remain untracked\n");
+  const commit = commitScope(root, basePlan().scope, "test scoped commit", "body");
+  if (!commit.ok) {
+    throw new Error(`commitScope should commit declared files: ${commit.error}`);
+  }
+  const status = execSync("git status --short", { cwd: root, encoding: "utf-8" });
+  if (!status.includes("?? UNDECLARED.md")) {
+    throw new Error(`commitScope should leave undeclared files untracked, got status: ${status}`);
   }
 } finally {
   chdir(originalCwd);
