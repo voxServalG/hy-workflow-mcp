@@ -6,12 +6,12 @@
 
 | # | Phase | 含义 |
 |---|-------|------|
-| 1 | `init` | 初始状态，等待 `hy_init` 验证 setup 已部署的 harness 产物 |
+| 1 | `init` | 初始状态，等待 `hy_init` 验证 setup/bootstrap 产物 |
 | 2 | `plan` | 任务规划，等待 LLM 生成 PlanDoc |
 | 3 | `approve` | 用户审视 PlanDoc，输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
 | 5 | `edit` | LLM 编写代码，scope 已锁定 |
-| 6 | `verify` | 全量校验（6 层），通过则进 commit |
+| 6 | `verify` | 全量校验（7 层），通过则进 commit |
 | 7 | `commit` | git commit + push + gh pr create |
 | 8 | `ci` | 轮询 GitHub Checks |
 | 9 | `merge` | CI 全绿后合并 PR |
@@ -20,7 +20,7 @@
 
 ## VALID_TRANSITIONS
 
-定义在 `src/state.ts:122-134`。每个 Phase 可转移到自身（原地不动）或以下目标：
+定义在 `src/state.ts` 的 `VALID_TRANSITIONS`。每个 Phase 可转移到自身（原地不动）或以下目标：
 
 ```
 init     → init, plan, done
@@ -60,28 +60,36 @@ interface WorkflowState {
 }
 ```
 
-- `readState()` (`src/state.ts:112`): 文件不存在时返回 `phase: init` 默认值
-- `writeState()` (`src/state.ts:136`): 自动创建 Git 私有运行态目录
-- `projectRoot()` (`src/state.ts:99`): 向上查找 `.git`，找不到则用 `cwd`
+- `readState()`: 文件不存在时返回 `phase: init` 默认值，并迁移未跟踪的旧 `.hy/workflow.json`
+- `writeState()`: 自动创建 Git 私有运行态目录
+- `projectRoot()`: 向上查找 `.git`，找不到则用 `cwd`
 
 ## 状态守卫
 
-- `assertPhase(state, ...expected)` (`src/state.ts:158`): 当前 Phase 不在期望列表中时抛 `StateError`
-- `transition(state, to)` (`src/state.ts:168`): 转换不在 VALID_TRANSITIONS 中时抛 `StateError`
+- `assertPhase(state, ...expected)`: 当前 Phase 不在期望列表中时抛 `StateError`
+- `transition(state, to)`: 转换不在 VALID_TRANSITIONS 中时抛 `StateError`
 - 所有工具 handler 都在入口处调用 `assertPhase`，确保按序执行
 
 ## verifyHash
 
-`computeVerifyHash()` (`src/state.ts:188`) 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_commit` 校验此哈希，确保 PlanDoc 未被篡改。
+`computeVerifyHash()` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_verify` 写入 `verifyHash`；当前 `hy_commit` 检查该值存在，确保 commit 前成功跑过 verify。
 
-## ToolResult 类型
+## ToolResult envelope
 
-定义在 `src/tools/_base.ts`，所有 tool handler 返回的统一结构：
+定义在 `src/tools/_base.ts`。`next` 是状态机下一步；`phase` 默认等于 `next`，但 `hy_edit` 等工具可返回 `phase: "edit"`、`next: "verify"` 来表达“当前仍在 edit，但下一步建议 verify”。
 
 ```typescript
 interface ToolResult {
-  next: Phase;     // 下一阶段标识
-  [key: string]: any;  // 扩展字段
+  ok?: boolean;
+  phase?: Phase;
+  next: Phase;
+  display?: { title?: string; body?: string; files?: string[]; urls?: string[] };
+  hint?: string;
+  requires_user?: boolean;
+  stop_here?: boolean;
+  allowedTools?: string[];
+  blockedTools?: string[];
+  recovery?: { tool?: string; instruction?: string; byLayer?: Record<string, string> };
 }
 ```
 
@@ -99,16 +107,16 @@ interface PlanDoc {
   verify_hash: string | null;   // runtime
   pr_number: number | null;     // runtime
 }
+```
 
 ## workflow.json
 
-状态持久化在 Git 私有目录 `.git/hy-workflow/workflow.json`，通过 `git rev-parse --git-path` 解析真实路径，避免运行态文件进入工作树、PR diff 或 checkout 冲突。`readState()`（`src/state.ts:112`）在新文件不存在时会读取旧 `.hy/workflow.json` 并迁移；没有任何状态文件时返回 `phase: init` 默认值。项目根通过 `projectRoot()`（`src/state.ts:99`）向上查找 `.git` 目录确定。
+状态持久化在 Git 私有目录 `.git/hy-workflow/workflow.json`，通过 `git rev-parse --git-path` 解析真实路径，避免运行态文件进入工作树、PR diff 或 checkout 冲突。`readState()` 在新文件不存在时会读取旧 `.hy/workflow.json` 并迁移；没有任何状态文件时返回 `phase: init` 默认值。
 
-`hy_edit` 额外写入 `.hy/scope.json` 锁定当前 scope 边界，供 LLM 参考。
+`hy_edit` 额外写入 `.git/hy-workflow/scope.json` 锁定当前 scope 边界，供 LLM 参考。旧 `.hy/scope.json` 只作为 legacy runtime metadata 诊断和清理对象。
 
 ## Related
 
 - [Architecture](./architecture.md)
 - [Tools Reference](./tools.md)
 - [Verify Pipeline](./verify.md)
-```
