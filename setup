@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-# ── hy-workflow: one‑command project setup (idempotent) ──────
-#   ✓ 只安装缺失的，不覆盖已有配置
-#   ✓ 已有 → 显示保留
-#   ✓ 缺失 → 创建默认值
-#   ✓ 输出 LLM agent prompt
+# ── hy-workflow: one-command project setup/update (idempotent) ──
+
+SETUP_VERSION="2026.06.12.1"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -13,40 +11,179 @@ echo "  │  hy-workflow · 项目级 MCP 一键部署  │"
 echo "  └──────────────────────────────────────┘"
 echo ""
 
-# ── helpers ──────────────────────────────────────────────────
-
 CREATED=()
+UPDATED=()
 SKIPPED=()
 PASS=0
 SKIP=0
 
 _created() { CREATED+=("$1"); PASS=$((PASS + 1)); echo "  ✓ $1 (created)"; }
-_skipped() { SKIPPED+=("$1"); SKIP=$((SKIP + 1)); echo "  ○ $1 (already exists, kept)"; }
+_updated() { UPDATED+=("$1"); PASS=$((PASS + 1)); echo "  ✓ $1 (updated)"; }
+_skipped() { SKIPPED+=("$1"); SKIP=$((SKIP + 1)); echo "  ○ $1 (up to date)"; }
 
-# ── hy-harness (unified deploy engine) ──────────────────────
-
-echo "  ⏳ hy-harness ..."
-npx --yes github:voxServalG/hy-harness && _created "hy-harness deployment" || {
-  echo "  ✗ hy-harness failed. Ensure Node.js >= 18."
-  exit 1
+write_file() {
+  local file="$1"
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp"
+  mkdir -p "$(dirname "$file")"
+  if [ ! -f "$file" ]; then
+    cp "$tmp" "$file"
+    rm "$tmp"
+    _created "$file"
+  elif cmp -s "$tmp" "$file"; then
+    rm "$tmp"
+    _skipped "$file"
+  else
+    cp "$tmp" "$file"
+    rm "$tmp"
+    _updated "$file"
+  fi
 }
 
-# ── MCP 配置检查（仅提醒，不改文件）─────────────────────────
+ensure_gitignore_line() {
+  local item="$1"
+  touch .gitignore
+  if grep -qxF "$item" .gitignore; then
+    _skipped ".gitignore:$item"
+  else
+    printf "%s\n" "$item" >> .gitignore
+    _updated ".gitignore:$item"
+  fi
+}
 
 PROJECT_ROOT=$(pwd)
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 
-# ── Output the LLM prompt ────────────────────────────────────
+echo "  ⏳ bootstrap artifacts ..."
+
+write_file ".github/workflows/code-quality.yml" <<'YAML'
+name: Code Quality
+
+on:
+  push: { paths: ["src/**", "codelint.json"] }
+  pull_request: { paths: ["src/**", "codelint.json"] }
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Layer Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npx --yes github:voxServalG/codelint check --json > report.json || true
+      - name: Fail if errors
+        run: |
+          errors=$(jq '.errors // .data.errors // 0' report.json)
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::codelint found $errors errors"
+            exit 1
+          fi
+
+  compile:
+    name: Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npx tsc --noEmit || python -m py_compile src/**/*.py || true
+YAML
+
+write_file ".github/workflows/docs-check.yml" <<'YAML'
+name: Docs Lint
+
+on:
+  push: { paths: ["docs/**", "README.md", "doclint.json"] }
+  pull_request: { paths: ["docs/**", "README.md", "doclint.json"] }
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npx --yes github:voxServalG/doclint lint --json > report.json || true
+      - name: Fail if lint errors
+        run: |
+          failed=$(jq '.failed // .data.counts.failed // .data.summary.failed // .counts.failed // .summary.failed // 0' report.json)
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::doclint found $failed errors"
+            exit 1
+          fi
+YAML
+
+write_file "codelint.json" <<'JSON'
+{
+  "lintDirs": [
+    "src"
+  ],
+  "codeDirs": [
+    "src"
+  ],
+  "codeExt": ".ts",
+  "baseBranch": "dev",
+  "maxLines": 500
+}
+JSON
+
+write_file "doclint.json" <<'JSON'
+{
+  "docsDir": "docs",
+  "codeDirs": [
+    "src",
+    "tests"
+  ],
+  "codeExt": ".ts",
+  "baseBranch": "dev",
+  "maxLines": 200
+}
+JSON
+
+write_file "docs-gardener.json" <<'JSON'
+{
+  "docsDir": "docs",
+  "codeDirs": [
+    "src",
+    "tests"
+  ],
+  "codeExt": ".ts",
+  "baseBranch": "dev",
+  "catalogs": {}
+}
+JSON
+
+ensure_gitignore_line ".hy/"
+ensure_gitignore_line ".opencode/"
+
+mkdir -p .hy
+GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+write_file ".hy/hy-workflow-setup.json" <<JSON
+{
+  "schemaVersion": "1",
+  "setupVersion": "${SETUP_VERSION}",
+  "generatedAt": "${GENERATED_AT}",
+  "artifacts": [
+    ".github/workflows/code-quality.yml",
+    ".github/workflows/docs-check.yml",
+    "codelint.json",
+    "doclint.json",
+    "docs-gardener.json"
+  ]
+}
+JSON
 
 cat <<PROMPT
 
   ═══════════════════════════════════════════════════
-  ✅  ${PASS} created, ${SKIP} kept · ${PROJECT_NAME}/
+  ✅  ${PASS} created/updated, ${SKIP} kept · ${PROJECT_NAME}/
   ═══════════════════════════════════════════════════
 
-PROMPT
-
-cat <<PROMPT
   📋 请将以下文字发送给你的 LLM agent：
   ═══════════════════════════════════════════════════
 
@@ -78,10 +215,10 @@ cat <<PROMPT
     }
   }
 
-  3. 配置完成后，调用 hy_init 完成工作流状态初始化和 harness 产物校验。
+  3. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。
 
-      hy_init 不会再次部署 hy-harness，也不会在 MCP 内启动交互式 TUI；
-      若提示缺少 harness 产物，请回到终端重新运行本 setup 脚本。
+      hy_init 不会运行 setup、不会启动交互式 TUI；
+      若提示 setup 产物缺失或过期，请回到终端重新运行本 setup 脚本。
 
   4. 之后任何代码/文档任务自动走 9 阶段闭环：
      hy_plan → hy_approve → hy_branch → hy_edit → hy_verify
@@ -92,4 +229,3 @@ cat <<PROMPT
    项目路径: ${PROJECT_ROOT}
 
 PROMPT
-

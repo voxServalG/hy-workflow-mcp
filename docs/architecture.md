@@ -62,7 +62,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 - **状态文件**: `.git/hy-workflow/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash，不进入 git 工作树；旧 `.hy/workflow.json` 仅作为迁移来源
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
-- **幂等 init**: `setup` 部署 hy-harness 产物；`hy_init` 验证产物、写入 workflow rules 并维护本地忽略项，不在 MCP 内启动交互式 harness
+- **幂等 init**: `setup` 直接部署 lint/docs/docs-gardener bootstrap 产物并写 setup stamp；MCP runtime 每 session 首次只读检查 stamp；`hy_init` 验证产物、写入 workflow rules 并维护本地忽略项，不在 MCP 内运行 setup 或启动交互式 TUI
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 
 ## 配置文件
