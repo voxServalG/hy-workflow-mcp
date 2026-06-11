@@ -41,6 +41,8 @@ hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify →
          (用户驳回)           (用户许可)          (verify fail)  (CI fail)    (下游分支)
 ```
 
+`dev → main` 这类 promotion 是发布/晋级操作，不属于普通开发闭环。用户明确要求 promotion 时，应检查 `origin/main..origin/dev` diff，创建或复用 `base=main, head=dev` 的 PR，等待 CI 全绿后合并；若需要直接使用 `gh`/`git`，agent 必须先获得用户明确授权。
+
 ## 10 个工具
 
 | Tool | 阶段 | 硬规则 | 软规则 |
