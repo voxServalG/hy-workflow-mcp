@@ -2,7 +2,7 @@ import { readState, writeState, transition, assertPhase, projectRoot } from "../
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ToolResult } from "./_base.js";
+import { toolResult, type ToolResult } from "./_base.js";
 
 const MARKER_START = "<!-- hy-workflow-rules -->";
 const MARKER_END = "<!-- /hy-workflow-rules -->";
@@ -157,7 +157,11 @@ export async function handleInit(): Promise<ToolResult> {
       { stdio: "inherit", timeout: 60_000 }
     );
   } catch {
-    return { next: "init", error: "Harness deployment failed. Check Node.js >= 18 and Python >= 3.10." };
+    return toolResult("init", {
+      error: "Harness deployment failed. Check Node.js >= 18 and Python >= 3.10.",
+      recovery: { tool: "hy_init", instruction: "Fix the local runtime prerequisites or network issue, then rerun hy_init." },
+      allowedTools: ["hy_init", "hy_status"],
+    });
   }
 
   // Generate .opencode/instructions.md with hy-workflow rules
@@ -169,8 +173,13 @@ export async function handleInit(): Promise<ToolResult> {
   writeState(next);
 
   const verb = instructionsChanged ? "created/updated" : "up to date";
-  return {
-    next: "plan",
+  return toolResult("plan", {
+    display: {
+      title: "Harness ready",
+      body: `Harness deployed. AGENTS.md ${verb}.`,
+    },
+    hint: "Call hy_plan next only when the user has a concrete repository change task.",
+    allowedTools: ["hy_plan", "hy_status"],
     message: `Harness deployed. AGENTS.md ${verb}. Run hy_plan to define your task.`,
-  };
+  });
 }

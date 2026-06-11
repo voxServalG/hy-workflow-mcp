@@ -1,5 +1,5 @@
 import { readState, writeState, transition, assertPhase } from "../state.js";
-import type { ToolResult } from "./_base.js";
+import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
 
 function buildSummary(p: PlanDoc): string {
@@ -60,14 +60,19 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
 
   const task = (args.task ?? "").trim();
   if (!task) {
-    return { next: "plan", error: "task must be a non-empty string describing the work to be done." };
+    return toolResult("plan", {
+      error: "task must be a non-empty string describing the work to be done.",
+      hint: "Provide a concrete task and construct a PlanDoc before calling hy_plan again.",
+      allowedTools: ["hy_plan", "hy_status"],
+    });
   }
 
   const p = args.plan;
   if (!p) {
-    return {
-      next: "plan",
+    return toolResult("plan", {
       error: "PlanDoc not provided. You must construct the PlanDoc JSON yourself using your workspace knowledge, then call hy_plan with {task, plan}.",
+      hint: "Read project files, build a complete PlanDoc, and retry hy_plan.",
+      allowedTools: ["hy_plan", "hy_status"],
       schema: {
         type: "object",
         required: ["task", "scope", "boundary", "verify", "risks", "discussion"],
@@ -139,12 +144,12 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
           discussion: { type: "string" },
         },
       },
-    };
+    });
   }
 
   // Gate 1: required top-level fields
   if (!p.task || !p.scope || !p.boundary || !p.verify || !p.risks || p.discussion === undefined) {
-    return { next: "plan", error: "PlanDoc missing required fields: task, scope, boundary, verify, risks, discussion." };
+    return toolResult("plan", { error: "PlanDoc missing required fields: task, scope, boundary, verify, risks, discussion.", allowedTools: ["hy_plan", "hy_status"] });
   }
 
   // Gate 2: scope not all-empty
@@ -152,34 +157,34 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   const hasNew = (p.scope.new_files?.length ?? 0) > 0;
   const hasDelete = (p.scope.delete?.length ?? 0) > 0;
   if (!hasChanges && !hasNew && !hasDelete) {
-    return { next: "plan", error: "PlanDoc scope is empty. At least one of changes, new_files, or delete must be non-empty." };
+    return toolResult("plan", { error: "PlanDoc scope is empty. At least one of changes, new_files, or delete must be non-empty.", allowedTools: ["hy_plan", "hy_status"] });
   }
 
   // Gate 3: boundary has substance
   if (!p.boundary.dependency_dag) {
-    return { next: "plan", error: "PlanDoc boundary.dependency_dag is empty." };
+    return toolResult("plan", { error: "PlanDoc boundary.dependency_dag is empty.", allowedTools: ["hy_plan", "hy_status"] });
   }
   if (!p.boundary.entry_points?.length) {
-    return { next: "plan", error: "PlanDoc boundary.entry_points must contain at least 1 command." };
+    return toolResult("plan", { error: "PlanDoc boundary.entry_points must contain at least 1 command.", allowedTools: ["hy_plan", "hy_status"] });
   }
 
   // Gate 4: verify has substance
   if (!p.verify.platform?.python_version) {
-    return { next: "plan", error: "PlanDoc verify.platform.python_version is empty." };
+    return toolResult("plan", { error: "PlanDoc verify.platform.python_version is empty.", allowedTools: ["hy_plan", "hy_status"] });
   }
   if (!p.verify.smoke?.length) {
-    return { next: "plan", error: "PlanDoc verify.smoke must contain at least 1 check." };
+    return toolResult("plan", { error: "PlanDoc verify.smoke must contain at least 1 check.", allowedTools: ["hy_plan", "hy_status"] });
   }
   if (!p.verify.tests?.length) {
-    return { next: "plan", error: "PlanDoc verify.tests must contain at least 1 check." };
+    return toolResult("plan", { error: "PlanDoc verify.tests must contain at least 1 check.", allowedTools: ["hy_plan", "hy_status"] });
   }
 
   // Gate 5: risks & discussion non-empty
   if (!p.risks.length) {
-    return { next: "plan", error: "PlanDoc risks must contain at least 1 risk." };
+    return toolResult("plan", { error: "PlanDoc risks must contain at least 1 risk.", allowedTools: ["hy_plan", "hy_status"] });
   }
   if (p.discussion === "") {
-    return { next: "plan", error: "PlanDoc discussion is empty." };
+    return toolResult("plan", { error: "PlanDoc discussion is empty.", allowedTools: ["hy_plan", "hy_status"] });
   }
 
   // Gate 6: hollow command check
@@ -210,29 +215,30 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   const rejectImpureCommand = (field: string, cmd: string): ToolResult | null => {
     const reason = describeImpureCommand(cmd);
     if (!reason) return null;
-    return {
-      next: "plan",
+    return toolResult("plan", {
       error: `${field} must be a pure executable shell command, but "${cmd}" ${reason}. Put explanations in description and write an executable command only.`,
-    };
+      hint: "Keep command fields as pure shell commands and move explanations into description fields.",
+      allowedTools: ["hy_plan", "hy_status"],
+    });
   };
 
   for (const ep of p.boundary.entry_points) {
     if (hollow.has(ep.trim())) {
-      return { next: "plan", error: `boundary.entry_points contains hollow command: "${ep}". Use real executable commands.` };
+      return toolResult("plan", { error: `boundary.entry_points contains hollow command: "${ep}". Use real executable commands.`, allowedTools: ["hy_plan", "hy_status"] });
     }
     const rejected = rejectImpureCommand("boundary.entry_points", ep);
     if (rejected) return rejected;
   }
   for (const s of p.verify.smoke) {
     if (hollow.has(s.command.trim())) {
-      return { next: "plan", error: `verify.smoke contains hollow command: "${s.command}". Use real executable commands.` };
+      return toolResult("plan", { error: `verify.smoke contains hollow command: "${s.command}". Use real executable commands.`, allowedTools: ["hy_plan", "hy_status"] });
     }
     const rejected = rejectImpureCommand("verify.smoke.command", s.command);
     if (rejected) return rejected;
   }
   for (const t of p.verify.tests) {
     if (hollow.has(t.command.trim())) {
-      return { next: "plan", error: `verify.tests contains hollow command: "${t.command}". Use real executable commands.` };
+      return toolResult("plan", { error: `verify.tests contains hollow command: "${t.command}". Use real executable commands.`, allowedTools: ["hy_plan", "hy_status"] });
     }
     const rejected = rejectImpureCommand("verify.tests.command", t.command);
     if (rejected) return rejected;
@@ -256,11 +262,24 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   next.plan = p;
   writeState(next);
 
-  return {
-    next: "approve",
+  const summary = buildSummary(p);
+  return toolResult("approve", {
     plan: p,
-    summary: buildSummary(p),
+    summary,
     warnings: warnings.length ? warnings : undefined,
+    display: {
+      title: "Plan ready for approval",
+      body: summary,
+    },
+    requires_user: true,
+    stop_here: true,
+    hint: "You MUST show display.body to the user and wait for explicit approval. Do not call hy_approve automatically.",
+    allowedTools: ["hy_approve", "hy_status"],
+    blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    recovery: {
+      tool: "hy_plan",
+      instruction: "If the user rejects the plan, revise the PlanDoc and call hy_plan again.",
+    },
     message: "PlanDoc validated. Review the plan, then call hy_approve to proceed or provide feedback to revise.",
-  };
+  });
 }
