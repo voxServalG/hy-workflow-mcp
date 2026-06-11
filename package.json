@@ -12,7 +12,8 @@
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
     "test": "npx tsc --noEmit",
-    "test:dist": "npx tsx tests/dist-artifacts.ts"
+    "test:dist": "npx tsx tests/dist-artifacts.ts",
+    "test:doclint-output": "npx tsx tests/doclint-output.ts"
   },
   "author": "Haiyi",
   "license": "MIT",
