@@ -31,7 +31,7 @@ Layer 7: tests
 
 ## 判定逻辑
 
-`src/checks.ts:192-213`
+`src/checks.ts:runAllChecks`
 
 ```typescript
 allPassed = 所有 hard 检查都通过
@@ -79,7 +79,7 @@ interface VerifyReport {
 
 ## verifyHash
 
-全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256，取前 12 位 hex。此哈希存入 `WorkflowState.verifyHash`，`hy_commit` 检查 verifyHash 存在性。
+全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256，取前 12 位 hex。此哈希存入 `WorkflowState.verifyHash`；当前 `hy_commit` 检查 verifyHash 是否存在，确保成功执行过 `hy_verify`。
 
 ## 配置依赖
 

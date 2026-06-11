@@ -30,7 +30,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredSetupArtifacts, gitignoreChanged }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-**参见**: `src/tools/init.ts`, `src/state.ts:114-118`（writeState）
+**参见**: `src/tools/init.ts`, `src/state.ts`（writeState）
 
 `hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（CI workflows、`codelint.json`、`doclint.json`、`docs-gardener.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
 
@@ -107,9 +107,9 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 ## hy_verify
 
-**资源**: `src/tools/verify.ts` (43 行)
+**资源**: `src/tools/verify.ts`
 
-执行 6 层全量校验（`src/checks.ts:runAllChecks`）。全部通过后计算 verifyHash 并转换到 commit。
+执行 7 层全量校验（lint、compile、scope、boundary、platform、smoke、tests）。全部通过后计算 verifyHash 并转换到 commit。
 
 - **进入 Phase**: `edit`, `verify`
 - **通过后转换到**: `commit`
@@ -117,7 +117,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 - **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash, hint, allowedTools }`
 - **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks, failedChecks, recovery.byLayer }`
 
-**参见**: `src/tools/verify.ts:5-43`, `src/checks.ts:193-207`（runAllChecks）
+**参见**: `src/tools/verify.ts`, `src/checks.ts:runAllChecks`
 
 ## hy_commit
 
@@ -133,7 +133,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 ## hy_ci
 
-**资源**: `src/tools/ci.ts` (34 行)
+**资源**: `src/tools/ci.ts`
 
 通过 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
 
@@ -143,7 +143,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **pending/API 异常**: polling 超时后保持 `ci`，等待后重试 `hy_ci`
 - **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
 
-**参见**: `src/tools/ci.ts:1-34`, `src/git.ts:72-88`（checkCi）
+**参见**: `src/tools/ci.ts`, `src/git.ts`（checkCi）
 
 ---
 
@@ -191,9 +191,9 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 - **进入 Phase**: 无限制
 - **转换到**: 无（只读）
-- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, action? }`
+- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, action? }`
 
-**参见**: `src/tools/status.ts:1-26`, `src/state.ts:97-112`（readState）
+**参见**: `src/tools/status.ts`, `src/state.ts`（readState）
 
 ## Related
 [Architecture](./architecture.md) · [State Machine](./state-machine.md) · [Verify Pipeline](./verify.md)
