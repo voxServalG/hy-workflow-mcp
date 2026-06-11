@@ -2,6 +2,8 @@ import { readState, writeState, transition, assertPhase } from "../state.js";
 import { checkCi } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
+const FAILURE_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"]);
+
 export async function handleCi(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "ci", "edit"); // edit = fix, ci = re-check
@@ -12,15 +14,36 @@ export async function handleCi(): Promise<ToolResult> {
   if (!result.ok) return toolResult("ci", { error: result.error, checks: result.checks, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });
 
   if (!result.allGreen) {
-    const failedNames = (result.checks || []).filter((c: any) => c.status !== "pass").map((c: any) => c.name);
+    const checks = result.checks || [];
+    const failedNames = checks.filter((c: any) => FAILURE_CONCLUSIONS.has(c.conclusion)).map((c: any) => c.name);
+
+    if (!failedNames.length) {
+      return toolResult("ci", {
+        allGreen: false,
+        pending: true,
+        checks,
+        requires_user: true,
+        stop_here: true,
+        hint: "CI is pending or unavailable. Stop here and retry hy_ci after GitHub reports completed checks; do not move to edit unless a check actually fails.",
+        allowedTools: ["hy_ci", "hy_status"],
+        blockedTools: ["hy_merge", "hy_chain"],
+        recovery: {
+          tool: "hy_ci",
+          instruction: "Wait for pending CI checks or resolve the GitHub/API status issue, then rerun hy_ci without editing files.",
+        },
+        message: "CI is pending or status is unavailable. Retry hy_ci after checks complete.",
+      });
+    }
 
     const next = transition(state, "edit");
     writeState(next);
 
     return toolResult("edit", {
       allGreen: false,
-      checks: result.checks,
+      checks,
       failedChecks: failedNames,
+      requires_user: true,
+      stop_here: true,
       hint: "CI is not green. Read failed checks before editing. After fixes, run hy_verify, hy_commit, then hy_ci again.",
       allowedTools: ["hy_edit", "hy_verify", "hy_status"],
       blockedTools: ["hy_merge", "hy_chain"],
@@ -38,13 +61,11 @@ export async function handleCi(): Promise<ToolResult> {
   return toolResult("merge", {
     allGreen: true,
     checks: result.checks,
-    requires_user: true,
-    stop_here: true,
     display: {
-      title: "CI passed. Merge confirmation required.",
-      body: `All CI checks passed for PR #${state.prNumber}. Confirm before merging.`,
+      title: "CI passed",
+      body: `All CI checks passed for PR #${state.prNumber}.`,
     },
-    hint: "Show CI status to the user. Do not call hy_merge until the user explicitly confirms merge.",
+    hint: "Continue to hy_merge. The approved workflow does not stop after CI success.",
     allowedTools: ["hy_merge", "hy_status"],
     blockedTools: ["hy_chain"],
     message: "All CI checks passed. Ready to merge.",
