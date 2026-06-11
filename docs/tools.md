@@ -117,8 +117,6 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 **参见**: `src/tools/verify.ts:5-43`, `src/checks.ts:193-207`（runAllChecks）
 
----
-
 ## hy_commit
 
 **资源**: `src/tools/commit.ts` (55 行)
@@ -130,8 +128,6 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **返回**: `{ next: "ci", prNumber, url, display, hint }` 或 `{ error, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/commit.ts:5-55`, `src/git.ts:30-65`（commitAll/push/createPr）
-
----
 
 ## hy_ci
 
@@ -162,6 +158,14 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 **参见**: `src/tools/merge.ts:5-18`, `src/git.ts:67-70`（mergePr）
 
 ---
+
+## Promotion / release exception
+
+`hy_branch` 和 `hy_commit` 固定围绕 `codelint.json: baseBranch` 工作：普通开发分支从 `origin/<baseBranch>` 创建，并把 PR 合回 baseBranch。因此 baseBranch 到 releaseBranch 的 promotion（例如 dev → main）不是普通 hy-workflow 开发任务，不应伪造空 scope 或空 diff 来通过 `hy_verify`。
+
+当用户明确要求 promotion 时，正确流程是确认 source/target，检查 `origin/<target>..origin/<source>` diff，创建或复用 `base=<target>, head=<source>` 的 promotion PR，等待 CI 全绿后合并。若需要直接调用 `gh` 或 `git`，必须先获得用户明确授权。
+
+普通代码/文档改动仍必须走完整闭环；promotion 例外只能用于明确的 release branch 晋级。
 
 ## hy_chain
 
