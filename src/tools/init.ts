@@ -7,6 +7,19 @@ import { toolResult, type ToolResult } from "./_base.js";
 const MARKER_START = "<!-- hy-workflow-rules -->";
 const MARKER_END = "<!-- /hy-workflow-rules -->";
 
+export const INIT_COMMIT_ARTIFACTS = [
+  ".github/",
+  "AGENTS.md",
+  "codelint.json",
+  "doclint.json",
+  "docs-gardener.json",
+];
+
+export const INIT_LOCAL_ARTIFACTS = [
+  ".hy/",
+  ".opencode/",
+];
+
 const WORKFLOW_INSTRUCTIONS = `
 ${MARKER_START}
 
@@ -48,6 +61,12 @@ ${MARKER_START}
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
+- 不要提交本地或运行时目录：.hy/、.opencode/
+
+### hy_init 初始化产物
+
+hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、codelint.json、doclint.json、docs-gardener.json。
+hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
 
 ### 关键输出规则（优先于 openCode 默认短输出倾向）
 
@@ -147,6 +166,32 @@ function cleanupOldPath(root: string): void {
   }
 }
 
+export function ensureLocalArtifactIgnores(root: string): boolean {
+  const filePath = path.join(root, ".gitignore");
+  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : "";
+  const lines = existing.split(/\r?\n/).filter(line => line.length > 0);
+  const missing = INIT_LOCAL_ARTIFACTS.filter(item => !lines.includes(item));
+  if (!missing.length) return false;
+
+  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+  fs.writeFileSync(filePath, `${existing}${prefix}${missing.join("\n")}\n`, "utf-8");
+  return true;
+}
+
+export function initArtifactGuidance(): { commitArtifacts: string[]; localArtifacts: string[]; body: string } {
+  return {
+    commitArtifacts: [...INIT_COMMIT_ARTIFACTS],
+    localArtifacts: [...INIT_LOCAL_ARTIFACTS],
+    body: [
+      "Commit project artifacts:",
+      ...INIT_COMMIT_ARTIFACTS.map(item => `- ${item}`),
+      "",
+      "Do not commit local/runtime artifacts:",
+      ...INIT_LOCAL_ARTIFACTS.map(item => `- ${item}`),
+    ].join("\n"),
+  };
+}
+
 export async function handleInit(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "init", "plan");
@@ -168,22 +213,27 @@ export async function handleInit(): Promise<ToolResult> {
   const root = projectRoot();
   const instructionsChanged = upsertInstructions(root);
   cleanupOldPath(root);
+  const gitignoreChanged = ensureLocalArtifactIgnores(root);
 
   const next = state.phase === "init" ? transition(state, "plan") : state;
   writeState(next);
 
   const verb = instructionsChanged ? "created/updated" : "up to date";
   const legacyDiagnostics = legacyRuntimeDiagnostics(root);
+  const artifactGuidance = initArtifactGuidance();
   const legacyHint = legacyDiagnostics.length
     ? ` Legacy runtime files need manual cleanup: ${legacyDiagnostics.map(d => d.remediation ?? d.message).join(" ")}`
     : "";
   return toolResult("plan", {
     display: {
       title: "Harness ready",
-      body: `Harness deployed. AGENTS.md ${verb}.${legacyHint}`,
+      body: `Harness deployed. AGENTS.md ${verb}. .gitignore ${gitignoreChanged ? "updated" : "up to date"}.\n\n${artifactGuidance.body}${legacyHint}`,
     },
-    hint: `Call hy_plan next only when the user has a concrete repository change task.${legacyHint}`,
+    hint: `Commit only commitArtifacts unless the user explicitly requests local config. Do not commit localArtifacts. Call hy_plan next only when the user has a concrete repository change task.${legacyHint}`,
     allowedTools: ["hy_plan", "hy_status"],
+    commitArtifacts: artifactGuidance.commitArtifacts,
+    localArtifacts: artifactGuidance.localArtifacts,
+    gitignoreChanged,
     legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
     message: `Harness deployed. AGENTS.md ${verb}. Run hy_plan to define your task.`,
   });
