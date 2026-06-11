@@ -1,8 +1,8 @@
 name: Docs Lint
 
 on:
-  push: { paths: ["docs/**", "README.md"] }
-  pull_request: { paths: ["docs/**", "README.md"] }
+  push: { paths: ["docs/**", "README.md", "doclint.json"] }
+  pull_request: { paths: ["docs/**", "README.md", "doclint.json"] }
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,8 @@ jobs:
       - run: npx --yes github:voxServalG/doclint lint --json > report.json || true
       - name: Fail if lint errors
         run: |
-          if [ $(jq '.failed' report.json) -gt 0 ]; then
-            echo "::error::doclint found $(jq '.failed' report.json) errors"
+          failed=$(jq '.failed // .data.counts.failed // .data.summary.failed // .counts.failed // .summary.failed // 0' report.json)
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::doclint found $failed errors"
             exit 1
           fi

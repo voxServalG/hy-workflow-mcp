@@ -30,8 +30,8 @@ iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -Out
 
 之后任何代码/文档任务，agent 自动走闭环。
 
-`hy_init` 后，通常应提交项目配置：`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`。
-不要提交本地或运行时目录：`.hy/`、`.opencode/`；`hy_init` 会默认把它们写入 `.gitignore`。
+`hy_init` 后，通常应提交项目配置：`.github/`、`AGENTS.md`、`.gitignore`、`codelint.json`、`doclint.json`、`docs-gardener.json`。
+不要提交本地或运行时目录：`.hy/`、`.opencode/`；`hy_init` 会默认把它们写入 `.gitignore`。如果运行 setup 后出现 tracked diff，先单独提交 setup artifact sync PR，再继续其他任务。
 
 ## 闭环流程
 
