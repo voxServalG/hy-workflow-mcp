@@ -9,7 +9,7 @@ export async function handleMerge(): Promise<ToolResult> {
   if (!state.prNumber) return toolResult("merge", { error: "No active PR", allowedTools: ["hy_status"] });
 
   const result = mergePr(state.prNumber);
-  if (!result.ok) return toolResult("merge", { error: result.error, recovery: { tool: "hy_merge", instruction: "Inspect the merge failure, resolve blockers, then retry hy_merge only after user confirmation remains valid." }, allowedTools: ["hy_merge", "hy_status"] });
+  if (!result.ok) return toolResult("merge", { error: result.error, requires_user: true, stop_here: true, recovery: { tool: "hy_merge", instruction: "Inspect the merge failure, resolve blockers, then retry hy_merge if the approved workflow is still valid." }, allowedTools: ["hy_merge", "hy_status"] });
 
   const next = transition(state, "chain");
   writeState(next);
@@ -20,8 +20,8 @@ export async function handleMerge(): Promise<ToolResult> {
       title: "Pull request merged",
       body: `PR #${state.prNumber} merged.`,
     },
-    hint: "Call hy_chain if there are downstream branches that need rebasing; otherwise the workflow can stop here.",
+    hint: "Continue to hy_chain. Pass an empty branches list if there are no downstream branches, then call hy_reset to return to plan.",
     allowedTools: ["hy_chain", "hy_status"],
-    message: `PR #${state.prNumber} merged. Call hy_chain to rebase downstream branches.`,
+    message: `PR #${state.prNumber} merged. Call hy_chain to rebase downstream branches, then hy_reset.`,
   });
 }

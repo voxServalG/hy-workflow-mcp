@@ -70,7 +70,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 - **进入 Phase**: `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录
 - **驳回后转换到**: `plan`
-- **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_commit", allowedTools }`
+- **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_reset", allowedTools }`
 - **驳回返回**: `{ next: "plan", approved: false, note }`
 
 **参见**: `src/tools/approve.ts:1-40`, `src/state.ts:146-155`（transition）
@@ -133,7 +133,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 - **进入 Phase**: `commit`
 - **转换到**: `ci`
-- **返回**: `{ next: "ci", prNumber, url, display, stop_here: true, hint }` 或 `{ error, recovery }`
+- **返回**: `{ next: "ci", prNumber, url, display, hint }` 或 `{ error, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/commit.ts:5-55`, `src/git.ts:30-65`（commitAll/push/createPr）
 
@@ -148,8 +148,8 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
 - **失败后转换到**: `edit`（通过 transition(state, "edit") 并 writeState）
-- **全绿返回**: `{ next: "merge", allGreen: true, checks, requires_user: true, stop_here: true, display, hint }`
-- **失败返回**: `{ next: "edit", allGreen: false, checks, recovery }`
+- **pending/API 异常**: 保持 `ci`，等待后重试 `hy_ci`
+- **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/ci.ts:1-34`, `src/git.ts:72-88`（checkCi）
 
@@ -163,7 +163,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 - **进入 Phase**: `merge`
 - **转换到**: `chain`
-- **返回**: `{ next: "chain", prNumber, display, hint }`
+- **返回**: `{ next: "chain", prNumber, display, hint }` 或 `{ error, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/merge.ts:5-18`, `src/git.ts:67-70`（mergePr）
 

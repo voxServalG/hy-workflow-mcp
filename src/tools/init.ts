@@ -84,7 +84,7 @@ hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
 
 ### hy_reset
 
-hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。仅在用户明确要求放弃当前开发任务时使用。
+hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。用于 PR 已合并且 hy_chain 完成后的正常收尾；也可在用户明确要求放弃当前开发任务时使用。
 
 ### hy_plan 使用
 
@@ -109,12 +109,14 @@ hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和
 按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。
 每完成一步，用简短语句向用户汇报当前进度（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
 
-hy_commit 创建 PR 后任务结束。用户需要时手动调用: hy_ci → hy_merge → hy_chain。
+任务完成标准不是 hy_commit，而是 PR 合并到 baseBranch 后调用 hy_chain（无下游分支时传空数组）并 hy_reset 回到 plan。
+hy_commit → hy_ci → hy_merge → hy_chain → hy_reset 中间除非工具返回 error、requires_user 或 stop_here（例如 CI 红、CI pending/API 异常、push/PR/merge/rebase 失败），否则不要停下。
 
 ### 失败处理
 
 hy_verify 失败: 编辑修复后重新 hy_verify。
-hy_ci 有红:   编辑修复后重新 hy_verify → hy_commit → hy_ci。
+hy_ci 有红:   停下并展示结构化失败信息；编辑修复后重新 hy_verify → hy_commit → hy_ci。
+hy_ci pending/API 异常: 停下并展示结构化状态；不要进入 edit，等待后重试 hy_ci。
 hy_status 随时可查看当前阶段。
 
 ### 提示

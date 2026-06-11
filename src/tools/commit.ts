@@ -33,13 +33,13 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   ].join("\n");
 
   const c = commitScope(root, state.plan.scope, args.title, body);
-  if (!c.ok) return toolResult("commit", { error: c.error, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!c.ok) return toolResult("commit", { error: c.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const p = push(root, state.branch);
-  if (!p.ok) return toolResult("commit", { error: p.error, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry or manually recover the already-created local commit if needed." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!p.ok) return toolResult("commit", { error: p.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry or manually recover the already-created local commit if needed." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
-  if (!pr.ok) return toolResult("commit", { error: pr.error, recovery: { tool: "hy_commit", instruction: "Resolve the PR creation failure. If the branch is already pushed, create the PR without recommitting only with user approval." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!pr.ok) return toolResult("commit", { error: pr.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR creation failure. If the branch is already pushed, create the PR without recommitting only with user approval." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const next = transition(state, "ci");
   next.prNumber = pr.prNumber ?? null;
@@ -54,8 +54,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       body: `PR #${pr.prNumber} created.`,
       urls: pr.url ? [pr.url] : [],
     },
-    stop_here: true,
-    hint: "Show the PR URL to the user. The default workflow stops after hy_commit; only continue to hy_ci if the user asks.",
+    hint: "Show the PR URL briefly, then continue to hy_ci. Do not stop here unless a later tool reports CI or merge problems.",
     allowedTools: ["hy_ci", "hy_status"],
     blockedTools: ["hy_merge", "hy_chain"],
     message: `PR #${pr.prNumber} created. Waiting for CI...`,

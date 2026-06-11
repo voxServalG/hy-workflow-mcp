@@ -9,6 +9,7 @@ import { handleCommit } from "../src/tools/commit.js";
 import { handleCi } from "../src/tools/ci.js";
 import { handleMerge } from "../src/tools/merge.js";
 import { handleStatus } from "../src/tools/status.js";
+import { handleApprove } from "../src/tools/approve.js";
 import { writeState } from "../src/state.js";
 import type { PlanDoc, WorkflowState } from "../src/state.js";
 
@@ -67,6 +68,20 @@ try {
   }
   if (!planResult.requires_user || !planResult.stop_here) {
     throw new Error("hy_plan should require user and stop");
+  }
+
+  writeState({ ...baseState("approve"), plan: basePlan() });
+  const approveResult = await handleApprove({ approved: "approve", note: "test" });
+  assertEnvelope("hy_approve", approveResult);
+  if (approveResult.stopAfter !== "hy_reset") {
+    throw new Error("hy_approve should continue the approved pipeline through hy_reset");
+  }
+  const pipelineSteps = approveResult.pipeline?.map((item: any) => item.step) ?? [];
+  for (const step of ["hy_commit", "hy_ci", "hy_merge", "hy_chain", "hy_reset"]) {
+    if (!pipelineSteps.includes(step)) throw new Error(`hy_approve pipeline missing ${step}`);
+  }
+  if (!approveResult.resumeAfter?.includes("baseBranch")) {
+    throw new Error("hy_approve should describe merge-to-baseBranch completion");
   }
 
   writeState(baseState("edit"));
