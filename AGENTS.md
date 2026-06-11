@@ -11,7 +11,7 @@
 
 ### 各工具说明
 
-**0. hy_init** — 项目首次使用时调用。验证 setup 已部署 hy-harness 产物，写入/更新 workflow 规则和本地忽略项，自动进 plan。不会在 MCP 内启动交互式 harness。
+**0. hy_init** — 项目首次使用时调用。验证 setup 已部署 bootstrap 产物，写入/更新 workflow 规则和本地忽略项，自动进 plan。不会在 MCP 内启动 setup 或交互式 TUI。
 
 **1. hy_plan** — 调用时传入 {task, plan}。自行利用工作区上下文构造 PlanDoc JSON。服务端通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
 **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
@@ -38,6 +38,27 @@
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
+- 不要提交本地或运行时目录：.hy/、.opencode/
+
+### hy_init 初始化产物
+
+hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、codelint.json、doclint.json、docs-gardener.json。
+hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
+
+### Promotion / release 例外
+
+baseBranch → releaseBranch 的 promotion（例如 dev → main）属于发布/晋级操作，不是普通开发任务。
+当用户明确要求“搞到 main”“promote dev to main”“发布到 main”时，不要伪造空 scope，也不要硬套 hy_branch → hy_edit → hy_verify → hy_commit。
+
+promotion 操作必须满足：
+- source 必须是已验证的 baseBranch（通常是 dev），target 必须是 releaseBranch（通常是 main）
+- 先检查 origin/<target>..origin/<source> diff，确认只包含要发布的内容
+- 创建或复用 promotion PR：base=<target>, head=<source>
+- 等待 CI 全绿后再合并 PR
+- 若需要直接使用 gh/git 执行 promotion，必须先获得用户明确授权
+- 完成后可调用 hy_reset 清理 workflow 状态
+
+普通代码/文档改动仍必须走完整 hy-workflow 闭环，禁止用 promotion 例外绕过开发流程。
 
 ### 关键输出规则（优先于 openCode 默认短输出倾向）
 
@@ -49,7 +70,7 @@
 
 ### hy_reset
 
-hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。仅在用户明确要求放弃当前开发任务时使用。
+hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。用于 PR 已合并且 hy_chain 完成后的正常收尾；也可在用户明确要求放弃当前开发任务时使用。
 
 ### hy_plan 使用
 
@@ -74,12 +95,14 @@ hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和
 按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。
 每完成一步，用简短语句向用户汇报当前进度（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
 
-hy_commit 创建 PR 后任务结束。用户需要时手动调用: hy_ci → hy_merge → hy_chain。
+任务完成标准不是 hy_commit，而是 PR 合并到 baseBranch 后调用 hy_chain（无下游分支时传空数组）并 hy_reset 回到 plan。
+hy_commit → hy_ci → hy_merge → hy_chain → hy_reset 中间除非工具返回 error、requires_user 或 stop_here（例如 CI 红、CI pending/API 异常、push/PR/merge/rebase 失败），否则不要停下。
 
 ### 失败处理
 
 hy_verify 失败: 编辑修复后重新 hy_verify。
-hy_ci 有红:   编辑修复后重新 hy_verify → hy_commit → hy_ci。
+hy_ci 有红:   停下并展示结构化失败信息；编辑修复后重新 hy_verify → hy_commit → hy_ci。
+hy_ci pending/API 异常: 停下并展示结构化状态；不要进入 edit，等待后重试 hy_ci。
 hy_status 随时可查看当前阶段。
 
 ### 提示

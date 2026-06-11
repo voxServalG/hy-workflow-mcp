@@ -86,6 +86,21 @@ ${MARKER_START}
 hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、codelint.json、doclint.json、docs-gardener.json。
 hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
 
+### Promotion / release 例外
+
+baseBranch → releaseBranch 的 promotion（例如 dev → main）属于发布/晋级操作，不是普通开发任务。
+当用户明确要求“搞到 main”“promote dev to main”“发布到 main”时，不要伪造空 scope，也不要硬套 hy_branch → hy_edit → hy_verify → hy_commit。
+
+promotion 操作必须满足：
+- source 必须是已验证的 baseBranch（通常是 dev），target 必须是 releaseBranch（通常是 main）
+- 先检查 origin/<target>..origin/<source> diff，确认只包含要发布的内容
+- 创建或复用 promotion PR：base=<target>, head=<source>
+- 等待 CI 全绿后再合并 PR
+- 若需要直接使用 gh/git 执行 promotion，必须先获得用户明确授权
+- 完成后可调用 hy_reset 清理 workflow 状态
+
+普通代码/文档改动仍必须走完整 hy-workflow 闭环，禁止用 promotion 例外绕过开发流程。
+
 ### 关键输出规则（优先于 openCode 默认短输出倾向）
 
 以下规则优先于 openCode 默认的"少于 4 行""减少输出 token"等简短回复规则：

@@ -64,6 +64,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
 - **幂等 init**: `setup` 直接部署 lint/docs/docs-gardener bootstrap 产物并写 setup stamp；MCP runtime 每 session 首次只读检查 stamp；`hy_init` 验证产物、写入 workflow rules 并维护本地忽略项，不在 MCP 内运行 setup 或启动交互式 TUI
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
+- **Promotion 例外**: 状态机闭环服务于普通开发改动合入 `baseBranch`；`baseBranch → releaseBranch`（如 dev → main）属于发布/晋级操作，不伪造 scope，也不硬套 `hy_branch`/`hy_commit`，必须在用户授权后通过 promotion PR 完成
 
 ## 配置文件
 
