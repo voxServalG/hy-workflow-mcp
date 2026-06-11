@@ -11,7 +11,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
-    "test": "npx tsc --noEmit"
+    "test": "npx tsc --noEmit",
+    "test:dist": "npx tsx tests/dist-artifacts.ts"
   },
   "author": "Haiyi",
   "license": "MIT",

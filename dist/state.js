@@ -3,10 +3,32 @@ import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 // ── State path ───────────────────────────────────────────────
-const STATE_DIR = ".hy";
-const STATE_FILE = path.join(STATE_DIR, "workflow.json");
+const RUNTIME_STATE_FILE = path.join("hy-workflow", "workflow.json");
+const RUNTIME_SCOPE_FILE = path.join("hy-workflow", "scope.json");
+const LEGACY_STATE_FILE = path.join(".hy", "workflow.json");
+const LEGACY_SCOPE_FILE = path.join(".hy", "scope.json");
 export function statePath() {
-    return path.join(projectRoot(), STATE_FILE);
+    return gitPrivatePath(projectRoot(), RUNTIME_STATE_FILE);
+}
+export function scopePath() {
+    return gitPrivatePath(projectRoot(), RUNTIME_SCOPE_FILE);
+}
+function legacyStatePath(root) {
+    return path.join(root, LEGACY_STATE_FILE);
+}
+function legacyScopePath(root) {
+    return path.join(root, LEGACY_SCOPE_FILE);
+}
+function gitPrivatePath(root, relativePath) {
+    try {
+        const resolved = execSync(`git rev-parse --git-path ${relativePath}`, { cwd: root })
+            .toString()
+            .trim();
+        return path.isAbsolute(resolved) ? resolved : path.join(root, resolved);
+    }
+    catch {
+        return path.join(root, ".git", relativePath);
+    }
 }
 export function projectRoot() {
     let dir = process.cwd();
@@ -20,10 +42,73 @@ export function projectRoot() {
     }
     return process.cwd();
 }
+function isTracked(root, file) {
+    try {
+        execSync(`git ls-files --error-unmatch -- "${file}"`, { cwd: root, stdio: "ignore" });
+        return true;
+    }
+    catch (e) {
+        if (e.status === 1)
+            return false;
+        return null;
+    }
+}
+export function legacyRuntimeDiagnostics(root = projectRoot()) {
+    const diagnostics = [];
+    for (const file of [LEGACY_STATE_FILE, LEGACY_SCOPE_FILE]) {
+        const fullPath = path.join(root, file);
+        if (!fs.existsSync(fullPath))
+            continue;
+        const tracked = isTracked(root, file);
+        if (tracked === true) {
+            diagnostics.push({
+                file,
+                tracked: true,
+                message: `${file} is legacy hy-workflow runtime metadata tracked by Git and may block branch checkout.`,
+                remediation: `Run git rm --cached ${file} and add .hy/ to .gitignore, then commit that cleanup.`,
+            });
+            continue;
+        }
+        if (tracked === null) {
+            diagnostics.push({
+                file,
+                tracked: false,
+                message: `${file} exists but Git tracking status could not be determined, so hy-workflow will not delete it automatically.`,
+            });
+        }
+    }
+    return diagnostics;
+}
+export function cleanupLegacyRuntimeFiles(root = projectRoot()) {
+    for (const file of [LEGACY_STATE_FILE, LEGACY_SCOPE_FILE]) {
+        const fullPath = path.join(root, file);
+        if (!fs.existsSync(fullPath))
+            continue;
+        const tracked = isTracked(root, file);
+        if (tracked === false) {
+            try {
+                fs.unlinkSync(fullPath);
+            }
+            catch { }
+        }
+    }
+}
 // ── Read / Write ─────────────────────────────────────────────
 export function readState() {
+    const root = projectRoot();
     const p = statePath();
     if (!fs.existsSync(p)) {
+        const legacy = legacyStatePath(root);
+        if (fs.existsSync(legacy)) {
+            const state = JSON.parse(fs.readFileSync(legacy, "utf-8"));
+            try {
+                writeState(state);
+                cleanupLegacyRuntimeFiles(root);
+            }
+            catch { }
+            return state;
+        }
+        cleanupLegacyRuntimeFiles(root);
         return {
             version: "1",
             phase: "init",
@@ -35,10 +120,11 @@ export function readState() {
         };
     }
     const raw = fs.readFileSync(p, "utf-8");
+    cleanupLegacyRuntimeFiles(root);
     return JSON.parse(raw);
 }
 export function writeState(state) {
-    const dir = path.join(projectRoot(), STATE_DIR);
+    const dir = path.dirname(statePath());
     if (!fs.existsSync(dir))
         fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(statePath(), JSON.stringify(state, null, 2) + "\n", "utf-8");
