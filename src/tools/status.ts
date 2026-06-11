@@ -1,9 +1,11 @@
 import { legacyRuntimeDiagnostics, readState } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { initArtifactGuidance } from "./init.js";
 
 export async function handleStatus(): Promise<ToolResult> {
   const state = readState();
   const legacyDiagnostics = legacyRuntimeDiagnostics();
+  const artifactGuidance = initArtifactGuidance();
 
   const r: ToolResult & Record<string, any> = toolResult(state.phase, {
     phase: state.phase,
@@ -16,6 +18,8 @@ export async function handleStatus(): Promise<ToolResult> {
       ? `Use phase, next, allowedTools, and action to decide the next safe tool call. Legacy runtime cleanup needed: ${legacyDiagnostics.map(d => d.remediation ?? d.message).join(" ")}`
       : "Use phase, next, allowedTools, and action to decide the next safe tool call.",
     allowedTools: [state.phase === "done" ? "hy_status" : `hy_${state.phase}`, "hy_status"],
+    commitArtifacts: artifactGuidance.commitArtifacts,
+    localArtifacts: artifactGuidance.localArtifacts,
     legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
   });
 

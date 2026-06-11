@@ -29,10 +29,12 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
-- **成功返回**: `{ next: "plan", message: "Harness deployed. .opencode/instructions.md ..." }`
+- **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, gitignoreChanged }`
 - **失败返回**: `{ next: "init", error: "Harness deployment failed..." }`
 
 **参见**: `src/tools/init.ts`, `src/state.ts:114-118`（writeState）
+
+`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。
 
 ---
 
@@ -194,6 +196,4 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 **参见**: `src/tools/status.ts:1-26`, `src/state.ts:97-112`（readState）
 
 ## Related
-- [Architecture](./architecture.md)
-- [State Machine](./state-machine.md)
-- [Verify Pipeline](./verify.md)
+[Architecture](./architecture.md) · [State Machine](./state-machine.md) · [Verify Pipeline](./verify.md)

@@ -28,6 +28,9 @@ iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -Out
 
 之后任何代码/文档任务，agent 自动走闭环。
 
+`hy_init` 后，通常应提交项目配置：`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`。
+不要提交本地或运行时目录：`.hy/`、`.opencode/`；`hy_init` 会默认把它们写入 `.gitignore`。
+
 ## 闭环流程
 
 ```
@@ -106,7 +109,7 @@ LLM 连接 MCP 时会自动注入以下约束：
 
 ## 自举
 
-本项目自身也用 hy-workflow 管理。运行态状态写入 Git 私有目录 `.git/hy-workflow/workflow.json`，不会进入业务 diff；`.hy/scope.json` 仅作为当前 scope 的可见提示文件。
+本项目自身也用 hy-workflow 管理。运行态状态和 scope lock 写入 Git 私有目录 `.git/hy-workflow/`，不会进入业务 diff。
 
 ## 许可
 
