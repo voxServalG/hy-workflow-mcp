@@ -10,6 +10,7 @@ const MARKER_END = "<!-- /hy-workflow-rules -->";
 export const INIT_COMMIT_ARTIFACTS = [
   ".github/",
   "AGENTS.md",
+  ".gitignore",
   "codelint.json",
   "doclint.json",
   "docs-gardener.json",
@@ -85,6 +86,15 @@ ${MARKER_START}
 
 hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、codelint.json、doclint.json、docs-gardener.json。
 hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
+
+### Artifact contract
+
+setup / hy_init 可能产生两类产物，必须分开处理：
+- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、codelint.json、doclint.json、docs-gardener.json
+- **不应提交的 local/runtime artifacts**: .hy/、.opencode/、MCP 客户端本地配置和 setup stamp（.hy/hy-workflow-setup.json）
+
+如果运行 setup 后出现 tracked diff（例如 CI workflow、lint config、docs-gardener config 或 .gitignore 变化），应优先创建单独的 setup artifact sync PR 提交这些变更。
+不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交 .hy/ 或 .opencode/。
 
 ### Promotion / release 例外
 

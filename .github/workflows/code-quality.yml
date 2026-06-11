@@ -16,7 +16,7 @@ jobs:
       - run: npx --yes github:voxServalG/codelint check --json > report.json || true
       - name: Fail if errors
         run: |
-          errors=$(jq '.errors' report.json)
+          errors=$(jq '.errors // .data.errors // 0' report.json)
           if [ "$errors" -gt 0 ]; then
             echo "::error::codelint found $errors errors"
             exit 1
