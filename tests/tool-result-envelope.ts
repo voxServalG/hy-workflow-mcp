@@ -99,7 +99,7 @@ try {
   }
 
   writeState(baseState("ci"));
-  const ciResult = await handleCi();
+  const ciResult = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
   assertEnvelope("hy_ci", ciResult);
   if (!ciResult.error) throw new Error("hy_ci without PR should report error");
 

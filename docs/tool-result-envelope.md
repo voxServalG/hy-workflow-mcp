@@ -38,7 +38,7 @@ type HyToolResult = {
 
 `hy_commit` success returns `next: "ci"` with the PR URL but does not set `stop_here`; after plan approval the agent should continue to CI automatically.
 
-`hy_ci` success returns `next: "merge"` without `requires_user` or `stop_here`; after plan approval the agent should continue to merge automatically. CI failures, pending checks, or GitHub/API status problems return structured `recovery` and set `requires_user`/`stop_here` so the agent stops and reports the non-happy-path condition.
+`hy_ci` performs bounded polling for pending checks. Success returns `next: "merge"` without `requires_user` or `stop_here`; after plan approval the agent should continue to merge automatically. CI failures, polling timeout with checks still pending, or GitHub/API status problems return structured `recovery` and set `requires_user`/`stop_here` so the agent stops and reports the non-happy-path condition.
 
 ## Compatibility
 

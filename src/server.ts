@@ -255,8 +255,15 @@ const TOOLS = [
   },
   {
     name: "hy_ci",
-    description: "轮询 CI 状态，返回结构化报告。全绿时继续 hy_merge；CI 红、pending 或 API 异常时结构化停下。",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    description: "按 timeoutSeconds/intervalSeconds bounded polling CI 状态。全绿时继续 hy_merge；CI 红、超时仍 pending 或 API 异常时结构化停下。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timeoutSeconds: { type: "number", description: "Maximum seconds to poll pending checks before returning pending status. Defaults to 600, capped at 1800." },
+        intervalSeconds: { type: "number", description: "Seconds between CI polling attempts. Defaults to 10, minimum 2." },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "hy_merge",
