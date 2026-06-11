@@ -24,7 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/set
 iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh; bash setup.sh; rm setup.sh
 ```
 
-脚本会输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。
+脚本会先部署 hy-harness 项目产物（`.github/`、`codelint.json`、`doclint.json`、`docs-gardener.json`），再输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。
+
+`hy_init` 只做 MCP-safe finalization：校验 harness 产物、写入/更新 workflow 规则、维护本地忽略项并初始化状态；它不会再次部署 hy-harness，也不会在 MCP 内启动交互式 TUI。
 
 之后任何代码/文档任务，agent 自动走闭环。
 
@@ -43,7 +45,7 @@ hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify →
 
 | Tool | 阶段 | 硬规则 | 软规则 |
 |------|------|--------|--------|
-| `hy_init` | init | 部署 harness configs + CI workflows | — |
+| `hy_init` | init | 校验 harness configs + CI workflows，写入 workflow rules | — |
 | `hy_plan` | plan | 基线扫描 | LLM 生成 scope+boundary+verify+rubs |
 | `hy_approve` | approve | phase 必为 plan | **用户许可 gate** |
 | `hy_branch` | branch | 命名规范校验 | — |

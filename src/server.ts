@@ -34,7 +34,7 @@ const SYSTEM_PROMPT = `
 
 ### 流程规则
 
-**0. hy_init — 项目首次使用时调用。** 部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。已部署则跳过，自动进 plan。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补装 harness。
+**0. hy_init — 项目首次使用时调用。** 验证 setup 已部署 hy-harness 产物（codelint + doclint + docs-gardener + CI workflows），写入/更新 workflow 规则和本地忽略项，自动进 plan。hy_init 不会在 MCP 内启动交互式 harness；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补齐 workflow 规则。
 
 1. hy_plan — 调用时传入 {task, plan}。你需要自行利用工作区上下文构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
    **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
@@ -113,7 +113,7 @@ const server = new Server(
 const TOOLS = [
   {
     name: "hy_init",
-    description: "初始化项目：部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。返回兼容式 agent-facing envelope，说明下一步是否可 hy_plan。",
+    description: "初始化工作流：验证 setup 已部署 hy-harness 产物，写入/更新 AGENTS.md 和本地忽略项；不会在 MCP 内启动交互式 harness。返回兼容式 agent-facing envelope，说明下一步是否可 hy_plan。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
