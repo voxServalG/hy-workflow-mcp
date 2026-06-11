@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
+import { legacyRuntimeDiagnostics, readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -173,13 +173,18 @@ export async function handleInit(): Promise<ToolResult> {
   writeState(next);
 
   const verb = instructionsChanged ? "created/updated" : "up to date";
+  const legacyDiagnostics = legacyRuntimeDiagnostics(root);
+  const legacyHint = legacyDiagnostics.length
+    ? ` Legacy runtime files need manual cleanup: ${legacyDiagnostics.map(d => d.remediation ?? d.message).join(" ")}`
+    : "";
   return toolResult("plan", {
     display: {
       title: "Harness ready",
-      body: `Harness deployed. AGENTS.md ${verb}.`,
+      body: `Harness deployed. AGENTS.md ${verb}.${legacyHint}`,
     },
-    hint: "Call hy_plan next only when the user has a concrete repository change task.",
+    hint: `Call hy_plan next only when the user has a concrete repository change task.${legacyHint}`,
     allowedTools: ["hy_plan", "hy_status"],
+    legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
     message: `Harness deployed. AGENTS.md ${verb}. Run hy_plan to define your task.`,
   });
 }
