@@ -100,6 +100,8 @@ hy_status 随时可查看当前阶段。
 ## 提示
 
 - 所有工具返回均为 JSON，含 next 字段指示下一阶段
+- 工具返回会保留 legacy 字段，同时尽量提供 agent-facing envelope: ok、phase、display、hint、requires_user、stop_here、allowedTools、blockedTools、recovery
+- display 是用户需要看到的内容；hint 是 agent 的下一步义务；requires_user 或 stop_here 为 true 时必须停下来等待用户明确输入
 `;
 
 // ― Server setup
@@ -111,12 +113,12 @@ const server = new Server(
 const TOOLS = [
   {
     name: "hy_init",
-    description: "初始化项目：部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）",
+    description: "初始化项目：部署 hy-harness（codelint + doclint + docs-gardener + CI workflows）。返回兼容式 agent-facing envelope，说明下一步是否可 hy_plan。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_plan",
-    description: "分析任务 → LLM 使用工作区上下文构造 PlanDoc JSON → 服务端 6 道 gate 校验。LLM 需传 {task, plan}。",
+    description: "分析任务 → LLM 使用工作区上下文构造 PlanDoc JSON → 服务端 6 道 gate 校验。成功返回 summary/display/requires_user/stop_here，必须展示给用户并等待 approve。",
     inputSchema: {
       type: "object",
       properties: {
@@ -203,7 +205,7 @@ const TOOLS = [
   },
   {
     name: "hy_approve",
-    description: "用户审视 plan。传 approved=\"approve\" 放行到 branch，传其他任何字符串=驳回理由回到 plan。注意：approved 必须是字符串，不可传 boolean。",
+    description: "用户审视 plan。传 approved=\"approve\" 放行到 branch，传其他任何字符串=驳回理由回到 plan。返回 pipeline 和 allowedTools；approved 必须是字符串，不可传 boolean。",
     inputSchema: {
       type: "object",
       properties: {
@@ -216,7 +218,7 @@ const TOOLS = [
   },
   {
     name: "hy_branch",
-    description: "创建分支。category ∈ {refactor,feat,chore,docs,ci,fix,test}",
+    description: "创建分支。category ∈ {refactor,feat,chore,docs,ci,fix,test}。成功后 envelope 指向 hy_edit。",
     inputSchema: {
       type: "object",
       properties: {
@@ -229,17 +231,17 @@ const TOOLS = [
   },
   {
     name: "hy_edit",
-    description: "锁定 scope，LLM 使用标准 Read/Edit/Write 编辑文件。完成后调 hy_verify。",
+    description: "锁定 scope，LLM 使用标准 Read/Edit/Write 编辑文件。返回 display/hint/allowedTools，完成后调 hy_verify。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_verify",
-    description: "全量校验：doclint + codelint + scope + boundary + platform + smoke + tests。全绿方可 commit。",
+    description: "全量校验：doclint + codelint + scope + boundary + platform + smoke + tests。失败返回按 layer 的 recovery；全绿方可 commit。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_commit",
-    description: "git add + commit + push + gh pr create。PR 正文嵌入 plan 摘要。",
+    description: "git add + commit + push + gh pr create。PR 正文嵌入 plan 摘要；成功返回 PR display/url 并默认 stop_here。",
     inputSchema: {
       type: "object",
       properties: {
@@ -252,17 +254,17 @@ const TOOLS = [
   },
   {
     name: "hy_ci",
-    description: "轮询 CI 状态，返回结构化报告。",
+    description: "轮询 CI 状态，返回结构化报告。全绿时返回 requires_user/stop_here，等待用户确认 merge。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_merge",
-    description: "全绿后合并 PR + 删除分支。",
+    description: "全绿并经用户确认后合并 PR + 删除分支。返回下一步 hy_chain guidance。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_chain",
-    description: "依次 rebase 所有下游分支。",
+    description: "依次 rebase 所有下游分支。返回 done display 和恢复提示。",
     inputSchema: {
       type: "object",
       properties: {
@@ -274,12 +276,12 @@ const TOOLS = [
   },
   {
     name: "hy_status",
-    description: "查看当前工作流阶段。",
+    description: "查看当前工作流阶段。返回 phase、allowedTools 和下一步提示。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_reset",
-    description: "重置到 plan 阶段，清空当前工作数据（branch/pr/plan/verifyHash）。任意阶段可调用。",
+    description: "重置到 plan 阶段，清空当前工作数据（branch/pr/plan/verifyHash）。仅在用户明确要求放弃任务后调用，返回 reset display。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ];

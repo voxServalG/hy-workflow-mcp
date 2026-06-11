@@ -1,6 +1,6 @@
 # Tools Reference
 
-hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts:306-322`。
+hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts:311-325`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
 
 ## 概览
 
@@ -52,7 +52,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 - **进入 Phase**: `plan`
 - **转换到**: `approve`
-- **成功返回**: `{ next: "approve", plan, summary, message }`
+- **成功返回**: `{ next: "approve", plan, summary, display, requires_user: true, stop_here: true, allowedTools, blockedTools, message }`
 - **失败返回**: `{ next: "plan", error, fallback: {message, schema} }`
 
 **参见**: `src/tools/plan.ts:7-246`
@@ -68,7 +68,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 - **进入 Phase**: `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录
 - **驳回后转换到**: `plan`
-- **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_commit" }`
+- **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_commit", allowedTools }`
 - **驳回返回**: `{ next: "plan", approved: false, note }`
 
 **参见**: `src/tools/approve.ts:1-40`, `src/state.ts:146-155`（transition）
@@ -83,7 +83,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 - **进入 Phase**: `approve`, `branch`
 - **转换到**: `edit`
-- **返回**: `{ next: "edit", branch }` 或 `{ error }`
+- **返回**: `{ next: "edit", branch, hint, allowedTools }` 或 `{ error, recovery }`
 
 **参见**: `src/tools/branch.ts:5-26`, `src/git.ts:22-28`（createBranch）
 
@@ -93,11 +93,11 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 **资源**: `src/tools/edit.ts` (45 行)
 
-锁定 scope 到 `.hy/scope.json` 作为 agent 可见提示。workflow phase 本身写入 Git 私有状态文件，不推进 Phase（手动设为 edit），返回 `next: "verify"` 提示 LLM 开始编写代码。
+锁定 scope 到 `.hy/scope.json` 作为 agent 可见提示。workflow phase 本身写入 Git 私有状态文件，不推进 Phase（手动设为 edit），返回 `next: "verify"`、`phase: "edit"` 提示 LLM 开始编写代码。
 
 - **进入 Phase**: `branch`, `edit`, `verify`
 - **转换到**: `transition(state, "edit")`，返回 `next: "verify"`
-- **返回**: `{ next: "verify", branch, scope, boundary, message }`
+- **返回**: `{ next: "verify", phase: "edit", branch, scope, boundary, display, hint, allowedTools, blockedTools, message }`
 
 **参见**: `src/tools/edit.ts:11-45`（通过 transition(state, "edit") 切换状态）, `.hy/scope.json`（scope 锁定文件）
 
@@ -112,8 +112,8 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 - **进入 Phase**: `edit`, `verify`
 - **通过后转换到**: `commit`
 - **失败后转换到**: `edit`
-- **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash }`
-- **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks }`
+- **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash, hint, allowedTools }`
+- **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks, failedChecks, recovery.byLayer }`
 
 **参见**: `src/tools/verify.ts:5-43`, `src/checks.ts:193-207`（runAllChecks）
 
@@ -127,7 +127,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 - **进入 Phase**: `commit`
 - **转换到**: `ci`
-- **返回**: `{ next: "ci", prNumber, url }` 或 `{ error }`
+- **返回**: `{ next: "ci", prNumber, url, display, stop_here: true, hint }` 或 `{ error, recovery }`
 
 **参见**: `src/tools/commit.ts:5-55`, `src/git.ts:30-65`（commitAll/push/createPr）
 
@@ -142,8 +142,8 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
 - **失败后转换到**: `edit`（通过 transition(state, "edit") 并 writeState）
-- **全绿返回**: `{ next: "merge", allGreen: true, checks }`
-- **失败返回**: `{ next: "edit", allGreen: false, checks }`
+- **全绿返回**: `{ next: "merge", allGreen: true, checks, requires_user: true, stop_here: true, display, hint }`
+- **失败返回**: `{ next: "edit", allGreen: false, checks, recovery }`
 
 **参见**: `src/tools/ci.ts:1-34`, `src/git.ts:72-88`（checkCi）
 
@@ -157,7 +157,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 - **进入 Phase**: `merge`
 - **转换到**: `chain`
-- **返回**: `{ next: "chain", prNumber }`
+- **返回**: `{ next: "chain", prNumber, display, hint }`
 
 **参见**: `src/tools/merge.ts:5-18`, `src/git.ts:67-70`（mergePr）
 
@@ -185,7 +185,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 - **进入 Phase**: 无限制
 - **转换到**: 无（只读）
-- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, action? }`
+- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, action? }`
 
 **参见**: `src/tools/status.ts:1-26`, `src/state.ts:97-112`（readState）
 

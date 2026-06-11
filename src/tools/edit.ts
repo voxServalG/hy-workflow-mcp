@@ -1,5 +1,5 @@
 import { readState, writeState, transition, assertPhase, scopePath } from "../state.js";
-import type { ToolResult } from "./_base.js";
+import { toolResult, type ToolResult } from "./_base.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -11,7 +11,7 @@ export async function handleEdit(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "branch", "edit", "verify"); // can re-enter from verify (fix cycle)
 
-  if (!state.plan) return { next: "edit", error: "No plan" };
+  if (!state.plan) return toolResult("edit", { error: "No plan", allowedTools: ["hy_status"] });
 
   // Lock scope in git-private storage so workflow metadata stays out of the worktree.
   const scopeJson = {
@@ -32,11 +32,18 @@ export async function handleEdit(): Promise<ToolResult> {
     writeState(next);
   }
 
-  return {
-    next: "verify",
+  return toolResult("verify", {
+    phase: "edit",
     branch: state.branch,
     scope: state.plan.scope,
     boundary: state.plan.boundary,
+    display: {
+      title: "Scope locked",
+      body: `Edit only files declared in plan.scope, then run hy_verify.`,
+    },
+    hint: "Use standard file editing tools only within plan.scope. When edits are complete, run hy_verify.",
+    allowedTools: ["hy_verify", "hy_edit", "hy_status"],
+    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
     message: `Scope locked. Edit files within plan.scope: ${state.plan.scope.changes.join(", ")}. When done, run hy_verify.`,
-  };
+  });
 }
