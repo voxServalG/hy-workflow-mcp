@@ -12,6 +12,7 @@ const guidance = initArtifactGuidance();
 
 assert(guidance.commitArtifacts.includes(".github/"), "commit artifacts should include .github/");
 assert(guidance.commitArtifacts.includes("AGENTS.md"), "commit artifacts should include AGENTS.md");
+assert(guidance.commitArtifacts.includes(".gitignore"), "commit artifacts should include .gitignore");
 assert(guidance.localArtifacts.includes(".hy/"), "local artifacts should include .hy/");
 assert(guidance.localArtifacts.includes(".opencode/"), "local artifacts should include .opencode/");
 assert(guidance.body.includes("Do not commit local/runtime artifacts"), "guidance should include do-not-commit section");
