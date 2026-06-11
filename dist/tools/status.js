@@ -1,10 +1,12 @@
 import { legacyRuntimeDiagnostics, readState } from "../state.js";
 import { toolResult } from "./_base.js";
 import { initArtifactGuidance } from "./init.js";
+import { checkSetupStamp } from "../bootstrap.js";
 export async function handleStatus() {
     const state = readState();
     const legacyDiagnostics = legacyRuntimeDiagnostics();
     const artifactGuidance = initArtifactGuidance();
+    const setupUpdateCheck = checkSetupStamp();
     const r = toolResult(state.phase, {
         phase: state.phase,
         branch: state.branch,
@@ -18,6 +20,7 @@ export async function handleStatus() {
         allowedTools: [state.phase === "done" ? "hy_status" : `hy_${state.phase}`, "hy_status"],
         commitArtifacts: artifactGuidance.commitArtifacts,
         localArtifacts: artifactGuidance.localArtifacts,
+        setupUpdateCheck,
         legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
     });
     if (!state.plan) {

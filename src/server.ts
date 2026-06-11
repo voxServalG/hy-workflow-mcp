@@ -22,6 +22,7 @@ import { handleMerge } from "./tools/merge.js";
 import { handleChain } from "./tools/chain.js";
 import { handleStatus } from "./tools/status.js";
 import { handleReset } from "./tools/reset.js";
+import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -34,7 +35,7 @@ const SYSTEM_PROMPT = `
 
 ### 流程规则
 
-**0. hy_init — 项目首次使用时调用。** 验证 setup 已部署 hy-harness 产物（codelint + doclint + docs-gardener + CI workflows），写入/更新 workflow 规则和本地忽略项，自动进 plan。hy_init 不会在 MCP 内启动交互式 harness；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补齐 workflow 规则。
+**0. hy_init — 项目首次使用时调用。** 验证 setup 已部署 bootstrap 产物（codelint + doclint + docs-gardener + CI workflows），写入/更新 workflow 规则和本地忽略项，自动进 plan。hy_init 不会在 MCP 内启动 setup，也不会在 MCP 内启动交互式 harness；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补齐 workflow 规则。
 
 1. hy_plan — 调用时传入 {task, plan}。你需要自行利用工作区上下文构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
    **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
@@ -114,7 +115,7 @@ const server = new Server(
 const TOOLS = [
   {
     name: "hy_init",
-    description: "初始化工作流：验证 setup 已部署 hy-harness 产物，写入/更新 AGENTS.md 和本地忽略项；不会在 MCP 内启动交互式 harness。返回兼容式 agent-facing envelope，说明下一步是否可 hy_plan。",
+    description: "初始化工作流：验证 setup 已部署 bootstrap 产物，写入/更新 AGENTS.md 和本地忽略项；不会在 MCP 内启动 setup。返回兼容式 agent-facing envelope，说明下一步是否可 hy_plan。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -294,6 +295,8 @@ const TOOLS = [
   },
 ];
 
+const setupGate = createSetupGate();
+
 // ― System prompt capability
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS,
@@ -305,8 +308,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const a = (args ?? {}) as Record<string, any>;
 
   try {
+    const setupGateResult = setupGate();
+    if (setupGateResult) {
+      return { content: [{ type: "text", text: JSON.stringify(setupGateResult, null, 2) }] };
+    }
+
     const result = await dispatch(name, a);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    const setupCheck = checkSetupStamp();
+    return { content: [{ type: "text", text: JSON.stringify(attachSetupCheck(result, setupCheck), null, 2) }] };
   } catch (e: any) {
     const message = e instanceof SyntaxError
       ? `PlanDoc JSON 解析失败：${e.message}. 请检查 risks / discussion / command 等字符串字段中的反斜杠、反引号、换行和未转义引号；建议重新生成不含 Markdown inline-code 的纯 JSON。`
@@ -327,7 +336,7 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
     case "hy_edit":    return handleEdit();
     case "hy_verify":  return handleVerify();
     case "hy_commit":  return handleCommit(args as any);
-    case "hy_ci":      return handleCi();
+    case "hy_ci":      return handleCi(args as any);
     case "hy_merge":   return handleMerge();
     case "hy_chain":   return handleChain(args as any);
     case "hy_status":  return handleStatus();

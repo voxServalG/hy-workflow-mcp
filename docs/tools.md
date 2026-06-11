@@ -1,6 +1,6 @@
 # Tools Reference
 
-hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts:311-325`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
+hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
 
 ## 概览
 
@@ -19,24 +19,24 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 | `hy_reset`  | 任意 | — | plan | 否 |
 | `hy_status` | 任意 | — | — | 是 |
 
----
-
 ## hy_init
 
 **资源**: `src/tools/init.ts`
 
-验证 setup 已部署 hy-harness 产物（codelint + doclint + docs-gardener + CI workflows），写入/更新 `AGENTS.md` workflow 规则，清理旧 `.opencode/instructions.md` 规则片段，并幂等维护 `.gitignore` 中的本地运行态忽略项。`hy_init` 不会在 MCP 内执行 hy-harness，也不会启动交互式 TUI。
+验证 setup 已部署 bootstrap 产物（codelint + doclint + docs-gardener + CI workflows + setup stamp），写入/更新 `AGENTS.md` workflow 规则，清理旧 `.opencode/instructions.md` 规则片段，并幂等维护 `.gitignore` 中的本地运行态忽略项。`hy_init` 不会在 MCP 内执行 setup，也不会启动交互式 TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
-- **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredHarnessArtifacts, gitignoreChanged }`
-- **失败返回**: `{ next: "init", error: { type: "harness_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
+- **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredSetupArtifacts, gitignoreChanged }`
+- **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/init.ts`, `src/state.ts:114-118`（writeState）
 
-`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 harness 产物（`.github/`、`codelint.json`、`doclint.json`、`docs-gardener.json`）时，agent 必须停下并请用户在终端重新运行 setup。
+`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（CI workflows、`codelint.json`、`doclint.json`、`docs-gardener.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
 
----
+## Session setup check
+
+MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.hy/hy-workflow-setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
 
 ## hy_plan
 
@@ -59,8 +59,6 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 **参见**: `src/tools/plan.ts:7-246`
 
----
-
 ## hy_approve
 
 **资源**: `src/tools/approve.ts` (40 行)
@@ -75,8 +73,6 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 **参见**: `src/tools/approve.ts:1-40`, `src/state.ts:146-155`（transition）
 
----
-
 ## hy_branch
 
 **资源**: `src/tools/branch.ts` (26 行)
@@ -88,8 +84,6 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 - **返回**: `{ next: "edit", branch, hint, allowedTools }` 或 `{ error, recovery }`
 
 **参见**: `src/tools/branch.ts:5-26`, `src/git.ts:22-28`（createBranch）
-
----
 
 ## hy_edit
 
