@@ -1,5 +1,4 @@
 import { legacyRuntimeDiagnostics, readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
-import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { toolResult, type ToolResult } from "./_base.js";
@@ -20,6 +19,13 @@ export const INIT_LOCAL_ARTIFACTS = [
   ".opencode/",
 ];
 
+export const REQUIRED_HARNESS_ARTIFACTS = [
+  ".github/",
+  "codelint.json",
+  "doclint.json",
+  "docs-gardener.json",
+];
+
 const WORKFLOW_INSTRUCTIONS = `
 ${MARKER_START}
 
@@ -34,7 +40,7 @@ ${MARKER_START}
 
 ### 各工具说明
 
-**0. hy_init** — 项目首次使用时调用。部署 hy-harness。已部署则跳过，自动进 plan。
+**0. hy_init** — 项目首次使用时调用。验证 setup 已部署 hy-harness 产物，写入/更新 workflow 规则和本地忽略项，自动进 plan。不会在 MCP 内启动交互式 harness。
 
 **1. hy_plan** — 调用时传入 {task, plan}。自行利用工作区上下文构造 PlanDoc JSON。服务端通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
 **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
@@ -192,25 +198,55 @@ export function initArtifactGuidance(): { commitArtifacts: string[]; localArtifa
   };
 }
 
+function artifactExists(root: string, artifact: string): boolean {
+  const artifactPath = path.join(root, artifact.replace(/\/$/, ""));
+  return fs.existsSync(artifactPath);
+}
+
+export function harnessArtifactStatus(root: string): { requiredArtifacts: string[]; missingArtifacts: string[]; ready: boolean } {
+  const missingArtifacts = REQUIRED_HARNESS_ARTIFACTS.filter(item => !artifactExists(root, item));
+  return {
+    requiredArtifacts: [...REQUIRED_HARNESS_ARTIFACTS],
+    missingArtifacts,
+    ready: missingArtifacts.length === 0,
+  };
+}
+
+function harnessMissingResult(missingArtifacts: string[]): ToolResult {
+  const instruction = "Run the project setup script from a terminal, then rerun hy_init: curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
+  return toolResult("init", {
+    error: {
+      type: "harness_missing",
+      message: "Required hy-harness artifacts are missing. hy_init is non-interactive and will not deploy hy-harness inside MCP.",
+      missingArtifacts,
+    },
+    display: {
+      title: "Harness setup required",
+      body: [
+        "hy_init did not find the required hy-harness artifacts:",
+        ...missingArtifacts.map(item => `- ${item}`),
+        "",
+        instruction,
+      ].join("\n"),
+    },
+    hint: "Stop and ask the user to run setup in a terminal. Do not call hy_plan until hy_init succeeds.",
+    requires_user: true,
+    stop_here: true,
+    allowedTools: ["hy_init", "hy_status"],
+    blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    recovery: { tool: "hy_init", instruction },
+    missingArtifacts,
+  });
+}
+
 export async function handleInit(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "init", "plan");
 
-  try {
-    execSync(
-      "npx --yes github:voxServalG/hy-harness",
-      { stdio: "inherit", timeout: 60_000 }
-    );
-  } catch {
-    return toolResult("init", {
-      error: "Harness deployment failed. Check Node.js >= 18 and Python >= 3.10.",
-      recovery: { tool: "hy_init", instruction: "Fix the local runtime prerequisites or network issue, then rerun hy_init." },
-      allowedTools: ["hy_init", "hy_status"],
-    });
-  }
-
-  // Generate .opencode/instructions.md with hy-workflow rules
   const root = projectRoot();
+  const harnessStatus = harnessArtifactStatus(root);
+  if (!harnessStatus.ready) return harnessMissingResult(harnessStatus.missingArtifacts);
+
   const instructionsChanged = upsertInstructions(root);
   cleanupOldPath(root);
   const gitignoreChanged = ensureLocalArtifactIgnores(root);
@@ -227,14 +263,15 @@ export async function handleInit(): Promise<ToolResult> {
   return toolResult("plan", {
     display: {
       title: "Harness ready",
-      body: `Harness deployed. AGENTS.md ${verb}. .gitignore ${gitignoreChanged ? "updated" : "up to date"}.\n\n${artifactGuidance.body}${legacyHint}`,
+      body: `Harness artifacts verified. AGENTS.md ${verb}. .gitignore ${gitignoreChanged ? "updated" : "up to date"}.\n\n${artifactGuidance.body}${legacyHint}`,
     },
     hint: `Commit only commitArtifacts unless the user explicitly requests local config. Do not commit localArtifacts. Call hy_plan next only when the user has a concrete repository change task.${legacyHint}`,
     allowedTools: ["hy_plan", "hy_status"],
     commitArtifacts: artifactGuidance.commitArtifacts,
     localArtifacts: artifactGuidance.localArtifacts,
+    requiredHarnessArtifacts: harnessStatus.requiredArtifacts,
     gitignoreChanged,
     legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
-    message: `Harness deployed. AGENTS.md ${verb}. Run hy_plan to define your task.`,
+    message: `Harness artifacts verified. AGENTS.md ${verb}. Run hy_plan to define your task.`,
   });
 }

@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureLocalArtifactIgnores, initArtifactGuidance } from "../src/tools/init.js";
+import { ensureLocalArtifactIgnores, harnessArtifactStatus, initArtifactGuidance } from "../src/tools/init.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -33,3 +33,20 @@ const changedExisting = ensureLocalArtifactIgnores(existingRoot);
 assert(changedExisting, "missing .opencode/ should be appended");
 const existing = readFileSync(join(existingRoot, ".gitignore"), "utf-8");
 assert(existing === "node_modules/\n.hy/\n.opencode/\n", "existing .gitignore should preserve content and append missing entry");
+
+const missingHarnessRoot = mkdtempSync(join(tmpdir(), "hy-init-harness-missing-"));
+const missingHarness = harnessArtifactStatus(missingHarnessRoot);
+assert(!missingHarness.ready, "missing harness artifacts should not be ready");
+assert(missingHarness.missingArtifacts.includes(".github/"), "missing harness should include .github/");
+assert(missingHarness.missingArtifacts.includes("codelint.json"), "missing harness should include codelint.json");
+assert(missingHarness.missingArtifacts.includes("doclint.json"), "missing harness should include doclint.json");
+assert(missingHarness.missingArtifacts.includes("docs-gardener.json"), "missing harness should include docs-gardener.json");
+
+const readyHarnessRoot = mkdtempSync(join(tmpdir(), "hy-init-harness-ready-"));
+mkdirSync(join(readyHarnessRoot, ".github"));
+writeFileSync(join(readyHarnessRoot, "codelint.json"), "{}\n", "utf-8");
+writeFileSync(join(readyHarnessRoot, "doclint.json"), "{}\n", "utf-8");
+writeFileSync(join(readyHarnessRoot, "docs-gardener.json"), "{}\n", "utf-8");
+const readyHarness = harnessArtifactStatus(readyHarnessRoot);
+assert(readyHarness.ready, "complete harness artifacts should be ready");
+assert(readyHarness.missingArtifacts.length === 0, "ready harness should have no missing artifacts");

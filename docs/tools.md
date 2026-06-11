@@ -23,18 +23,18 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-**资源**: `src/tools/init.ts` (151 行)
+**资源**: `src/tools/init.ts`
 
-部署 hy-harness（codelint + doclint + docs-gardener + CI workflows），60 秒超时。
+验证 setup 已部署 hy-harness 产物（codelint + doclint + docs-gardener + CI workflows），写入/更新 `AGENTS.md` workflow 规则，清理旧 `.opencode/instructions.md` 规则片段，并幂等维护 `.gitignore` 中的本地运行态忽略项。`hy_init` 不会在 MCP 内执行 hy-harness，也不会启动交互式 TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
-- **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, gitignoreChanged }`
-- **失败返回**: `{ next: "init", error: "Harness deployment failed..." }`
+- **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredHarnessArtifacts, gitignoreChanged }`
+- **失败返回**: `{ next: "init", error: { type: "harness_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/init.ts`, `src/state.ts:114-118`（writeState）
 
-`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。
+`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 harness 产物（`.github/`、`codelint.json`、`doclint.json`、`docs-gardener.json`）时，agent 必须停下并请用户在终端重新运行 setup。
 
 ---
 

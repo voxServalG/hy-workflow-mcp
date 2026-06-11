@@ -78,7 +78,10 @@ cat <<PROMPT
     }
   }
 
-  3. 配置完成后，调用 hy_init 初始化工作流状态。
+  3. 配置完成后，调用 hy_init 完成工作流状态初始化和 harness 产物校验。
+
+      hy_init 不会再次部署 hy-harness，也不会在 MCP 内启动交互式 TUI；
+      若提示缺少 harness 产物，请回到终端重新运行本 setup 脚本。
 
   4. 之后任何代码/文档任务自动走 9 阶段闭环：
      hy_plan → hy_approve → hy_branch → hy_edit → hy_verify
@@ -89,5 +92,4 @@ cat <<PROMPT
    项目路径: ${PROJECT_ROOT}
 
 PROMPT
-
 
