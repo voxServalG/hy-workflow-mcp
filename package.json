@@ -14,7 +14,8 @@
     "test": "npx tsc --noEmit",
     "test:dist": "npx tsx tests/dist-artifacts.ts",
     "test:doclint-output": "npx tsx tests/doclint-output.ts",
-    "test:setup-update": "npx tsx tests/setup-update-check.ts"
+    "test:setup-update": "npx tsx tests/setup-update-check.ts",
+    "test:config-update": "npx tsx tests/config-update.ts"
   },
   "author": "Haiyi",
   "license": "MIT",

@@ -45,6 +45,8 @@ Agents should consume tool results in this order:
 
 Happy-path tools should omit `stop_here` unless the workflow requires user review. Non-happy paths such as plan approval, setup refresh, CI failure, CI timeout, or GitHub/API errors should set `requires_user` and `stop_here` with `display` plus `recovery`.
 
+Terminal CLI commands follow the same contract when `--json` is passed. For example, `hy-workflow config --check --json` returns one JSON envelope with `ok`, `display`, `hint`, `issues`, `suggestedCommand`, and `recovery` instead of prose that agents must scrape.
+
 ## Examples
 
 `hy_plan` success returns the legacy `summary` and also puts the same content in `display.body`, with `requires_user: true` and `stop_here: true`. The agent must show the plan and wait for approval.

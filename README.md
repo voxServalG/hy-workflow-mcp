@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/set
 iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh; bash setup.sh; rm setup.sh
 ```
 
-脚本会直接部署/更新项目 bootstrap 产物（`.github/`、`codelint.json`、`doclint.json`、`docs-gardener.json`、`.hy/hy-workflow-setup.json`），再输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。
+脚本会直接部署/更新项目 bootstrap 产物（`.github/`、`codelint.json`、`doclint.json`、`docs-gardener.json`、`.hy/hy-workflow-setup.json`），再输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。已有 JSON 配置会 preserve-first 合并，不会把 Python 等项目配置重置成默认 TypeScript。
 
 `hy_init` 只做 MCP-safe finalization：校验 setup/bootstrap 产物、写入/更新 workflow 规则、维护本地忽略项并初始化状态；它不会运行 setup，也不会在 MCP 内启动交互式 TUI。MCP runtime 每个 session 首次调用会只读检查 setup stamp；缺失或过期时会提示用户重新运行 setup 并重启 agent。
 
@@ -32,6 +32,17 @@ iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -Out
 
 `hy_init` 后，通常应提交项目配置：`.github/`、`AGENTS.md`、`.gitignore`、`codelint.json`、`doclint.json`、`docs-gardener.json`。
 不要提交本地或运行时目录：`.hy/`、`.opencode/`；`hy_init` 会默认把它们写入 `.gitignore`。如果运行 setup 后出现 tracked diff，先单独提交 setup artifact sync PR，再继续其他任务。
+
+## 配置检测
+
+`hy_init` 会只读检查项目形态和 JSON 配置。若检测到 Python 项目却配置为 `.ts` 等明显不一致，会返回完整 envelope、停止自动流程，并给出已填好的修复命令。
+
+也可以直接运行：
+
+```bash
+npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --check --json
+npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --apply-suggested --json
+```
 
 ## 闭环流程
 
