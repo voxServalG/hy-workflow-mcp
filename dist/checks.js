@@ -124,22 +124,10 @@ export function runScopeCheck(root, plan) {
     return res;
 }
 // ── 4. Boundary ──────────────────────────────────────────────
-function getCodeExt(root) {
-    try {
-        const config = JSON.parse(fs.readFileSync(path.join(root, "codelint.json"), "utf-8"));
-        return config.codeExt ?? "";
-    }
-    catch { }
-    return "";
-}
 export function runBoundaryCheck(root, plan) {
     const res = [];
-    const ext = getCodeExt(root);
     for (const ep of plan.boundary.entry_points) {
-        const cmd = ext === ".py"
-            ? `${findPython()} -c "${ep}"`
-            : ep;
-        const r = execOr(cmd, root);
+        const r = execOr(ep, root);
         res.push(r.ok
             ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
             : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", r.stderr || r.stdout));
