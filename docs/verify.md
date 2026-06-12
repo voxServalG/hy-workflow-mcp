@@ -17,7 +17,7 @@ Layer 3: scope
 └── plan.scope 声明的文件都实际变更了 (软)
 
 Layer 4: boundary
-├── entry_points 逐条执行（.py 项目用 python -c 包裹，其他直接 shell 执行）
+├── entry_points 逐条按 shell 命令执行
 └── no_new_external → pyproject.toml/setup.cfg/setup.py/requirements.txt/policy.md 无变更
 
 Layer 5: platform
@@ -85,7 +85,7 @@ interface VerifyReport {
 
 | 配置 | 影响 |
 |------|------|
-| `codelint.json: codeExt` | 决定编译命令（`.ts` → `npx tsc --noEmit`，`.py` → `py_compile`）和 boundary entry_points 执行方式 |
+| `codelint.json: codeExt` | 决定编译命令（`.ts` → `npx tsc --noEmit`，`.py` → `py_compile`）；boundary entry_points 始终按 shell 执行 |
 | `codelint.json: baseBranch` | scope check 的 Git diff 基线分支 |
 | `doclint.json` | doclint 检查规则，验证文档质量 |
 
