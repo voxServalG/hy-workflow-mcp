@@ -75,7 +75,7 @@ hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify →
 ```
 1. lint     → doclint + codelint（由 setup 配置）
 2. scope    → git diff 文件 ⊆ plan.scope 声明
-3. boundary → entry_points 逐条可导入
+3. boundary → entry_points 逐条 shell 执行
 4. platform → pip install / venv 创建
 5. smoke    → 快速冒烟（<5s）
 6. tests    → 完整测试套件
@@ -93,7 +93,7 @@ hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify →
   },
   boundary: {
     dependency_dag: "cli_utils ← cli",
-    entry_points: ["from magshield.cli import main"],
+    entry_points: ["python -c 'from magshield.cli import main'"],
     no_new_external: true
   },
   verify: {
