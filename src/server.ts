@@ -23,6 +23,7 @@ import { handleChain } from "./tools/chain.js";
 import { handleStatus } from "./tools/status.js";
 import { handleReset } from "./tools/reset.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
+import { configHelp, runConfigCli } from "./config.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -346,6 +347,22 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
 }
 
 async function main() {
+  const argv = process.argv.slice(2);
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    process.stdout.write(configHelp() + "\n");
+    return;
+  }
+  if (argv[0] === "--version" || argv[0] === "-v") {
+    process.stdout.write("0.1.0\n");
+    return;
+  }
+  if (argv[0] === "config") {
+    const result = runConfigCli(argv.slice(1));
+    process.stdout.write(result.stdout);
+    process.exitCode = result.exitCode;
+    return;
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`hy-workflow MCP v0.1.0 running`);

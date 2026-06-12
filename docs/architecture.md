@@ -63,6 +63,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 - **状态文件**: `.git/hy-workflow/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash，`.git/hy-workflow/scope.json` 锁定当前 scope；旧 `.hy/workflow.json` / `.hy/scope.json` 仅作为迁移来源或诊断对象
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
 - **幂等 init**: `setup` 直接部署 lint/docs/docs-gardener bootstrap 产物并写 setup stamp；MCP runtime 每 session 首次只读检查 stamp；`hy_init` 验证产物、写入 workflow rules 并维护本地忽略项，不在 MCP 内运行 setup 或启动交互式 TUI
+- **配置保护**: `setup` 对 codelint/doclint/docs-gardener JSON 使用 preserve-first 合并；`hy_init` 只读检测明显不一致并返回 config 命令，不在 MCP 内改写用户配置
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 - **Promotion 例外**: 状态机闭环服务于普通开发改动合入 `baseBranch`；`baseBranch → releaseBranch`（如 dev → main）属于发布/晋级操作，不伪造 scope，也不硬套 `hy_branch`/`hy_commit`，必须在用户授权后通过 promotion PR 完成
 - **Artifact contract**: setup/hy_init 生成的 tracked project artifacts（`.github/`、`AGENTS.md`、`.gitignore`、lint/gardener configs）应提交；local/runtime artifacts（`.hy/`、`.opencode/`、setup stamp）不提交；setup 产生 tracked drift 时先做 artifact sync PR

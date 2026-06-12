@@ -118,45 +118,60 @@ jobs:
           fi
 YAML
 
-write_file "codelint.json" <<'JSON'
-{
-  "lintDirs": [
-    "src"
-  ],
-  "codeDirs": [
-    "src"
-  ],
-  "codeExt": ".ts",
-  "baseBranch": "dev",
-  "maxLines": 500
-}
-JSON
+CONFIG_RESULT=$(node <<'NODE'
+const fs = require('fs');
+const path = require('path');
 
-write_file "doclint.json" <<'JSON'
-{
-  "docsDir": "docs",
-  "codeDirs": [
-    "src",
-    "tests"
-  ],
-  "codeExt": ".ts",
-  "baseBranch": "dev",
-  "maxLines": 200
+function exists(rel) { return fs.existsSync(path.join(process.cwd(), rel)); }
+function readJson(file) { return exists(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null; }
+function writeJson(file, value) {
+  const next = JSON.stringify(value, null, 2) + '\n';
+  const prev = exists(file) ? fs.readFileSync(file, 'utf8') : null;
+  if (prev === next) return 'kept';
+  fs.writeFileSync(file, next, 'utf8');
+  return prev === null ? 'created' : 'updated';
 }
-JSON
-
-write_file "docs-gardener.json" <<'JSON'
-{
-  "docsDir": "docs",
-  "codeDirs": [
-    "src",
-    "tests"
-  ],
-  "codeExt": ".ts",
-  "baseBranch": "dev",
-  "catalogs": {}
+function walk(dir, ext) {
+  const start = path.join(process.cwd(), dir);
+  if (!fs.existsSync(start)) return 0;
+  let count = 0;
+  for (const entry of fs.readdirSync(start, { withFileTypes: true })) {
+    if (['node_modules', '.git', 'dist'].includes(entry.name)) continue;
+    const full = path.join(start, entry.name);
+    if (entry.isDirectory()) count += walk(path.relative(process.cwd(), full), ext);
+    else if (entry.name.endsWith(ext)) count++;
+  }
+  return count;
 }
-JSON
+function dirs(ext) {
+  const candidates = ['src', 'tests', 'scripts', 'lib', 'packages'].filter(d => exists(d) && fs.statSync(d).isDirectory());
+  return candidates.filter(d => walk(d, ext) > 0);
+}
+const pyScore = ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg'].filter(exists).length * 3 + dirs('.py').length;
+const tsScore = ['tsconfig.json', 'package.json'].filter(exists).length * 3 + dirs('.ts').length;
+const ext = pyScore > tsScore ? '.py' : '.ts';
+const codeDirs = dirs(ext).length ? dirs(ext) : (exists('src') ? ['src'] : ['src']);
+const suggestion = { lintDirs: codeDirs, codeDirs, codeExt: ext, baseBranch: 'dev', docsDir: 'docs', maxCodeLines: 500, maxDocLines: 200 };
+const codelint = readJson('codelint.json');
+const doclint = readJson('doclint.json');
+const gardener = readJson('docs-gardener.json');
+const next = {
+  'codelint.json': { lintDirs: suggestion.lintDirs, codeDirs: suggestion.codeDirs, codeExt: suggestion.codeExt, baseBranch: suggestion.baseBranch, maxLines: suggestion.maxCodeLines, ...(codelint || {}) },
+  'doclint.json': { docsDir: suggestion.docsDir, codeDirs: suggestion.codeDirs, codeExt: suggestion.codeExt, baseBranch: suggestion.baseBranch, maxLines: suggestion.maxDocLines, ...(doclint || {}) },
+  'docs-gardener.json': { docsDir: suggestion.docsDir, codeDirs: suggestion.codeDirs, codeExt: suggestion.codeExt, baseBranch: suggestion.baseBranch, catalogs: {}, ...(gardener || {}) },
+};
+for (const [file, value] of Object.entries(next)) console.log(`${file}:${writeJson(file, value)}`);
+NODE
+)
+while IFS= read -r line; do
+  file=${line%%:*}
+  status=${line##*:}
+  case "$status" in
+    created) _created "$file" ;;
+    updated) _updated "$file" ;;
+    *) _skipped "$file" ;;
+  esac
+done <<< "$CONFIG_RESULT"
 
 ensure_gitignore_line ".hy/"
 ensure_gitignore_line ".opencode/"
