@@ -40,6 +40,10 @@ Artifact contract: setup/hy_init 产生的 tracked project artifacts 应通过 P
 
 MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.hy/hy-workflow-setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
 
+## Config CLI
+
+`npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --check --json` 会只读检查项目语言、目录和三份 JSON 配置；不一致时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`。`config --apply-suggested --json` 或显式配置会同步三份 JSON，并保留未知字段与 `catalogs`。
+
 ## hy_plan
 
 **资源**: `src/tools/plan.ts` (246 行)
@@ -103,8 +107,6 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 旧版本可能在工作区留下 `.hy/workflow.json` 或 `.hy/scope.json`。当前版本会在迁移到 `.git/hy-workflow/` 后静默删除未被 Git 跟踪的 legacy runtime 文件，避免它们阻挡 `git checkout`。如果这些 legacy 文件已被 Git 跟踪，hy-workflow 不会自动删除；`hy_status` / `hy_init` 会返回 `legacyDiagnostics`，提示运行 `git rm --cached .hy/workflow.json .hy/scope.json` 并忽略 `.hy/`。
 
----
-
 ## hy_verify
 
 **资源**: `src/tools/verify.ts`
@@ -144,8 +146,6 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
 
 **参见**: `src/tools/ci.ts`, `src/git.ts`（checkCi）
-
----
 
 ## hy_merge
 

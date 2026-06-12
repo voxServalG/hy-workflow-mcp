@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { toolResult, type ToolResult } from "./_base.js";
 import { SETUP_COMMAND, SETUP_STAMP } from "../bootstrap.js";
+import { checkConfig } from "../config.js";
 
 const MARKER_START = "<!-- hy-workflow-rules -->";
 const MARKER_END = "<!-- /hy-workflow-rules -->";
@@ -295,6 +296,26 @@ export async function handleInit(): Promise<ToolResult> {
   const root = projectRoot();
   const setupStatus = setupArtifactStatus(root);
   if (!setupStatus.ready) return setupMissingResult(setupStatus.missingArtifacts);
+
+  const configStatus = checkConfig(root);
+  if (!configStatus.ok) {
+    return toolResult(state.phase, {
+      error: {
+        type: "config_confirmation_required",
+        issues: configStatus.issues,
+        project: configStatus.project,
+      },
+      display: configStatus.display,
+      hint: "Stop and show the suggested config command. Run it only after user approval, then rerun hy_init.",
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_init", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      recovery: configStatus.recovery,
+      suggestedCommand: configStatus.suggestedCommand,
+      configCheck: configStatus,
+    });
+  }
 
   const instructionsChanged = upsertInstructions(root);
   cleanupOldPath(root);
