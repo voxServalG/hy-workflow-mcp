@@ -3,7 +3,7 @@ set -e
 
 # ── hy-workflow: one-command project setup/update (idempotent) ──
 
-SETUP_VERSION="2026.06.12.1"
+SETUP_VERSION="2026.06.16.2"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -209,10 +209,11 @@ cat <<PROMPT
   1. 找到或创建项目根目录下的 MCP 配置文件：
 
       opencode     →  .opencode/opencode.json
+      Codex        →  .codex/config.toml
       Claude Dsktp →  .mcp.json
       其他客户端   →  按其项目级 MCP 配置规范
 
-  2. 确保配置中包含以下两个 server 条目（若已有其他 MCP，追加合并）：
+  2. OpenCode 示例（.opencode/opencode.json）：
 
   {
     "\$schema": "https://opencode.ai/config.json",
@@ -230,12 +231,32 @@ cat <<PROMPT
     }
   }
 
-  3. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。
+  3. Codex 示例（.codex/config.toml）：
+
+  [mcp_servers.hy-workflow]
+  command = "npx"
+  args = ["-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"]
+  enabled = true
+  required = true
+  startup_timeout_sec = 60
+  tool_timeout_sec = 600
+
+  [mcp_servers.docs-gardener]
+  command = "npx"
+  args = ["-y", "--prefer-online", "github:voxServalG/docs-gardener", "mcp"]
+  enabled = true
+  required = false
+  startup_timeout_sec = 60
+  tool_timeout_sec = 300
+
+  4. 其他客户端请按其项目级 MCP 配置规范，添加同样两个 server。
+
+  5. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。
 
       hy_init 不会运行 setup、不会启动交互式 TUI；
       若提示 setup 产物缺失或过期，请回到终端重新运行本 setup 脚本。
 
-  4. 之后任何代码/文档任务自动走 9 阶段闭环：
+  6. 之后任何代码/文档任务自动走 9 阶段闭环：
      hy_plan → hy_approve → hy_branch → hy_edit → hy_verify
      → hy_commit → hy_ci → hy_merge → hy_chain
 

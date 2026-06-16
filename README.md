@@ -26,6 +26,8 @@ iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -Out
 
 脚本会直接部署/更新项目 bootstrap 产物（`.github/`、`codelint.json`、`doclint.json`、`docs-gardener.json`、`.hy/hy-workflow-setup.json`），再输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。已有 JSON 配置会 preserve-first 合并，不会把 Python 等项目配置重置成默认 TypeScript。
 
+setup 输出的 prompt 会给出 OpenCode 的 `.opencode/opencode.json` 示例和 Codex 的 `.codex/config.toml` 项目级 TOML 示例。Codex 示例中 `hy-workflow` 是 required，`docs-gardener` 是非阻塞辅助。
+
 `hy_init` 只做 MCP-safe finalization：校验 setup/bootstrap 产物、写入/更新 workflow 规则、维护本地忽略项并初始化状态；它不会运行 setup，也不会在 MCP 内启动交互式 TUI。MCP runtime 每个 session 首次调用会只读检查 setup stamp；缺失或过期时会提示用户重新运行 setup 并重启 agent。
 
 之后任何代码/文档任务，agent 自动走闭环。
