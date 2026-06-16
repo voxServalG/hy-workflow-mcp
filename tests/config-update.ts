@@ -44,6 +44,7 @@ fs.writeFileSync(path.join(root, "docs-gardener.json"), JSON.stringify({
 }, null, 2) + "\n", "utf-8");
 
 const before = JSON.stringify({
+  unified: fs.existsSync(path.join(root, "hy-workflow.json")) ? readJson(root, "hy-workflow.json") : null,
   codelint: readJson(root, "codelint.json"),
   doclint: readJson(root, "doclint.json"),
   gardener: readJson(root, "docs-gardener.json"),
@@ -51,12 +52,17 @@ const before = JSON.stringify({
 const dry = ensureConfigDefaults(root, { dryRun: true });
 assert(dry.dryRun === true, "dry-run should be marked");
 assert(JSON.stringify({
+  unified: fs.existsSync(path.join(root, "hy-workflow.json")) ? readJson(root, "hy-workflow.json") : null,
   codelint: readJson(root, "codelint.json"),
   doclint: readJson(root, "doclint.json"),
   gardener: readJson(root, "docs-gardener.json"),
 }) === before, "dry-run must not write files");
 
 ensureConfigDefaults(root);
+assert(readJson(root, "hy-workflow.json").project.baseBranch === "main", "setup defaults must derive unified baseBranch from legacy config");
+assert(readJson(root, "hy-workflow.json").project.docsDir === "docs", "setup defaults must write unified docsDir");
+assert(readJson(root, "hy-workflow.json").codelint.lintDirs[0] === "src", "setup defaults must write codelint private lintDirs");
+assert(readJson(root, "hy-workflow.json").doclint.maxLines === 180, "setup defaults must preserve doclint maxLines");
 assert(readJson(root, "codelint.json").codeExt === ".py", "setup defaults must preserve Python codeExt");
 assert(readJson(root, "codelint.json").baseBranch === "main", "setup defaults must preserve baseBranch");
 assert(readJson(root, "docs-gardener.json").catalogs.cli[0] === "hy_init", "setup defaults must preserve catalogs");
@@ -64,12 +70,22 @@ assert(readJson(root, "docs-gardener.json").catalogs.cli[0] === "hy_init", "setu
 const check = checkConfig(root);
 assert(check.ok, `Python config should be consistent: ${check.issues.join(", ")}`);
 
+fs.writeFileSync(path.join(root, "doclint.json"), JSON.stringify({
+  ...readJson(root, "doclint.json"),
+  docsDir: "wrong-docs",
+}, null, 2) + "\n", "utf-8");
+const drift = checkConfig(root);
+assert(!drift.ok, "legacy compatibility drift should fail config check");
+assert(drift.drift.some(item => item.file === "doclint.json" && item.field === "docsDir"), "drift should report the mismatched legacy field");
+assert(drift.display.body.includes("Config drift"), "drift output should be visible in display body");
+
 const mismatchRoot = tempRoot();
 fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ codeExt: ".ts", codeDirs: ["src"] }, null, 2) + "\n", "utf-8");
 const mismatch = checkConfig(mismatchRoot);
 assert(!mismatch.ok, "Python project with .ts config should need confirmation");
 assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
 assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include detected Python ext");
+assert(mismatch.issues.includes("Missing hy-workflow.json"), "missing unified config should be reported");
 
 const cliRoot = tempRoot();
 const cli = runConfigCli(["--apply-suggested", "--json", "--code-ext", ".py", "--code-dirs", "src", "--docs-dir", "docs", "--base-branch", "dev"], cliRoot);
@@ -77,7 +93,10 @@ const parsed = JSON.parse(cli.stdout);
 assert(cli.exitCode === 0, "config CLI should exit 0");
 assert(parsed.ok === true, "config CLI should emit ok envelope");
 assert(parsed.display?.title, "config CLI should emit display title");
+assert(readJson(cliRoot, "hy-workflow.json").project.codeExt === ".py", "config CLI should write unified config");
 assert(readJson(cliRoot, "codelint.json").codeExt === ".py", "config CLI should write Python codeExt");
+assert(readJson(cliRoot, "doclint.json").codeDirs[0] === "src", "config CLI should derive doclint from unified config");
 
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");
+assert(help.stdout.includes("hy-workflow.json is the source of truth"), "help should document unified config");

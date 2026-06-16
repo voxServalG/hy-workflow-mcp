@@ -2,6 +2,16 @@
 
 ## hy-workflow 硬性流程
 
+### 统一配置源头
+
+`hy-workflow.json` 是人工维护的唯一项目配置源头。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
+
+`codelint.json`、`doclint.json`、`docs-gardener.json` 短期继续提交，作为由 `hy-workflow.json` 派生的 compatibility artifacts。
+
+应提交的 tracked project artifacts：.github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json。
+
+不应提交的 local/runtime/client artifacts：.hy/、.opencode/、.codex/、.mcp.json、MCP 客户端本地配置。
+
 你正在操作一个启用了 hy-workflow MCP 的项目。以下规则必须严格遵循：
 
 ### 流程顺序（禁止跳过或重排）
@@ -38,21 +48,21 @@
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
-- 不要提交本地或运行时目录：.hy/、.opencode/
+- 不要提交本地或运行时目录：.hy/、.opencode/、.codex/、.mcp.json
 
 ### hy_init 初始化产物
 
-hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、.gitignore、codelint.json、doclint.json、docs-gardener.json。
-hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
+hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json。
+hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/、.codex/、.mcp.json。
 
 ### Artifact contract
 
 setup / hy_init 可能产生两类产物，必须分开处理：
-- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、codelint.json、doclint.json、docs-gardener.json
-- **不应提交的 local/runtime artifacts**: .hy/、.opencode/、MCP 客户端本地配置和 setup stamp（.hy/hy-workflow-setup.json）
+- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json
+- **不应提交的 local/runtime artifacts**: .hy/、.opencode/、.codex/、.mcp.json、MCP 客户端本地配置和 setup stamp（.hy/hy-workflow-setup.json）
 
 如果运行 setup 后出现 tracked diff（例如 CI workflow、lint config、docs-gardener config 或 .gitignore 变化），应优先创建单独的 setup artifact sync PR 提交这些变更。
-不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交 .hy/ 或 .opencode/。
+不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交 .hy/、.opencode/、.codex/ 或 .mcp.json。
 
 ### Promotion / release 例外
 
