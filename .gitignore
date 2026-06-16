@@ -4,3 +4,5 @@ node_modules/
 *.tsbuildinfo
 tests/_test_*
 .opencode/
+.codex/
+.mcp.json

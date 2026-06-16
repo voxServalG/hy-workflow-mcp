@@ -1,0 +1,23 @@
+{
+  "project": {
+    "baseBranch": "dev",
+    "codeExt": ".ts",
+    "codeDirs": [
+      "src",
+      "tests"
+    ],
+    "docsDir": "docs"
+  },
+  "codelint": {
+    "lintDirs": [
+      "src"
+    ],
+    "maxLines": 500
+  },
+  "doclint": {
+    "maxLines": 200
+  },
+  "docsGardener": {
+    "catalogs": {}
+  }
+}

@@ -1,5 +1,13 @@
 # Architecture
 
+## Configuration Model
+
+`hy-workflow.json` is the single editable project config. The three older JSON files are generated compatibility artifacts: `codelint.json`, `doclint.json`, and `docs-gardener.json`.
+
+`project.baseBranch`, `project.codeExt`, `project.codeDirs`, and `project.docsDir` are shared config. Tool-specific config stays scoped to its tool section, including `codelint.lintDirs`, `codelint.maxLines`, `doclint.maxLines`, and `docsGardener.catalogs`.
+
+Tracked setup artifacts include `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`, and the three compatibility JSON files. Local runtime or client artifacts include `.hy/`, `.opencode/`, `.codex/`, and `.mcp.json`.
+
 hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走 **9 阶段闭环工作流**。通过状态机锁定 Phase 转换、lint 校验、用户 approve gate 三层机制，确保每次代码/文档变更可审计。
 
 ## 组件关系
@@ -66,7 +74,7 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 - **配置保护**: `setup` 对 codelint/doclint/docs-gardener JSON 使用 preserve-first 合并；`hy_init` 只读检测明显不一致并返回 config 命令，不在 MCP 内改写用户配置
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 - **Promotion 例外**: 状态机闭环服务于普通开发改动合入 `baseBranch`；`baseBranch → releaseBranch`（如 dev → main）属于发布/晋级操作，不伪造 scope，也不硬套 `hy_branch`/`hy_commit`，必须在用户授权后通过 promotion PR 完成
-- **Artifact contract**: setup/hy_init 生成的 tracked project artifacts（`.github/`、`AGENTS.md`、`.gitignore`、lint/gardener configs）应提交；local/runtime artifacts（`.hy/`、`.opencode/`、setup stamp）不提交；setup 产生 tracked drift 时先做 artifact sync PR
+- **Artifact contract**: setup/hy_init 生成的 tracked project artifacts（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`、lint/gardener compatibility configs）应提交；local/runtime/client artifacts（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、setup stamp）不提交；setup 产生 tracked drift 时先做 artifact sync PR
 
 ## 配置文件
 

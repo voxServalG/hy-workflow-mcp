@@ -3,7 +3,8 @@
     "src"
   ],
   "codeDirs": [
-    "src"
+    "src",
+    "tests"
   ],
   "codeExt": ".ts",
   "baseBranch": "dev",
