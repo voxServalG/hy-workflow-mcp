@@ -32,7 +32,7 @@ hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分
 
 **参见**: `src/tools/init.ts`, `src/state.ts`（writeState）
 
-`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（CI workflows、`codelint.json`、`doclint.json`、`docs-gardener.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
+`hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是派生兼容产物。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（CI workflows、`hy-workflow.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
 
 Artifact contract: setup/hy_init 产生的 tracked project artifacts 应通过 PR 提交，local/runtime artifacts 不提交。若运行 setup 后出现 tracked diff，应先做 setup artifact sync PR，不要混入无关任务。
 

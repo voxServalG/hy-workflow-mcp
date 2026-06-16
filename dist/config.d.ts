@@ -8,6 +8,12 @@ export type ConfigSuggestion = {
     maxCodeLines: number;
     maxDocLines: number;
 };
+export type ConfigDrift = {
+    file: string;
+    field: string;
+    expected: unknown;
+    actual: unknown;
+};
 export type ConfigCheckResult = {
     ok: boolean;
     phase: "config";
@@ -29,12 +35,14 @@ export type ConfigCheckResult = {
         evidence: string[];
     };
     issues: string[];
+    drift: ConfigDrift[];
     suggestion: ConfigSuggestion;
     suggestedCommand: string;
     changed?: string[];
     preserved?: Record<string, string[]>;
     dryRun?: boolean;
 };
+export declare const UNIFIED_CONFIG_FILE = "hy-workflow.json";
 export declare function detectProject(root: string): {
     kind: ProjectKind;
     evidence: string[];

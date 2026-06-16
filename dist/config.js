@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-const CONFIG_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"];
+export const UNIFIED_CONFIG_FILE = "hy-workflow.json";
+const COMPAT_CONFIG_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"];
+const CONFIG_FILES = [UNIFIED_CONFIG_FILE, ...COMPAT_CONFIG_FILES];
 function exists(root, rel) {
     return fs.existsSync(path.join(root, rel));
 }
@@ -87,6 +89,11 @@ function inferDirs(root, ext) {
         return ["src"];
     return ["src"];
 }
+function inferLintDirs(root, codeDirs) {
+    if (exists(root, "src"))
+        return ["src"];
+    return codeDirs;
+}
 export function defaultSuggestion(root) {
     const detected = detectProject(root);
     const codeExt = detected.kind === "python" ? ".py" : ".ts";
@@ -94,7 +101,7 @@ export function defaultSuggestion(root) {
     return {
         codeExt,
         codeDirs,
-        lintDirs: codeDirs,
+        lintDirs: inferLintDirs(root, codeDirs),
         docsDir: exists(root, "docs") ? "docs" : "docs",
         baseBranch: "dev",
         maxCodeLines: 500,
@@ -104,64 +111,112 @@ export function defaultSuggestion(root) {
 function mergeSuggestion(root, explicit) {
     return { ...defaultSuggestion(root), ...explicit };
 }
-function codelintConfig(existing, suggestion, preserveExisting) {
-    if (preserveExisting) {
-        return {
-            lintDirs: existing?.lintDirs ?? suggestion.lintDirs,
-            codeDirs: existing?.codeDirs ?? suggestion.codeDirs,
-            codeExt: existing?.codeExt ?? suggestion.codeExt,
-            baseBranch: existing?.baseBranch ?? suggestion.baseBranch,
-            maxLines: existing?.maxLines ?? suggestion.maxCodeLines,
-            ...(existing ?? {}),
-        };
-    }
+function asObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function arrayOr(value, fallback) {
+    return Array.isArray(value) && value.every(item => typeof item === "string") ? value : fallback;
+}
+function stringOr(value, fallback) {
+    return typeof value === "string" ? value : fallback;
+}
+function numberOr(value, fallback) {
+    return typeof value === "number" ? value : fallback;
+}
+function unifiedFromInputs(existing, legacy, suggestion, preserveExisting) {
+    const project = asObject(existing?.project);
+    const codelint = asObject(existing?.codelint);
+    const doclint = asObject(existing?.doclint);
+    const docsGardener = asObject(existing?.docsGardener);
+    const legacyCode = legacy["codelint.json"];
+    const legacyDocs = legacy["doclint.json"];
+    const legacyGardener = legacy["docs-gardener.json"];
+    const use = (current, legacyValue, suggested) => preserveExisting ? current ?? legacyValue ?? suggested : suggested ?? current ?? legacyValue;
     return {
         ...(existing ?? {}),
-        lintDirs: suggestion.lintDirs,
-        codeDirs: suggestion.codeDirs,
-        codeExt: suggestion.codeExt,
-        baseBranch: suggestion.baseBranch,
-        maxLines: suggestion.maxCodeLines,
+        project: {
+            ...project,
+            baseBranch: use(project.baseBranch, legacyCode?.baseBranch ?? legacyDocs?.baseBranch ?? legacyGardener?.baseBranch, suggestion.baseBranch),
+            codeExt: use(project.codeExt, legacyCode?.codeExt ?? legacyDocs?.codeExt ?? legacyGardener?.codeExt, suggestion.codeExt),
+            codeDirs: use(project.codeDirs, legacyDocs?.codeDirs ?? legacyGardener?.codeDirs ?? legacyCode?.codeDirs, suggestion.codeDirs),
+            docsDir: use(project.docsDir, legacyDocs?.docsDir ?? legacyGardener?.docsDir, suggestion.docsDir),
+        },
+        codelint: {
+            ...codelint,
+            lintDirs: use(codelint.lintDirs, legacyCode?.lintDirs, suggestion.lintDirs),
+            maxLines: use(codelint.maxLines, legacyCode?.maxLines, suggestion.maxCodeLines),
+        },
+        doclint: {
+            ...doclint,
+            maxLines: use(doclint.maxLines, legacyDocs?.maxLines, suggestion.maxDocLines),
+        },
+        docsGardener: {
+            ...docsGardener,
+            catalogs: preserveExisting
+                ? docsGardener.catalogs ?? legacyGardener?.catalogs ?? {}
+                : docsGardener.catalogs ?? legacyGardener?.catalogs ?? {},
+        },
     };
 }
-function doclintConfig(existing, suggestion, preserveExisting) {
-    if (preserveExisting) {
-        return {
-            docsDir: existing?.docsDir ?? suggestion.docsDir,
-            codeDirs: existing?.codeDirs ?? suggestion.codeDirs,
-            codeExt: existing?.codeExt ?? suggestion.codeExt,
-            baseBranch: existing?.baseBranch ?? suggestion.baseBranch,
-            maxLines: existing?.maxLines ?? suggestion.maxDocLines,
-            ...(existing ?? {}),
-        };
-    }
+function normalizedUnified(config, suggestion) {
+    const project = asObject(config.project);
+    const codelint = asObject(config.codelint);
+    const doclint = asObject(config.doclint);
+    const docsGardener = asObject(config.docsGardener);
     return {
-        ...(existing ?? {}),
-        docsDir: suggestion.docsDir,
-        codeDirs: suggestion.codeDirs,
-        codeExt: suggestion.codeExt,
-        baseBranch: suggestion.baseBranch,
-        maxLines: suggestion.maxDocLines,
+        ...config,
+        project: {
+            ...project,
+            baseBranch: stringOr(project.baseBranch, suggestion.baseBranch),
+            codeExt: stringOr(project.codeExt, suggestion.codeExt),
+            codeDirs: arrayOr(project.codeDirs, suggestion.codeDirs),
+            docsDir: stringOr(project.docsDir, suggestion.docsDir),
+        },
+        codelint: {
+            ...codelint,
+            lintDirs: arrayOr(codelint.lintDirs, suggestion.lintDirs),
+            maxLines: numberOr(codelint.maxLines, suggestion.maxCodeLines),
+        },
+        doclint: {
+            ...doclint,
+            maxLines: numberOr(doclint.maxLines, suggestion.maxDocLines),
+        },
+        docsGardener: {
+            ...docsGardener,
+            catalogs: docsGardener.catalogs ?? {},
+        },
     };
 }
-function gardenerConfig(existing, suggestion, preserveExisting) {
-    if (preserveExisting) {
-        return {
-            docsDir: existing?.docsDir ?? suggestion.docsDir,
-            codeDirs: existing?.codeDirs ?? suggestion.codeDirs,
-            codeExt: existing?.codeExt ?? suggestion.codeExt,
-            baseBranch: existing?.baseBranch ?? suggestion.baseBranch,
-            catalogs: existing?.catalogs ?? {},
-            ...(existing ?? {}),
-        };
-    }
+function compatConfigs(existing, unified) {
+    const project = asObject(unified.project);
+    const codelint = asObject(unified.codelint);
+    const doclint = asObject(unified.doclint);
+    const docsGardener = asObject(unified.docsGardener);
     return {
-        ...(existing ?? {}),
-        docsDir: suggestion.docsDir,
-        codeDirs: suggestion.codeDirs,
-        codeExt: suggestion.codeExt,
-        baseBranch: suggestion.baseBranch,
-        catalogs: existing?.catalogs ?? {},
+        "codelint.json": {
+            ...(existing["codelint.json"] ?? {}),
+            lintDirs: codelint.lintDirs,
+            codeDirs: project.codeDirs,
+            codeExt: project.codeExt,
+            baseBranch: project.baseBranch,
+            maxLines: codelint.maxLines,
+        },
+        "doclint.json": {
+            ...(existing["doclint.json"] ?? {}),
+            docsDir: project.docsDir,
+            codeDirs: project.codeDirs,
+            codeExt: project.codeExt,
+            baseBranch: project.baseBranch,
+            maxLines: doclint.maxLines,
+        },
+        "docs-gardener.json": {
+            ...(existing["docs-gardener.json"] ?? {}),
+            docsDir: project.docsDir,
+            codeDirs: project.codeDirs,
+            codeExt: project.codeExt,
+            baseBranch: project.baseBranch,
+            catalogs: docsGardener.catalogs ?? {},
+        },
     };
 }
 export function ensureConfigDefaults(root, options = {}) {
@@ -175,15 +230,15 @@ function preservedKeys(before, after) {
 }
 export function applyConfig(root, suggestion, options) {
     const before = {
+        [UNIFIED_CONFIG_FILE]: readJson(root, UNIFIED_CONFIG_FILE),
         "codelint.json": readJson(root, "codelint.json"),
         "doclint.json": readJson(root, "doclint.json"),
         "docs-gardener.json": readJson(root, "docs-gardener.json"),
     };
-    const effective = suggestion;
+    const unified = normalizedUnified(unifiedFromInputs(before[UNIFIED_CONFIG_FILE], before, suggestion, options.preserveExisting), suggestion);
     const after = {
-        "codelint.json": codelintConfig(before["codelint.json"], effective, options.preserveExisting),
-        "doclint.json": doclintConfig(before["doclint.json"], effective, options.preserveExisting),
-        "docs-gardener.json": gardenerConfig(before["docs-gardener.json"], effective, options.preserveExisting),
+        [UNIFIED_CONFIG_FILE]: unified,
+        ...compatConfigs(before, unified),
     };
     const changed = [];
     const preserved = {};
@@ -200,12 +255,14 @@ export function applyConfig(root, suggestion, options) {
     return {
         ...result,
         ok: true,
+        issues: options.dryRun ? result.issues : [],
+        drift: options.dryRun ? result.drift : [],
         changed,
         preserved,
         dryRun: options.dryRun,
         display: {
             title: options.dryRun ? "Config dry run complete" : "Config updated",
-            body: `${options.dryRun ? "Would update" : "Updated"} ${changed.length ? changed.join(", ") : "no config files"} while preserving existing values by default.`,
+            body: `${options.dryRun ? "Would update" : "Updated"} ${changed.length ? changed.join(", ") : "no config files"} while preserving unknown fields and deriving compatibility artifacts from ${UNIFIED_CONFIG_FILE}.`,
         },
         hint: "Rerun hy_init after applying config changes so setup artifacts and workflow state can be validated.",
     };
@@ -213,40 +270,62 @@ export function applyConfig(root, suggestion, options) {
 function valueArray(value) {
     return Array.isArray(value) ? value.filter(item => typeof item === "string") : [];
 }
+function addDrift(drift, file, field, expected, actual) {
+    if (JSON.stringify(expected) !== JSON.stringify(actual)) {
+        drift.push({ file, field, expected, actual });
+    }
+}
+function compareCompat(file, actual, expected, fields) {
+    const drift = [];
+    if (!actual)
+        return drift;
+    for (const field of fields)
+        addDrift(drift, file, field, expected[field], actual[field]);
+    return drift;
+}
 export function checkConfig(root, suggestion = defaultSuggestion(root)) {
     const project = detectProject(root);
     const issues = [];
+    const drift = [];
+    const unifiedRaw = readJson(root, UNIFIED_CONFIG_FILE);
     const codelint = readJson(root, "codelint.json");
     const doclint = readJson(root, "doclint.json");
     const gardener = readJson(root, "docs-gardener.json");
+    if (!unifiedRaw)
+        issues.push(`Missing ${UNIFIED_CONFIG_FILE}`);
     if (!codelint)
         issues.push("Missing codelint.json");
     if (!doclint)
         issues.push("Missing doclint.json");
     if (!gardener)
         issues.push("Missing docs-gardener.json");
+    const unified = normalizedUnified(unifiedRaw ?? unifiedFromInputs(null, { "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, suggestion, true), suggestion);
+    const projectConfig = asObject(unified.project);
+    const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
     const expectedExt = project.kind === "python" ? ".py" : project.kind === "typescript" ? ".ts" : null;
-    if (expectedExt && codelint?.codeExt && codelint.codeExt !== expectedExt)
-        issues.push(`codelint.json codeExt=${codelint.codeExt} but project appears ${project.kind}`);
-    for (const [file, config] of Object.entries({ "doclint.json": doclint, "docs-gardener.json": gardener })) {
-        if (!config)
-            continue;
-        if (expectedExt && config.codeExt && config.codeExt !== expectedExt)
-            issues.push(`${file} codeExt=${config.codeExt} but project appears ${project.kind}`);
-        if (config.docsDir && !exists(root, config.docsDir))
-            issues.push(`${file} docsDir does not exist: ${config.docsDir}`);
-        for (const dir of valueArray(config.codeDirs)) {
-            if (!exists(root, dir))
-                issues.push(`${file} codeDirs entry does not exist: ${dir}`);
-        }
+    if (expectedExt && projectConfig.codeExt && projectConfig.codeExt !== expectedExt)
+        issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt=${projectConfig.codeExt} but project appears ${project.kind}`);
+    if (projectConfig.docsDir && !exists(root, projectConfig.docsDir))
+        issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
+    for (const dir of valueArray(projectConfig.codeDirs)) {
+        if (!exists(root, dir))
+            issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
     }
-    if (doclint && gardener && JSON.stringify(doclint.codeDirs) !== JSON.stringify(gardener.codeDirs))
-        issues.push("doclint.json codeDirs differs from docs-gardener.json codeDirs");
-    if (doclint && gardener && doclint.docsDir !== gardener.docsDir)
-        issues.push("doclint.json docsDir differs from docs-gardener.json docsDir");
+    for (const dir of valueArray(asObject(unified.codelint).lintDirs)) {
+        if (!exists(root, dir))
+            issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry does not exist: ${dir}`);
+    }
+    drift.push(...compareCompat("codelint.json", codelint, expectedCompat["codelint.json"], ["lintDirs", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
+    drift.push(...compareCompat("doclint.json", doclint, expectedCompat["doclint.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
+    drift.push(...compareCompat("docs-gardener.json", gardener, expectedCompat["docs-gardener.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "catalogs"]));
+    for (const item of drift)
+        issues.push(`${item.file} drift at ${item.field}`);
     const ambiguous = project.kind === "mixed" || project.kind === "unknown";
     const suggestedCommand = buildSuggestedCommand(suggestion, ambiguous);
     const ok = issues.length === 0 && !ambiguous;
+    const driftBody = drift.length
+        ? ["", "Config drift:", ...drift.map(item => `- ${item.file}.${item.field}: expected ${JSON.stringify(item.expected)}, actual ${JSON.stringify(item.actual)}`)].join("\n")
+        : "";
     return {
         ok,
         phase: "config",
@@ -254,8 +333,8 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
         display: {
             title: ok ? "Config looks consistent" : "Project config needs confirmation",
             body: ok
-                ? "codelint/doclint/docs-gardener configuration matches the detected project shape."
-                : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}\n\nSuggested command:\n${suggestedCommand}`,
+                ? `${UNIFIED_CONFIG_FILE} is the source of truth and compatibility JSON artifacts are in sync.`
+                : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}\n\nSuggested command:\n${suggestedCommand}`,
         },
         hint: ok ? "Continue with hy_init or the requested workflow task." : "Show display.body and run the suggested config command only after user approval.",
         requires_user: ok ? false : true,
@@ -264,6 +343,7 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
         recovery: ok ? undefined : { tool: "terminal", instruction: suggestedCommand },
         project,
         issues,
+        drift,
         suggestion,
         suggestedCommand,
     };
@@ -334,6 +414,7 @@ export function configHelp() {
         "  hy-workflow config --apply-suggested --json",
         "  hy-workflow config --python --code-dirs src,tests --docs-dir docs --base-branch dev --json",
         "",
+        `${UNIFIED_CONFIG_FILE} is the source of truth. codelint.json, doclint.json, and docs-gardener.json are generated compatibility artifacts.`,
         "Config commands emit a single JSON envelope when --json is passed.",
     ].join("\n");
 }

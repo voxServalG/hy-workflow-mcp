@@ -151,14 +151,55 @@ const pyScore = ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg'].
 const tsScore = ['tsconfig.json', 'package.json'].filter(exists).length * 3 + dirs('.ts').length;
 const ext = pyScore > tsScore ? '.py' : '.ts';
 const codeDirs = dirs(ext).length ? dirs(ext) : (exists('src') ? ['src'] : ['src']);
-const suggestion = { lintDirs: codeDirs, codeDirs, codeExt: ext, baseBranch: 'dev', docsDir: 'docs', maxCodeLines: 500, maxDocLines: 200 };
+const suggestion = {
+  lintDirs: exists('src') ? ['src'] : codeDirs,
+  codeDirs,
+  codeExt: ext,
+  baseBranch: 'dev',
+  docsDir: 'docs',
+  maxCodeLines: 500,
+  maxDocLines: 200
+};
+const unified = readJson('hy-workflow.json');
 const codelint = readJson('codelint.json');
 const doclint = readJson('doclint.json');
 const gardener = readJson('docs-gardener.json');
+const project = (unified && unified.project) || {};
+const codeSection = (unified && unified.codelint) || {};
+const docsSection = (unified && unified.doclint) || {};
+const gardenerSection = (unified && unified.docsGardener) || {};
+const nextUnified = {
+  ...(unified || {}),
+  project: {
+    ...project,
+    baseBranch: project.baseBranch || codelint?.baseBranch || doclint?.baseBranch || gardener?.baseBranch || suggestion.baseBranch,
+    codeExt: project.codeExt || codelint?.codeExt || doclint?.codeExt || gardener?.codeExt || suggestion.codeExt,
+    codeDirs: project.codeDirs || doclint?.codeDirs || gardener?.codeDirs || codelint?.codeDirs || suggestion.codeDirs,
+    docsDir: project.docsDir || doclint?.docsDir || gardener?.docsDir || suggestion.docsDir
+  },
+  codelint: {
+    ...codeSection,
+    lintDirs: codeSection.lintDirs || codelint?.lintDirs || suggestion.lintDirs,
+    maxLines: codeSection.maxLines || codelint?.maxLines || suggestion.maxCodeLines
+  },
+  doclint: {
+    ...docsSection,
+    maxLines: docsSection.maxLines || doclint?.maxLines || suggestion.maxDocLines
+  },
+  docsGardener: {
+    ...gardenerSection,
+    catalogs: gardenerSection.catalogs || gardener?.catalogs || {}
+  }
+};
+const source = nextUnified.project;
+const nextCode = nextUnified.codelint;
+const nextDocs = nextUnified.doclint;
+const nextGardener = nextUnified.docsGardener;
 const next = {
-  'codelint.json': { lintDirs: suggestion.lintDirs, codeDirs: suggestion.codeDirs, codeExt: suggestion.codeExt, baseBranch: suggestion.baseBranch, maxLines: suggestion.maxCodeLines, ...(codelint || {}) },
-  'doclint.json': { docsDir: suggestion.docsDir, codeDirs: suggestion.codeDirs, codeExt: suggestion.codeExt, baseBranch: suggestion.baseBranch, maxLines: suggestion.maxDocLines, ...(doclint || {}) },
-  'docs-gardener.json': { docsDir: suggestion.docsDir, codeDirs: suggestion.codeDirs, codeExt: suggestion.codeExt, baseBranch: suggestion.baseBranch, catalogs: {}, ...(gardener || {}) },
+  'hy-workflow.json': nextUnified,
+  'codelint.json': { ...(codelint || {}), lintDirs: nextCode.lintDirs, codeDirs: source.codeDirs, codeExt: source.codeExt, baseBranch: source.baseBranch, maxLines: nextCode.maxLines },
+  'doclint.json': { ...(doclint || {}), docsDir: source.docsDir, codeDirs: source.codeDirs, codeExt: source.codeExt, baseBranch: source.baseBranch, maxLines: nextDocs.maxLines },
+  'docs-gardener.json': { ...(gardener || {}), docsDir: source.docsDir, codeDirs: source.codeDirs, codeExt: source.codeExt, baseBranch: source.baseBranch, catalogs: nextGardener.catalogs },
 };
 for (const [file, value] of Object.entries(next)) console.log(`${file}:${writeJson(file, value)}`);
 NODE
@@ -175,6 +216,8 @@ done <<< "$CONFIG_RESULT"
 
 ensure_gitignore_line ".hy/"
 ensure_gitignore_line ".opencode/"
+ensure_gitignore_line ".codex/"
+ensure_gitignore_line ".mcp.json"
 
 mkdir -p .hy
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -186,6 +229,7 @@ write_file ".hy/hy-workflow-setup.json" <<JSON
   "artifacts": [
     ".github/workflows/code-quality.yml",
     ".github/workflows/docs-check.yml",
+    "hy-workflow.json",
     "codelint.json",
     "doclint.json",
     "docs-gardener.json"
