@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { projectRoot, statePath } from "./state.js";
 import { toolResult } from "./tools/_base.js";
-export const SETUP_VERSION = "2026.06.12.1";
+export const SETUP_VERSION = "2026.06.16.1";
 export const SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
 export const SETUP_COMMAND = "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
 const BLOCKED_TOOLS = ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"];

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
 
-export const SETUP_VERSION = "2026.06.12.1";
+export const SETUP_VERSION = "2026.06.16.1";
 export const SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
 export const SETUP_COMMAND = "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
 
