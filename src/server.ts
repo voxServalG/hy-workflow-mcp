@@ -16,6 +16,7 @@ import { handleApprove } from "./tools/approve.js";
 import { handleBranch } from "./tools/branch.js";
 import { handleEdit } from "./tools/edit.js";
 import { handleVerify } from "./tools/verify.js";
+import { handleAmendPlan } from "./tools/amend_plan.js";
 import { handleCommit } from "./tools/commit.js";
 import { handleCi } from "./tools/ci.js";
 import { handleMerge } from "./tools/merge.js";
@@ -243,6 +244,19 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "hy_amend_plan",
+    description: "在 hy_verify 返回 amend_required 后，经用户明确 approve，应用 pending plan scope 修订并回到 edit/verify 流程，不完整 reset 到 plan。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        approved: { type: "string", description: "必须为字符串 'approve' 才会应用 pending amendment。" },
+        note: { type: "string", description: "用户批准修订的备注。" },
+      },
+      required: ["approved"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "hy_commit",
     description: "git add + commit + push + gh pr create。PR 正文嵌入 plan 摘要；成功后继续 hy_ci，不默认停下。",
     inputSchema: {
@@ -336,6 +350,7 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
     case "hy_branch":  return handleBranch(args as any);
     case "hy_edit":    return handleEdit();
     case "hy_verify":  return handleVerify();
+    case "hy_amend_plan": return handleAmendPlan(args as any);
     case "hy_commit":  return handleCommit(args as any);
     case "hy_ci":      return handleCi(args as any);
     case "hy_merge":   return handleMerge();
