@@ -50,11 +50,12 @@ npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --apply-suggeste
 hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
              ↑                     ↑                    ↑           ↑           ↑
          (用户驳回)           (用户许可)          (verify fail)  (CI fail)    (下游分支)
+                                                     ↳ hy_amend_plan（小范围 scope 修订）
 ```
 
 `dev → main` 这类 promotion 是发布/晋级操作，不属于普通开发闭环。用户明确要求 promotion 时，应检查 `origin/main..origin/dev` diff，创建或复用 `base=main, head=dev` 的 PR，等待 CI 全绿后合并；若需要直接使用 `gh`/`git`，agent 必须先获得用户明确授权。
 
-## 10 个工具
+## 11 个工具
 
 | Tool | 阶段 | 硬规则 | 软规则 |
 |------|------|--------|--------|
@@ -64,6 +65,7 @@ hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify →
 | `hy_branch` | branch | 命名规范校验 | — |
 | `hy_edit` | edit | 锁定 scope 边界 | LLM 编写代码 |
 | `hy_verify` | verify | lint+scope+boundary+platform+smoke+tests | 自定义 rubrics |
+| `hy_amend_plan` | verify/edit | 只应用 pending amendment | 用户明确批准小范围 scope 修订 |
 | `hy_commit` | commit | verifyHash 校验 | PR 嵌入 plan 摘要 |
 | `hy_ci` | ci | 轮询 GitHub Checks | — |
 | `hy_merge` | merge | 全绿才放行 | — |
@@ -80,6 +82,8 @@ hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify →
 5. smoke    → 快速冒烟（<5s）
 6. tests    → 完整测试套件
 ```
+
+`hy_verify` 会生成 implementation manifest（实际修改、新增、删除、未跟踪文件）。如果失败只来自测试支撑文件或已批准目录内的新拆分文件，结果会返回 `amend_required` 和 `suggestedAmendment`，agent 需要展示给用户；用户明确批准后调用 `hy_amend_plan` 应用修订，再重新运行 `hy_verify`。声明了但最终未修改的文件只是 warning，不阻断流程。
 
 ## plan 数据结构
 

@@ -18,6 +18,9 @@ function ok(title, layer, detail = "", hard = true) {
 function fail(title, layer, detail = "", hard = true) {
     return { layer, name: title, passed: false, detail: detail || "FAILED", hard };
 }
+function unique(values) {
+    return [...new Set(values.filter(Boolean))].sort();
+}
 function findPython() {
     const candidates = ["python3", "python", "py"];
     for (const cmd of candidates) {
@@ -102,24 +105,167 @@ export function runCompile(root) {
             : fail("compile", "compile", r.stderr || r.stdout || "Build failed", true)];
 }
 // ── 3. Scope (hard) ─────────────────────────────────────────
-export function runScopeCheck(root, plan) {
-    const res = [];
+function parseNameStatus(output) {
+    const modified = [];
+    const added = [];
+    const deleted = [];
+    for (const line of output.split("\n").filter(Boolean)) {
+        const parts = line.trim().split(/\t+/);
+        const status = parts[0] ?? "";
+        const first = parts[1] ?? "";
+        const second = parts[2] ?? "";
+        if (status.startsWith("R") || status.startsWith("C")) {
+            if (first)
+                deleted.push(first);
+            if (second)
+                added.push(second);
+            continue;
+        }
+        if (status.includes("D")) {
+            if (first)
+                deleted.push(first);
+            continue;
+        }
+        if (status.includes("A")) {
+            if (first)
+                added.push(first);
+            continue;
+        }
+        if (first)
+            modified.push(first);
+    }
+    return {
+        modified: unique(modified),
+        added: unique(added),
+        deleted: unique(deleted),
+    };
+}
+export function buildImplementationManifest(root) {
     const base = getBaseBranch(root);
-    const r = execOr(`git diff origin/${base} --name-only -- . ":(exclude)dist/*" ":(exclude)node_modules/*"`, root);
-    if (!r.ok)
-        return [fail("scope", "scope", `git diff failed: ${r.stderr}`)];
-    const actual = r.stdout.split("\n").filter(Boolean).map(s => s.trim());
+    const diff = execOr(`git diff origin/${base} --name-status -- . ":(exclude)dist/*" ":(exclude)node_modules/*"`, root);
+    if (!diff.ok)
+        throw new Error(`git diff failed: ${diff.stderr}`);
+    const parsed = parseNameStatus(diff.stdout);
+    const untrackedResult = execOr(`git ls-files --others --exclude-standard -- . ":(exclude)dist/*" ":(exclude)node_modules/*"`, root);
+    if (!untrackedResult.ok)
+        throw new Error(`git ls-files failed: ${untrackedResult.stderr}`);
+    const untracked = unique(untrackedResult.stdout.split("\n").filter(Boolean).map(s => s.trim()));
+    return {
+        ...parsed,
+        untracked,
+        changed: unique([...parsed.modified, ...parsed.added, ...parsed.deleted, ...untracked]),
+    };
+}
+function isTestSupportFile(file) {
+    const normalized = file.replace(/\\/g, "/");
+    const base = path.basename(normalized);
+    return (normalized.startsWith("tests/") ||
+        base === "conftest.py" ||
+        (base === "__init__.py" && normalized.includes("/tests/")) ||
+        /^test[_-]/.test(base) ||
+        /\.test\.[jt]sx?$/.test(base) ||
+        /\.spec\.[jt]sx?$/.test(base));
+}
+function declaredDirectories(plan) {
+    return new Set([...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete].map(file => path.posix.dirname(file.replace(/\\/g, "/"))));
+}
+function isWithinDeclaredDirectory(file, plan) {
+    return declaredDirectories(plan).has(path.posix.dirname(file.replace(/\\/g, "/")));
+}
+function isAmendableScopeFile(file, plan) {
+    return isTestSupportFile(file) || isWithinDeclaredDirectory(file, plan);
+}
+function emptyScopeAmendment() {
+    return {
+        changes: { add: [], remove: [] },
+        new_files: { add: [], remove: [] },
+        delete: { add: [], remove: [] },
+    };
+}
+export function suggestPlanAmendment(plan, manifest) {
+    const declared = [...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete];
+    const actual = manifest.changed;
+    const extra = actual.filter(f => !declared.includes(f) && !f.startsWith(".hy/"));
+    const amendableExtra = extra.filter(f => isAmendableScopeFile(f, plan));
+    const notAmendableExtra = extra.filter(f => !isAmendableScopeFile(f, plan));
+    const missing = declared.filter(f => !actual.includes(f));
+    const scope = emptyScopeAmendment();
+    for (const file of amendableExtra) {
+        if (manifest.deleted.includes(file))
+            scope.delete.add.push(file);
+        else if (manifest.added.includes(file) || manifest.untracked.includes(file))
+            scope.new_files.add.push(file);
+        else
+            scope.changes.add.push(file);
+    }
+    for (const file of missing) {
+        if (plan.scope.changes.includes(file))
+            scope.changes.remove.push(file);
+        if (plan.scope.new_files.includes(file))
+            scope.new_files.remove.push(file);
+        if (plan.scope.delete.includes(file))
+            scope.delete.remove.push(file);
+    }
+    const hasScopeChanges = [
+        ...scope.changes.add,
+        ...scope.changes.remove,
+        ...scope.new_files.add,
+        ...scope.new_files.remove,
+        ...scope.delete.add,
+        ...scope.delete.remove,
+    ].length > 0;
+    if (!hasScopeChanges)
+        return null;
+    scope.changes.add = unique(scope.changes.add);
+    scope.changes.remove = unique(scope.changes.remove);
+    scope.new_files.add = unique(scope.new_files.add);
+    scope.new_files.remove = unique(scope.new_files.remove);
+    scope.delete.add = unique(scope.delete.add);
+    scope.delete.remove = unique(scope.delete.remove);
+    return {
+        reason: notAmendableExtra.length
+            ? "Some scope drift is outside the amendable boundary; only safe amendments are suggested."
+            : "Scope drift is limited to test support files or the already approved directory boundary.",
+        scope,
+        warnings: [
+            ...missing.map(file => `Declared but not changed: ${file}`),
+            ...notAmendableExtra.map(file => `Not amendable automatically: ${file}`),
+        ],
+    };
+}
+function isAmendOnlyFailure(plan, manifest) {
+    const declared = [...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete];
+    const extra = manifest.changed.filter(f => !declared.includes(f) && !f.startsWith(".hy/"));
+    return extra.length > 0 && extra.every(f => isAmendableScopeFile(f, plan));
+}
+export function runScopeCheck(root, plan, manifest) {
+    const res = [];
+    let actualManifest;
+    try {
+        actualManifest = manifest ?? buildImplementationManifest(root);
+    }
+    catch (e) {
+        return [fail("scope", "scope", e.message ?? String(e))];
+    }
+    const actual = actualManifest.changed;
     const declared = [...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete];
     const extra = actual.filter(f => !declared.includes(f) && !f.startsWith(".hy/"));
     if (extra.length) {
-        res.push(fail("scope", "scope", `Unexpected changes: ${extra.join(", ")}`));
+        const amendable = isAmendOnlyFailure(plan, actualManifest);
+        res.push({
+            ...fail("scope", "scope", `Unexpected changes: ${extra.join(", ")}`),
+            classification: amendable ? "amend_required" : "hard_fail",
+        });
     }
     else {
         res.push(ok("scope", "scope", `${actual.length} files, all in plan.scope`));
     }
     const missing = declared.filter(f => !actual.includes(f));
     if (missing.length) {
-        res.push(fail("scope", "scope", `Declared but not changed: ${missing.join(", ")}`, false));
+        res.push({
+            ...fail("scope", "scope", `Declared but not changed: ${missing.join(", ")}`, false),
+            classification: "warning",
+        });
     }
     return res;
 }
@@ -167,23 +313,50 @@ function runItems(items, layer, root) {
 }
 export function runAllChecks(root, state) {
     const p = state.plan;
+    const emptyManifest = { modified: [], added: [], deleted: [], untracked: [], changed: [] };
     if (!p)
-        return { allPassed: false, hardFailed: 1, total: 1, checks: [fail("plan", "lint", "No plan")] };
+        return {
+            allPassed: false,
+            hardFailed: 1,
+            total: 1,
+            checks: [fail("plan", "lint", "No plan")],
+            status: "hard_fail",
+            implementationManifest: emptyManifest,
+            suggestedAmendment: null,
+        };
+    let implementationManifest = emptyManifest;
+    let manifestError = null;
+    try {
+        implementationManifest = buildImplementationManifest(root);
+    }
+    catch (e) {
+        manifestError = fail("scope", "scope", e.message ?? String(e));
+    }
     const all = [
         ...runDocLint(root),
         ...runCodeLint(root),
         ...runCompile(root),
-        ...runScopeCheck(root, p),
+        ...(manifestError ? [manifestError] : runScopeCheck(root, p, implementationManifest)),
         ...runBoundaryCheck(root, p),
         ...runPlatform(p),
         ...runSmoke(p, root),
         ...runTests(p, root),
     ];
+    const hardFailures = all.filter(c => c.hard && !c.passed);
+    const suggestedAmendment = manifestError ? null : suggestPlanAmendment(p, implementationManifest);
+    const status = hardFailures.length === 0
+        ? "passed"
+        : hardFailures.every(c => c.classification === "amend_required") && suggestedAmendment
+            ? "amend_required"
+            : "hard_fail";
     return {
         allPassed: all.every(c => c.passed || !c.hard),
-        hardFailed: all.filter(c => c.hard && !c.passed).length,
+        hardFailed: hardFailures.length,
         total: all.length,
         checks: all,
+        status,
+        implementationManifest,
+        suggestedAmendment,
     };
 }
 //# sourceMappingURL=checks.js.map

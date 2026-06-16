@@ -7,6 +7,9 @@ export async function handleStatus() {
     const legacyDiagnostics = legacyRuntimeDiagnostics();
     const artifactGuidance = initArtifactGuidance();
     const setupUpdateCheck = checkSetupStamp();
+    const allowedTools = state.pendingAmendment && state.phase === "verify"
+        ? ["hy_amend_plan", "hy_verify", "hy_status"]
+        : [state.phase === "done" ? "hy_status" : `hy_${state.phase}`, "hy_status"];
     const r = toolResult(state.phase, {
         phase: state.phase,
         branch: state.branch,
@@ -17,10 +20,12 @@ export async function handleStatus() {
         hint: legacyDiagnostics.length
             ? `Use phase, next, allowedTools, and action to decide the next safe tool call. Legacy runtime cleanup needed: ${legacyDiagnostics.map(d => d.remediation ?? d.message).join(" ")}`
             : "Use phase, next, allowedTools, and action to decide the next safe tool call.",
-        allowedTools: [state.phase === "done" ? "hy_status" : `hy_${state.phase}`, "hy_status"],
+        allowedTools,
         commitArtifacts: artifactGuidance.commitArtifacts,
         localArtifacts: artifactGuidance.localArtifacts,
         setupUpdateCheck,
+        pendingAmendment: state.pendingAmendment ?? undefined,
+        implementationManifest: state.implementationManifest ?? undefined,
         legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
     });
     if (!state.plan) {

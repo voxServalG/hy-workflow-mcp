@@ -30,6 +30,32 @@ export interface PlanDoc {
     verify_hash: string | null;
     pr_number: number | null;
 }
+export interface ImplementationManifest {
+    modified: string[];
+    added: string[];
+    deleted: string[];
+    untracked: string[];
+    changed: string[];
+}
+export interface PlanScopeAmendment {
+    changes: {
+        add: string[];
+        remove: string[];
+    };
+    new_files: {
+        add: string[];
+        remove: string[];
+    };
+    delete: {
+        add: string[];
+        remove: string[];
+    };
+}
+export interface PendingPlanAmendment {
+    reason: string;
+    scope: PlanScopeAmendment;
+    warnings: string[];
+}
 export interface Approval {
     time: string;
     note: string;
@@ -42,6 +68,8 @@ export interface WorkflowState {
     plan: PlanDoc | null;
     approval: Approval | null;
     verifyHash: string | null;
+    pendingAmendment?: PendingPlanAmendment | null;
+    implementationManifest?: ImplementationManifest | null;
 }
 export interface LegacyRuntimeDiagnostic {
     file: string;
