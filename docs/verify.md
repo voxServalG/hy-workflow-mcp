@@ -10,7 +10,7 @@ Layer 1: lint
 └── codelint — npx --yes github:voxServalG/codelint check --json
 
 Layer 2: compile
-└── npx tsc --noEmit (.ts) / py_compile (.py)
+└── npx tsc --noEmit (.ts/.tsx/.js/.jsx/.mjs/.cjs) / py_compile (.py/.pyw/.pyi) / soft skip (.tksp and custom extensions without built-in compiler)
 
 Layer 3: scope
 ├── git diff origin/${baseBranch} --name-only 文件 ⊆ plan.scope 声明
@@ -85,7 +85,7 @@ interface VerifyReport {
 
 | 配置 | 影响 |
 |------|------|
-| `codelint.json: codeExt` | 决定编译命令（`.ts` → `npx tsc --noEmit`，`.py` → `py_compile`）；boundary entry_points 始终按 shell 执行 |
+| `codelint.json: codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；任一 JS/TS 扩展触发 `npx tsc --noEmit`，任一 Python 扩展触发 `py_compile`，`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层；boundary entry_points 始终按 shell 执行 |
 | `codelint.json: baseBranch` | scope check 的 Git diff 基线分支 |
 | `doclint.json` | doclint 检查规则，验证文档质量 |
 

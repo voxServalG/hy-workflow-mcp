@@ -20,6 +20,29 @@ function readJson(root: string, file: string): any {
   return JSON.parse(fs.readFileSync(path.join(root, file), "utf-8"));
 }
 
+
+function configuredRoot(codeExt: string | string[], files: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-custom-"));
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  for (const [file, content] of Object.entries(files)) {
+    const full = path.join(root, file);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content, "utf-8");
+  }
+  const unified = {
+    project: { baseBranch: "main", codeExt, codeDirs: ["src"], docsDir: "docs" },
+    codelint: { lintDirs: ["src"], maxLines: 300 },
+    doclint: { maxLines: 180 },
+    docsGardener: { catalogs: {} },
+  };
+  fs.writeFileSync(path.join(root, "hy-workflow.json"), JSON.stringify(unified, null, 2) + "\n", "utf-8");
+  fs.writeFileSync(path.join(root, "codelint.json"), JSON.stringify({ lintDirs: ["src"], codeDirs: ["src"], codeExt, baseBranch: "main", maxLines: 300 }, null, 2) + "\n", "utf-8");
+  fs.writeFileSync(path.join(root, "doclint.json"), JSON.stringify({ docsDir: "docs", codeDirs: ["src"], codeExt, baseBranch: "main", maxLines: 180 }, null, 2) + "\n", "utf-8");
+  fs.writeFileSync(path.join(root, "docs-gardener.json"), JSON.stringify({ docsDir: "docs", codeDirs: ["src"], codeExt, baseBranch: "main", catalogs: {} }, null, 2) + "\n", "utf-8");
+  return root;
+}
+
 const root = tempRoot();
 fs.writeFileSync(path.join(root, "codelint.json"), JSON.stringify({
   lintDirs: ["src"],
@@ -100,3 +123,26 @@ assert(readJson(cliRoot, "doclint.json").codeDirs[0] === "src", "config CLI shou
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");
 assert(help.stdout.includes("hy-workflow.json is the source of truth"), "help should document unified config");
+
+
+const tkspRoot = configuredRoot(".tksp", { "src/main.tksp": "module demo\n" });
+const tkspCheck = checkConfig(tkspRoot);
+assert(tkspCheck.ok, `.tksp config should be accepted: ${tkspCheck.issues.join(", ")}`);
+assert(readJson(tkspRoot, "codelint.json").codeExt === ".tksp", "compat artifacts should preserve .tksp codeExt");
+
+const tkspTsRoot = configuredRoot([".tksp", ".ts"], { "src/main.tksp": "module demo\n", "src/index.ts": "export {};\n" });
+const tkspTsCheck = checkConfig(tkspTsRoot);
+assert(tkspTsCheck.ok, `.tksp + .ts array config should be accepted: ${tkspTsCheck.issues.join(", ")}`);
+assert(Array.isArray(readJson(tkspTsRoot, "hy-workflow.json").project.codeExt), "unified config should preserve array codeExt");
+assert(Array.isArray(readJson(tkspTsRoot, "doclint.json").codeExt), "doclint compatibility artifact should preserve array codeExt when configured that way");
+
+const commaRoot = configuredRoot(".tksp,.ts", { "src/main.tksp": "module demo\n", "src/index.ts": "export {};\n" });
+const commaCheck = checkConfig(commaRoot);
+assert(commaCheck.ok, `.tksp,.ts comma config should be accepted: ${commaCheck.issues.join(", ")}`);
+
+const inferredTkspRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-infer-tksp-"));
+fs.mkdirSync(path.join(inferredTkspRoot, "src"), { recursive: true });
+fs.mkdirSync(path.join(inferredTkspRoot, "docs"), { recursive: true });
+fs.writeFileSync(path.join(inferredTkspRoot, "src", "main.tksp"), "module demo\n", "utf-8");
+const inferredTksp = runConfigCli(["--dry-run", "--json"], inferredTkspRoot);
+assert(JSON.parse(inferredTksp.stdout).suggestion.codeExt === ".tksp", "dry-run should suggest .tksp for tksp-only projects");
