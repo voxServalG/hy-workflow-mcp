@@ -147,9 +147,34 @@ function dirs(ext) {
   const candidates = ['src', 'tests', 'scripts', 'lib', 'packages'].filter(d => exists(d) && fs.statSync(d).isDirectory());
   return candidates.filter(d => walk(d, ext) > 0);
 }
-const pyScore = ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg'].filter(exists).length * 3 + dirs('.py').length;
-const tsScore = ['tsconfig.json', 'package.json'].filter(exists).length * 3 + dirs('.ts').length;
-const ext = pyScore > tsScore ? '.py' : '.ts';
+function extCounts() {
+  const candidates = ['src', 'tests', 'scripts', 'lib', 'packages'].filter(d => exists(d) && fs.statSync(d).isDirectory());
+  const counts = new Map();
+  function scan(dir) {
+    const start = path.join(process.cwd(), dir);
+    if (!fs.existsSync(start)) return;
+    for (const entry of fs.readdirSync(start, { withFileTypes: true })) {
+      if (['node_modules', '.git', 'dist'].includes(entry.name)) continue;
+      const full = path.join(start, entry.name);
+      if (entry.isDirectory()) scan(path.relative(process.cwd(), full));
+      else {
+        const ext = path.extname(entry.name);
+        if (ext) counts.set(ext, (counts.get(ext) || 0) + 1);
+      }
+    }
+  }
+  for (const dir of candidates) scan(dir);
+  return counts;
+}
+function detectExt() {
+  const pyScore = ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg'].filter(exists).length * 3 + dirs('.py').length;
+  const tsScore = ['tsconfig.json', 'package.json'].filter(exists).length * 3 + dirs('.ts').length;
+  if (pyScore > tsScore) return '.py';
+  if (tsScore > 0) return '.ts';
+  const [first] = [...extCounts().entries()].sort((a, b) => b[1] - a[1]);
+  return first ? first[0] : '.ts';
+}
+const ext = detectExt();
 const codeDirs = dirs(ext).length ? dirs(ext) : (exists('src') ? ['src'] : ['src']);
 const suggestion = {
   lintDirs: exists('src') ? ['src'] : codeDirs,

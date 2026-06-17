@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, WorkflowState } from "./state.js";
 import { getBaseBranch } from "./state.js";
+import { JS_TS_CODE_EXTS, PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -107,8 +108,9 @@ function resolveCompileCmd(root: string): string | null {
   if (!fs.existsSync(configPath)) return null;
   try {
     const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    if (config.codeExt === ".ts") return "npx tsc --noEmit";
-    if (config.codeExt === ".py") return `${findPython()} -m py_compile src/**/*.py`;
+    const exts = normalizeCodeExt(config.codeExt);
+    if (exts.some(ext => JS_TS_CODE_EXTS.has(ext))) return "npx tsc --noEmit";
+    if (exts.some(ext => PYTHON_CODE_EXTS.has(ext))) return `${findPython()} -m py_compile src/**/*.py`;
   } catch {}
   return null;
 }
