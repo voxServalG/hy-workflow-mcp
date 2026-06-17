@@ -18,6 +18,30 @@ export type Phase =
   | "chain"
   | "done";
 
+// ── DocsGraph types ────────────────────────────────────────
+
+export interface DocsGraphLink {
+  anchor: string;
+  target: string;
+  line: number;
+}
+
+export interface DocsGraphEntry {
+  path: string;
+  sha256: string;
+  links: DocsGraphLink[];
+  referencedBy: string[];
+}
+
+export interface DocsGraph {
+  digest: string;
+  docsDir: string;
+  entryPoints: string[];
+  entries: Record<string, DocsGraphEntry>;
+}
+
+
+
 export interface CheckItem {
   command: string;
   expected_exit: number;
@@ -106,6 +130,9 @@ export interface DocumentReadSnapshot {
   digest: string;
   files: DocumentReadFile[];
   findings: string[];
+  docsGraphDigest: string;
+  entryPoints: string[];
+  traversalRoots: string[];
   implementationFiles?: string[];
   implementationDigest?: string;
 }
