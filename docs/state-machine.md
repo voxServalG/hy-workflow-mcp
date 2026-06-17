@@ -7,8 +7,8 @@
 | # | Phase | 含义 |
 |---|-------|------|
 | 1 | `init` | 初始状态，等待 `hy_init` 验证 setup/bootstrap 产物 |
-| 2 | `plan` | 任务规划，等待 LLM 生成 PlanDoc |
-| 3 | `approve` | 用户审视 PlanDoc，输入 `"approve"` 放行 |
+| 2 | `plan` | 任务规划，先由 agent 自动执行 `hy_read_docs(before_plan)` 建立文档事实基线，再生成 PlanDoc |
+| 3 | `approve` | 用户审视 PlanDoc；用户批准后 agent 自动执行 `hy_read_docs(before_approve)` 做文档审计，再输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
 | 5 | `edit` | LLM 编写代码，scope 已锁定 |
 | 6 | `verify` | 全量校验（7 层），通过则进 commit |
@@ -44,6 +44,15 @@ init → plan → approve → branch → edit → verify → commit → ci → m
                                          edit → verify → commit (新)
 ```
 
+## 文档读取 gate
+
+`hy_read_docs` 不新增状态机 phase，而是在 `plan` 和 `approve` phase 内作为自动 gate 运行。
+
+- `before_plan`: 运行于 `plan` phase，绑定用户 task，写入 `documentReads.beforePlan`。`hy_plan` 缺少匹配 baseline 时拒绝执行。
+- `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。`hy_approve` 缺少匹配审计时拒绝批准。
+
+这两个 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc。
+
 ## 状态持久化
 
 状态文件: `.git/hy-workflow/workflow.json`
@@ -57,6 +66,7 @@ interface WorkflowState {
   plan: PlanDoc | null;
   approval: Approval | null;
   verifyHash: string | null;
+  documentReads?: DocumentReads | null;
 }
 ```
 

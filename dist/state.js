@@ -176,6 +176,21 @@ export function computeVerifyHash(state) {
     hash.update(payload);
     return hash.digest("hex").slice(0, 12);
 }
+export function computePlanHash(plan) {
+    if (!plan)
+        return null;
+    const payload = JSON.stringify({
+        task: plan.task,
+        scope: plan.scope,
+        boundary: plan.boundary,
+        verify: plan.verify,
+        risks: plan.risks,
+        discussion: plan.discussion,
+    });
+    const hash = createHash("sha256");
+    hash.update(payload);
+    return hash.digest("hex").slice(0, 12);
+}
 // ── Branch name ──────────────────────────────────────────────
 export function currentBranch(root) {
     try {

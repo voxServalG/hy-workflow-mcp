@@ -57,6 +57,62 @@ export interface PlanDoc {
   pr_number: number | null;
 }
 
+export interface ImplementationManifest {
+  modified: string[];
+  added: string[];
+  deleted: string[];
+  untracked: string[];
+  changed: string[];
+}
+
+export interface PlanScopeAmendment {
+  changes: {
+    add: string[];
+    remove: string[];
+  };
+  new_files: {
+    add: string[];
+    remove: string[];
+  };
+  delete: {
+    add: string[];
+    remove: string[];
+  };
+}
+
+export interface PendingPlanAmendment {
+  reason: string;
+  scope: PlanScopeAmendment;
+  warnings: string[];
+}
+
+export type DocumentReadStage = "before_plan" | "before_approve";
+
+export interface DocumentReadFile {
+  path: string;
+  bytes: number;
+  sha256: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface DocumentReadSnapshot {
+  stage: DocumentReadStage;
+  purpose: string;
+  time: string;
+  task: string;
+  planHash: string | null;
+  docsDir: string;
+  digest: string;
+  files: DocumentReadFile[];
+  findings: string[];
+}
+
+export interface DocumentReads {
+  beforePlan?: DocumentReadSnapshot | null;
+  beforeApprove?: DocumentReadSnapshot | null;
+}
+
 export interface Approval {
   time: string;
   note: string;
@@ -70,6 +126,9 @@ export interface WorkflowState {
   plan: PlanDoc | null;
   approval: Approval | null;
   verifyHash: string | null;
+  pendingAmendment?: PendingPlanAmendment | null;
+  implementationManifest?: ImplementationManifest | null;
+  documentReads?: DocumentReads | null;
 }
 
 // ── State path ───────────────────────────────────────────────
@@ -260,6 +319,21 @@ export function computeVerifyHash(state: WorkflowState): string {
     scope: state.plan?.scope,
     boundary: state.plan?.boundary,
     rubrics: state.plan?.verify,
+  });
+  const hash = createHash("sha256");
+  hash.update(payload);
+  return hash.digest("hex").slice(0, 12);
+}
+
+export function computePlanHash(plan: PlanDoc | null): string | null {
+  if (!plan) return null;
+  const payload = JSON.stringify({
+    task: plan.task,
+    scope: plan.scope,
+    boundary: plan.boundary,
+    verify: plan.verify,
+    risks: plan.risks,
+    discussion: plan.discussion,
   });
   const hash = createHash("sha256");
   hash.update(payload);

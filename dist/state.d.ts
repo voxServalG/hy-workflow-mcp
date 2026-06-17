@@ -30,6 +30,55 @@ export interface PlanDoc {
     verify_hash: string | null;
     pr_number: number | null;
 }
+export interface ImplementationManifest {
+    modified: string[];
+    added: string[];
+    deleted: string[];
+    untracked: string[];
+    changed: string[];
+}
+export interface PlanScopeAmendment {
+    changes: {
+        add: string[];
+        remove: string[];
+    };
+    new_files: {
+        add: string[];
+        remove: string[];
+    };
+    delete: {
+        add: string[];
+        remove: string[];
+    };
+}
+export interface PendingPlanAmendment {
+    reason: string;
+    scope: PlanScopeAmendment;
+    warnings: string[];
+}
+export type DocumentReadStage = "before_plan" | "before_approve";
+export interface DocumentReadFile {
+    path: string;
+    bytes: number;
+    sha256: string;
+    content: string;
+    truncated: boolean;
+}
+export interface DocumentReadSnapshot {
+    stage: DocumentReadStage;
+    purpose: string;
+    time: string;
+    task: string;
+    planHash: string | null;
+    docsDir: string;
+    digest: string;
+    files: DocumentReadFile[];
+    findings: string[];
+}
+export interface DocumentReads {
+    beforePlan?: DocumentReadSnapshot | null;
+    beforeApprove?: DocumentReadSnapshot | null;
+}
 export interface Approval {
     time: string;
     note: string;
@@ -42,6 +91,9 @@ export interface WorkflowState {
     plan: PlanDoc | null;
     approval: Approval | null;
     verifyHash: string | null;
+    pendingAmendment?: PendingPlanAmendment | null;
+    implementationManifest?: ImplementationManifest | null;
+    documentReads?: DocumentReads | null;
 }
 export interface LegacyRuntimeDiagnostic {
     file: string;
@@ -62,5 +114,6 @@ export declare class StateError extends Error {
     constructor(message: string);
 }
 export declare function computeVerifyHash(state: WorkflowState): string;
+export declare function computePlanHash(plan: PlanDoc | null): string | null;
 export declare function currentBranch(root: string): string;
 export declare function getBaseBranch(root: string): string;

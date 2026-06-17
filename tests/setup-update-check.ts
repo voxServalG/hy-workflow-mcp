@@ -36,6 +36,17 @@ function listFiles(root: string): string[] {
 }
 
 const originalCwd = process.cwd();
+const setupPrompt = fs.readFileSync(path.join(originalCwd, "setup"), "utf-8");
+
+assert(setupPrompt.includes(".opencode/opencode.json"), "setup prompt should keep OpenCode config path");
+assert(setupPrompt.includes("\"\\$schema\": \"https://opencode.ai/config.json\""), "setup prompt should keep OpenCode JSON example");
+assert(setupPrompt.includes(".codex/config.toml"), "setup prompt should include Codex project config path");
+assert(setupPrompt.includes("[mcp_servers.hy-workflow]"), "setup prompt should include Codex hy-workflow server");
+assert(setupPrompt.includes("required = true"), "setup prompt should mark hy-workflow as required for Codex");
+assert(setupPrompt.includes("[mcp_servers.docs-gardener]"), "setup prompt should include Codex docs-gardener server");
+assert(setupPrompt.includes("required = false"), "setup prompt should mark docs-gardener as optional for Codex");
+assert(setupPrompt.includes("tool_timeout_sec = 600"), "setup prompt should include hy-workflow timeout guidance");
+assert(setupPrompt.includes("tool_timeout_sec = 300"), "setup prompt should include docs-gardener timeout guidance");
 
 try {
   const missingRoot = tempRepo();

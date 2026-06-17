@@ -3,13 +3,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { toolResult } from "./_base.js";
 import { SETUP_COMMAND, SETUP_STAMP } from "../bootstrap.js";
-import { checkConfig } from "../config.js";
+import { checkConfig, UNIFIED_CONFIG_FILE } from "../config.js";
 const MARKER_START = "<!-- hy-workflow-rules -->";
 const MARKER_END = "<!-- /hy-workflow-rules -->";
 export const INIT_COMMIT_ARTIFACTS = [
     ".github/",
     "AGENTS.md",
     ".gitignore",
+    UNIFIED_CONFIG_FILE,
     "codelint.json",
     "doclint.json",
     "docs-gardener.json",
@@ -17,10 +18,13 @@ export const INIT_COMMIT_ARTIFACTS = [
 export const INIT_LOCAL_ARTIFACTS = [
     ".hy/",
     ".opencode/",
+    ".codex/",
+    ".mcp.json",
 ];
 export const REQUIRED_SETUP_ARTIFACTS = [
     ".github/workflows/code-quality.yml",
     ".github/workflows/docs-check.yml",
+    UNIFIED_CONFIG_FILE,
     "codelint.json",
     "doclint.json",
     "docs-gardener.json",
@@ -28,6 +32,7 @@ export const REQUIRED_SETUP_ARTIFACTS = [
 ];
 const LEGACY_HARNESS_ARTIFACTS = [
     ".github/",
+    UNIFIED_CONFIG_FILE,
     "codelint.json",
     "doclint.json",
     "docs-gardener.json",
@@ -43,30 +48,34 @@ ${MARKER_START}
 ### 流程顺序（禁止跳过或重排）
 
 首次使用: hy_init → hy_plan → ...
-后续使用: hy_status → hy_plan → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
 
 ### 各工具说明
 
 **0. hy_init** — 项目首次使用时调用。验证 setup 已部署 bootstrap 产物，写入/更新 workflow 规则和本地忽略项，自动进 plan。不会在 MCP 内启动 setup 或交互式 TUI。
 
-**1. hy_plan** — 调用时传入 {task, plan}。自行利用工作区上下文构造 PlanDoc JSON。服务端通过 6 道 gate 校验 PlanDoc 质量，通过后方可进入 approve。
+**1. hy_read_docs(before_plan)** — 在 hy_plan 前由 agent 自动调用，不需要人类审核。读取 hy-workflow.json project.docsDir 指向的文档系统，形成规划事实基线，用于发现约束、术语、相关文件、未知点和验证期望。
+
+**2. hy_plan** — 调用时传入 {task, plan}。自行利用 before_plan 文档事实基线和工作区上下文构造 PlanDoc JSON。服务端通过 gate 校验 PlanDoc 质量，通过后方可进入 approve。
 **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
 
-**2. hy_approve** — 用户审视 plan。严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。必须等待用户对展示的 plan 做出认可。犹豫时反问用户确认。
+**3. hy_read_docs(before_approve)** — 在用户明确批准 PlanDoc 后、调用 hy_approve 前由 agent 自动调用，不需要人类审核。读取文档系统并对当前 PlanDoc 做 agent 侧事实对齐审计；若发现事实偏移、scope 漏项、验证不足或风险缺失，必须回到 hy_plan。
 
-**3. hy_branch** — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
+**4. hy_approve** — 用户审视 plan。严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。必须等待用户对展示的 plan 做出认可。收到用户批准后，先自动调用 hy_read_docs({stage:'before_approve'})，再调用 hy_approve；before_approve 不是新增人类审核 gate。犹豫时反问用户确认。
 
-**4. hy_edit** — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
+**5. hy_branch** — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
 
-**5. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+**6. hy_edit** — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 
-**6. hy_commit** — git add + commit + push + gh pr create。
+**7. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
 
-**7. hy_ci** — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
+**8. hy_commit** — git add + commit + push + gh pr create。
 
-**8. hy_merge** — 合并 PR，删除远程分支。
+**9. hy_ci** — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
 
-**9. hy_chain** — rebase 下游分支。
+**10. hy_merge** — 合并 PR，删除远程分支。
+
+**11. hy_chain** — rebase 下游分支。
 
 ### 禁止操作
 
@@ -74,21 +83,21 @@ ${MARKER_START}
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
-- 不要提交本地或运行时目录：.hy/、.opencode/
+- 不要提交本地或运行时目录：.hy/、.opencode/、.codex/、.mcp.json
 
 ### hy_init 初始化产物
 
-hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、codelint.json、doclint.json、docs-gardener.json。
-hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/。
+hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json。
+hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/、.codex/、.mcp.json。
 
 ### Artifact contract
 
 setup / hy_init 可能产生两类产物，必须分开处理：
-- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、codelint.json、doclint.json、docs-gardener.json
-- **不应提交的 local/runtime artifacts**: .hy/、.opencode/、MCP 客户端本地配置和 setup stamp（.hy/hy-workflow-setup.json）
+- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json
+- **不应提交的 local/runtime artifacts**: .hy/、.opencode/、.codex/、.mcp.json、MCP 客户端本地配置和 setup stamp（.hy/hy-workflow-setup.json）
 
 如果运行 setup 后出现 tracked diff（例如 CI workflow、lint config、docs-gardener config 或 .gitignore 变化），应优先创建单独的 setup artifact sync PR 提交这些变更。
-不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交 .hy/ 或 .opencode/。
+不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交 .hy/、.opencode/、.codex/ 或 .mcp.json。
 
 ### Promotion / release 例外
 
@@ -120,7 +129,7 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 ### hy_plan 使用
 
 调用 hy_plan({task: "描述你要做的任务", plan: { ... PlanDoc JSON ... }})。构造 PlanDoc 时：
-- 先用 Read/Glob/Grep 了解项目结构，确认每个文件路径存在
+- 先调用 hy_read_docs({stage:"before_plan", task}) 建立文档事实基线，再用 Read/Glob/Grep 了解项目结构，确认每个文件路径存在
 - task：描述解决的问题和动机，不是操作步骤列表
 - dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
 - entry_points：覆盖编译+lint+测试，每条对应一个验证维度
@@ -136,7 +145,7 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 
 ### approve 后自动推进
 
-hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和 stopAfter。
+用户输入 approve 后，agent 必须先自动调用 hy_read_docs({stage:"before_approve"}) 完成文档审计；审计通过后再调用 hy_approve。hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和 stopAfter。
 按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。
 每完成一步，用简短语句向用户汇报当前进度（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
 
@@ -153,6 +162,14 @@ hy_status 随时可查看当前阶段。
 ### 提示
 
 所有工具返回均为 JSON，含 next 字段指示下一阶段。
+
+### 统一配置源头
+
+hy-workflow.json 是人工维护的唯一项目配置源头。codelint.json、doclint.json、docs-gardener.json 短期继续作为 compatibility artifacts 提交，由 setup/config 从 hy-workflow.json 生成或同步。
+
+共享字段统一放在 project：baseBranch、codeExt、codeDirs、docsDir。工具私有字段保留在各自段落：codelint.lintDirs、codelint.maxLines、doclint.maxLines、docsGardener.catalogs。
+
+.opencode/、.codex/、.mcp.json 默认都是本地客户端配置，不要提交。若 setup/config/hy_init 产生 tracked artifact drift，先单独创建 setup artifact sync PR。
 
 ${MARKER_END}
 `;
