@@ -1,12 +1,13 @@
 # Tools Reference
 
-hy-workflow MCP server 注册了 12 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
+hy-workflow MCP server 注册了 13 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
 
 ## 概览
 
 | Tool | Phase 进入要求 | 参数 | 转换到 | 只读? |
 |------|---------------|------|--------|-------|
 | `hy_init`   | init | — | plan | 否 |
+| `hy_read_docs` | plan, approve | `{stage, task?}` | plan / approve | 否 |
 | `hy_plan`   | plan | `{task}` | plan (返回 next=approve) | 否 |
 | `hy_approve` | plan, approve | `{approved: string, note: string}` | branch (批准) / plan (驳回) | 否 |
 | `hy_branch` | approve, branch | `{category, topic}` | edit | 否 |
@@ -44,19 +45,17 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 `npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --check --json` 会只读检查项目语言、目录和三份 JSON 配置；不一致时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`。`config --apply-suggested --json` 或显式配置会同步三份 JSON，并保留未知字段与 `catalogs`。
 
+## hy_read_docs
+
+**资源**: `src/tools/read_docs.ts`
+
+自动读取 `hy-workflow.json` 的 `project.docsDir`。`before_plan` 在 `hy_plan` 前建立规划事实基线，必须传 `task`；`before_approve` 在用户批准 PlanDoc 后、`hy_approve` 前产出 agent 侧文档审计，检查事实偏移、scope 漏项、验证不足和风险缺失。两者都是自动 gate，不新增人类审核；成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。
+
 ## hy_plan
 
 **资源**: `src/tools/plan.ts` (246 行)
 
-分析 task 后经历 7 道校验关（前 6 为 hard gate，第 7 为语义质量 soft gate）：
-
-1. 必填字段完整性（task, scope, boundary, verify, risks, discussion）
-2. scope 非空（changes / new_files / delete 至少有一个非空）
-3. boundary 有实质内容（dependency_dag 非空，entry_points ≥ 1）
-4. verify 有实质内容（platform, smoke, tests 各 ≥ 1）
-5. risks ≥ 1，discussion 非空
-6. 禁止空洞命令（`echo ok` 等）
-7. 语义质量 — task/risks/discussion 长度过短时警告（soft，不阻止通关）
+要求已存在匹配当前 task 的 `before_plan` 文档事实基线。随后校验必填字段、scope 非空、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；task/risks/discussion 过短仅作为 soft warning。
 
 - **进入 Phase**: `plan`
 - **转换到**: `approve`
@@ -69,7 +68,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 **资源**: `src/tools/approve.ts` (40 行)
 
-用户审视 PlanDoc 的入口。`approved` 必须传字符串 `"approve"` 才放行（严格匹配，同时容错 `"true"`）。其他任何内容视为驳回理由，回到 `plan`。
+用户审视 PlanDoc 的入口。批准前要求已存在匹配当前 PlanDoc hash 的 `before_approve` 文档审计；该审计是 agent 自动步骤，不是新增人类审核。`approved` 必须传字符串 `"approve"` 才放行（严格匹配，同时容错 `"true"`）。其他任何内容视为驳回理由，回到 `plan`。
 
 - **进入 Phase**: `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录

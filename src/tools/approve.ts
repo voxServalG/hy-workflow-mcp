@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase } from "../state.js";
+import { computePlanHash, readState, writeState, transition, assertPhase } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { Approval } from "../state.js";
 
@@ -9,6 +9,18 @@ export async function handleApprove(args: { approved: string; note?: string }): 
   const input = (args.approved ?? "").trim();
 
   if (input === "approve" || input === "true") {
+    const planHash = computePlanHash(state.plan);
+    const beforeApprove = state.documentReads?.beforeApprove;
+    if (!planHash || beforeApprove?.planHash !== planHash) {
+      return toolResult("approve", {
+        approved: false,
+        error: "before_approve document audit is required before hy_approve can accept user approval.",
+        hint: `Call hy_read_docs with { stage: "before_approve" } first. This is an automatic agent audit step, not a separate user review gate.`,
+        allowedTools: ["hy_read_docs", "hy_status"],
+        blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      });
+    }
+
     const approval: Approval = {
       time: new Date().toISOString(),
       note: args.note ?? "",
