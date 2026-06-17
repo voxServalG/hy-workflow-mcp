@@ -44,7 +44,11 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 ## hy_read_docs
 
-自动读取 `hy-workflow.json` 的 `project.docsDir`。`before_plan` 在 `hy_plan` 前建立规划事实基线，必须传 `task`；`before_approve` 在用户批准 PlanDoc 后、`hy_approve` 前产出 agent 侧文档审计；`after_edit` 在实现编辑后、`hy_sync_docs` 前审计当前实现 diff 与文档同步需求。三者都是自动 gate，不新增人类审核；成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。
+自动读取 `hy-workflow.json` 的 `project.docsDir`，使用文档引用图（DocsGraph）驱动渐进式读取。`before_plan` 在 `hy_plan` 前建立规划事实基线，必须传 `task`；`before_approve` 在用户批准 PlanDoc 后、`hy_approve` 前产出 agent 侧文档审计；`after_edit` 在实现编辑后、`hy_sync_docs` 前审计当前实现 diff 与文档同步需求。三者都是自动 gate，不新增人类审核。
+
+读取行为：从文档入口（`docs/index.md` 或自动检测的首个 `.md` 文件）出发，通过 markdown 内部链接引用图做 BFS 遍历，只读取与 task 关键字匹配的路径上的文档，不再对全量文档做 6000 chars 截断。每个文档的完整内容直接返回。文档引用图持久化在 `.git/hy-workflow/docs-graph.json`。
+
+成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。
 
 ## hy_plan
 
@@ -88,6 +92,8 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 ## hy_sync_docs
 
 实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或 setup prompt 文件内同步，再运行 `hy_verify`。
+
+同步时增量维护文档引用图：只 re-parse 实际改动的文档文件来更新 `.git/hy-workflow/docs-graph.json`，并检测引用图中的坏链接（outgoing link 目标文件不存在的场景）。检测结果通过 `graphInfo` 字段返回。
 
 - **进入 Phase**: `edit`, `verify`
 - **转换到**: 保持 `edit`，返回 `next: "verify"`

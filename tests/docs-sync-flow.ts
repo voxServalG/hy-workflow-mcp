@@ -79,6 +79,10 @@ try {
   if (afterEdit.phase !== "edit" || afterEdit.stage !== "after_edit") {
     throw new Error(`after_edit should stay in edit, got ${JSON.stringify(afterEdit)}`);
   }
+  // Check graph-driven fields in after_edit
+  if (!afterEdit.snapshot?.docsGraphDigest) {
+    throw new Error(`after_edit snapshot missing docsGraphDigest, got ${JSON.stringify(afterEdit.snapshot)}`);
+  }
   const stateAfterRead = readState();
   if (!stateAfterRead.documentReads?.afterEdit?.implementationDigest) {
     throw new Error("after_edit should store implementation digest");
@@ -95,6 +99,10 @@ try {
   }
   if (!readState().syncDocs?.allowedDocs.includes("README.md")) {
     throw new Error("hy_sync_docs should record README.md as an allowed sync file");
+  }
+  // Check graph update info exists (graph only updates for docsDir files, not README.md)
+  if (!synced.graphInfo || typeof synced.graphInfo.updated !== "boolean") {
+    throw new Error(`hy_sync_docs should report graphInfo with updated status, got ${JSON.stringify(synced.graphInfo)}`);
   }
 
   writeFileSync(join(root, "README.md"), "# App\n\nValue is 2.\n");
