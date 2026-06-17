@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { codeExtOr, formatCodeExt, normalizeCodeExt, validateCodeExt } from "./code_ext.js";
 export const UNIFIED_CONFIG_FILE = "hy-workflow.json";
 const COMPAT_CONFIG_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"];
 const CONFIG_FILES = [UNIFIED_CONFIG_FILE, ...COMPAT_CONFIG_FILES];
@@ -50,6 +51,28 @@ function existingDirs(root, candidates) {
         }
     });
 }
+function listFileExts(root, dir) {
+    const start = path.join(root, dir);
+    if (!fs.existsSync(start))
+        return [];
+    const out = [];
+    const walk = (current) => {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist")
+                continue;
+            const full = path.join(current, entry.name);
+            if (entry.isDirectory())
+                walk(full);
+            else {
+                const ext = path.extname(entry.name);
+                if (ext)
+                    out.push(ext);
+            }
+        }
+    };
+    walk(start);
+    return out;
+}
 export function detectProject(root) {
     const evidence = [];
     const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "setup.cfg"].filter(item => exists(root, item));
@@ -94,9 +117,23 @@ function inferLintDirs(root, codeDirs) {
         return ["src"];
     return codeDirs;
 }
+function inferCodeExt(root, detected) {
+    if (detected.kind === "python")
+        return ".py";
+    if (detected.kind === "typescript")
+        return ".ts";
+    const dirs = existingDirs(root, ["src", "tests", "scripts", "lib", "packages"]);
+    const counts = new Map();
+    for (const dir of dirs) {
+        for (const ext of listFileExts(root, dir))
+            counts.set(ext, (counts.get(ext) ?? 0) + 1);
+    }
+    const [first] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return first?.[0] ?? ".ts";
+}
 export function defaultSuggestion(root) {
     const detected = detectProject(root);
-    const codeExt = detected.kind === "python" ? ".py" : ".ts";
+    const codeExt = inferCodeExt(root, detected);
     const codeDirs = inferDirs(root, codeExt);
     return {
         codeExt,
@@ -168,7 +205,7 @@ function normalizedUnified(config, suggestion) {
         project: {
             ...project,
             baseBranch: stringOr(project.baseBranch, suggestion.baseBranch),
-            codeExt: stringOr(project.codeExt, suggestion.codeExt),
+            codeExt: codeExtOr(project.codeExt, suggestion.codeExt),
             codeDirs: arrayOr(project.codeDirs, suggestion.codeDirs),
             docsDir: stringOr(project.docsDir, suggestion.docsDir),
         },
@@ -270,6 +307,9 @@ export function applyConfig(root, suggestion, options) {
 function valueArray(value) {
     return Array.isArray(value) ? value.filter(item => typeof item === "string") : [];
 }
+function valueCodeExtArray(value) {
+    return normalizeCodeExt(value);
+}
 function addDrift(drift, file, field, expected, actual) {
     if (JSON.stringify(expected) !== JSON.stringify(actual)) {
         drift.push({ file, field, expected, actual });
@@ -302,11 +342,11 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
     const unified = normalizedUnified(unifiedRaw ?? unifiedFromInputs(null, { "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, suggestion, true), suggestion);
     const projectConfig = asObject(unified.project);
     const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
-    const expectedExt = project.kind === "python" ? ".py" : project.kind === "typescript" ? ".ts" : null;
-    if (expectedExt && projectConfig.codeExt && projectConfig.codeExt !== expectedExt)
-        issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt=${projectConfig.codeExt} but project appears ${project.kind}`);
+    issues.push(...validateCodeExt(projectConfig.codeExt).map(issue => `${UNIFIED_CONFIG_FILE} ${issue}`));
     if (projectConfig.docsDir && !exists(root, projectConfig.docsDir))
         issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
+    if (!valueCodeExtArray(projectConfig.codeExt).length)
+        issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt is empty`);
     for (const dir of valueArray(projectConfig.codeDirs)) {
         if (!exists(root, dir))
             issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
@@ -320,7 +360,12 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
     drift.push(...compareCompat("docs-gardener.json", gardener, expectedCompat["docs-gardener.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "catalogs"]));
     for (const item of drift)
         issues.push(`${item.file} drift at ${item.field}`);
-    const ambiguous = project.kind === "mixed" || project.kind === "unknown";
+    const explicitConfigReady = Boolean(unifiedRaw &&
+        valueCodeExtArray(projectConfig.codeExt).length &&
+        valueArray(projectConfig.codeDirs).length &&
+        valueArray(asObject(unified.codelint).lintDirs).length &&
+        projectConfig.docsDir);
+    const ambiguous = (project.kind === "mixed" || project.kind === "unknown") && !explicitConfigReady;
     const suggestedCommand = buildSuggestedCommand(suggestion, ambiguous);
     const ok = issues.length === 0 && !ambiguous;
     const driftBody = drift.length
@@ -357,7 +402,7 @@ export function buildSuggestedCommand(suggestion, needsExplicit = false) {
         "npx -y --prefer-online github:voxServalG/hy-workflow-mcp config",
         mode.trim(),
         "--json",
-        "--code-ext", quoteArg(suggestion.codeExt),
+        "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
         "--code-dirs", quoteArg(suggestion.codeDirs.join(",")),
         "--lint-dirs", quoteArg(suggestion.lintDirs.join(",")),
         "--docs-dir", quoteArg(suggestion.docsDir),

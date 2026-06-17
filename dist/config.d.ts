@@ -1,6 +1,7 @@
+import { type CodeExt } from "./code_ext.js";
 export type ProjectKind = "python" | "typescript" | "unknown" | "mixed";
 export type ConfigSuggestion = {
-    codeExt: ".py" | ".ts";
+    codeExt: CodeExt;
     codeDirs: string[];
     lintDirs: string[];
     docsDir: string;
