@@ -35,6 +35,7 @@ export declare function mergePr(prNumber: number): {
 export declare function checkCi(prNumber: number): {
     ok: boolean;
     allGreen: boolean;
+    noChecks?: boolean;
     checks: Array<{
         name: string;
         conclusion: string;
