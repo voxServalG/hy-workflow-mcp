@@ -118,8 +118,9 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
 - **失败后转换到**: `edit`（通过 transition(state, "edit") 并 writeState）
+- **no checks**: GitHub 没有 reported checks 时转换到 `merge`，返回 `skipped: true`、`skipReason: "no_reported_checks"`、`noChecks: true`，用于表示 workflow 未命中而非 CI 失败或 pending
 - **pending/API 异常**: polling 超时后保持 `ci`，等待后重试 `hy_ci`
-- **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
+- **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；no checks `{ next: "merge", skipped: true, skipReason: "no_reported_checks", noChecks: true, checks: [] }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
 
 ## hy_merge
 

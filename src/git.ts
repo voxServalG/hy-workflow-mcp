@@ -91,7 +91,7 @@ export function mergePr(prNumber: number): { ok: boolean; error?: string } {
   return { ok: r.ok, error: r.stderr };
 }
 
-export function checkCi(prNumber: number): { ok: boolean; allGreen: boolean; checks: Array<{ name: string; conclusion: string }>; error?: string } {
+export function checkCi(prNumber: number): { ok: boolean; allGreen: boolean; noChecks?: boolean; checks: Array<{ name: string; conclusion: string }>; error?: string } {
   const r = run(`gh pr view ${prNumber} --json statusCheckRollup`);
   if (!r.ok) return { ok: false, allGreen: false, checks: [], error: r.stderr };
   try {
@@ -101,6 +101,9 @@ export function checkCi(prNumber: number): { ok: boolean; allGreen: boolean; che
       name: c.name,
       conclusion: c.conclusion ?? "UNKNOWN",
     }));
+    if (checks.length === 0) {
+      return { ok: true, allGreen: false, noChecks: true, checks };
+    }
     const relevant = checks.filter((c: any) => c.conclusion !== "SKIPPED" && c.conclusion !== "NEUTRAL");
     const allGreen = relevant.length > 0 && relevant.every((c: any) => c.conclusion === "SUCCESS");
     return { ok: true, allGreen, checks };

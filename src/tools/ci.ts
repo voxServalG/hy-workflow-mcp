@@ -33,7 +33,7 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
   const deadline = Date.now() + timeoutSeconds * 1000;
 
   let result = checkCi(state.prNumber);
-  while (result.ok && !result.allGreen) {
+  while (result.ok && !result.allGreen && !result.noChecks) {
     const checks = result.checks || [];
     const failedNames = checks.filter((c: any) => FAILURE_CONCLUSIONS.has(c.conclusion)).map((c: any) => c.name);
     if (failedNames.length || Date.now() >= deadline) break;
@@ -42,6 +42,27 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
   }
 
   if (!result.ok) return toolResult("ci", { error: result.error, checks: result.checks, requires_user: true, stop_here: true, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });
+
+  if (result.noChecks) {
+    const next = transition(state, "merge");
+    writeState(next);
+
+    return toolResult("merge", {
+      allGreen: true,
+      skipped: true,
+      skipReason: "no_reported_checks",
+      noChecks: true,
+      checks: result.checks,
+      display: {
+        title: "CI skipped",
+        body: `No CI checks were reported for PR #${state.prNumber}; treating this as a workflow no-match and continuing to merge.`,
+      },
+      hint: "Continue to hy_merge. This PR reported no CI checks, so hy_ci recorded a no_checks skip instead of pending.",
+      allowedTools: ["hy_merge", "hy_status"],
+      blockedTools: ["hy_chain"],
+      message: "No CI checks reported. Skipping CI wait and continuing to merge.",
+    });
+  }
 
   if (!result.allGreen) {
     const checks = result.checks || [];

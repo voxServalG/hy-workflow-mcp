@@ -55,7 +55,7 @@ Terminal CLI commands follow the same contract when `--json` is passed. For exam
 
 `hy_commit` success returns `next: "ci"` with the PR URL, but does not set `stop_here`. After plan approval, the agent should continue to CI automatically.
 
-`hy_ci` performs bounded polling for pending checks. Success returns `next: "merge"` without `requires_user` or `stop_here`. After plan approval, the agent should continue to merge automatically. CI failures, polling timeouts with checks still pending, and GitHub/API status problems return structured `recovery`. They also set `requires_user`/`stop_here` so the agent stops and reports the non-happy-path condition.
+`hy_ci` performs bounded polling for pending checks. Success returns `next: "merge"` without `requires_user` or `stop_here`. If GitHub reports no checks at all for the PR, `hy_ci` treats that as a workflow no-match and returns `next: "merge"` with `skipped: true`, `skipReason: "no_reported_checks"`, and `noChecks: true`. After plan approval, the agent should continue to merge automatically for both green checks and no-checks skips. CI failures, polling timeouts with checks still pending, and GitHub/API status problems return structured `recovery`. They also set `requires_user`/`stop_here` so the agent stops and reports the non-happy-path condition.
 
 ## Compatibility
 
