@@ -13,6 +13,7 @@ function readDist(relativePath: string): string {
 const init = readDist("tools/init.js");
 const server = readDist("server.js");
 const readDocs = readDist("tools/read_docs.js");
+const syncDocs = readDist("tools/sync_docs.js");
 
 assert(!init.includes("npx --yes github:voxServalG/hy-harness"), "dist init must not execute hy-harness");
 assert(!init.includes("stdio: \"inherit\""), "dist init must not inherit stdio");
@@ -26,3 +27,6 @@ assert(server.includes("不会在 MCP 内启动交互式 harness"), "dist server
 assert(server.includes("hy_read_docs"), "dist server should register hy_read_docs");
 assert(readDocs.includes("before_plan"), "dist read_docs should implement before_plan stage");
 assert(readDocs.includes("before_approve"), "dist read_docs should implement before_approve stage");
+assert(readDocs.includes("after_edit"), "dist read_docs should implement after_edit stage");
+assert(server.includes("hy_sync_docs"), "dist server should register hy_sync_docs");
+assert(syncDocs.includes("handleSyncDocs"), "dist sync_docs should implement handleSyncDocs");

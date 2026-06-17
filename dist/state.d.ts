@@ -56,7 +56,7 @@ export interface PendingPlanAmendment {
     scope: PlanScopeAmendment;
     warnings: string[];
 }
-export type DocumentReadStage = "before_plan" | "before_approve";
+export type DocumentReadStage = "before_plan" | "before_approve" | "after_edit";
 export interface DocumentReadFile {
     path: string;
     bytes: number;
@@ -74,10 +74,20 @@ export interface DocumentReadSnapshot {
     digest: string;
     files: DocumentReadFile[];
     findings: string[];
+    implementationFiles?: string[];
+    implementationDigest?: string;
 }
 export interface DocumentReads {
     beforePlan?: DocumentReadSnapshot | null;
     beforeApprove?: DocumentReadSnapshot | null;
+    afterEdit?: DocumentReadSnapshot | null;
+}
+export interface SyncDocsRecord {
+    time: string;
+    planHash: string;
+    afterEditDigest: string;
+    implementationDigest: string;
+    allowedDocs: string[];
 }
 export interface Approval {
     time: string;
@@ -94,6 +104,7 @@ export interface WorkflowState {
     pendingAmendment?: PendingPlanAmendment | null;
     implementationManifest?: ImplementationManifest | null;
     documentReads?: DocumentReads | null;
+    syncDocs?: SyncDocsRecord | null;
 }
 export interface LegacyRuntimeDiagnostic {
     file: string;

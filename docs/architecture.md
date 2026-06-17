@@ -8,12 +8,12 @@
 
 Tracked setup artifacts include `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`, and the three compatibility JSON files. Local runtime or client artifacts include `.hy/`, `.opencode/`, `.codex/`, and `.mcp.json`.
 
-hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走 **9 阶段闭环工作流**。通过状态机锁定 Phase 转换、lint 校验、用户 approve gate 三层机制，确保每次代码/文档变更可审计。
+hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走带文档同步 gate 的闭环工作流。通过状态机锁定 Phase 转换、lint 校验、用户 approve gate 三层机制，确保每次代码/文档变更可审计。
 
 ## 组件关系
 
 ```
-server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状态 ──►  state.ts
+server.ts  ── 注册 14 个 MCP Tool ──►  tools/*.ts  ── 读写状态 ──►  state.ts
     │                                      │                       │
     │                              ┌───┬───┼───┬───┐               │
     │                              │   │       │   │               │
@@ -50,19 +50,25 @@ server.ts  ── 注册 12 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 5. LLM 编辑代码...
 
-6. LLM hy_verify()
+6. LLM hy_read_docs(after_edit)
+   └► tools/read_docs.ts → 读取 docs 并绑定当前实现 diff digest
+
+7. LLM hy_sync_docs()
+   └► tools/sync_docs.ts → 确认文档同步 gate，限定 plan.scope 内文档或 setup prompt 文件
+
+8. LLM hy_verify()
    └► checks.ts.runAllChecks() → 全绿则 transition(edit→commit)
 
-7. LLM hy_commit(title, body)
+9. LLM hy_commit(title, body)
    └► tools/commit.ts → git add/commit/push/gh pr create → phase=ci
 
-8. LLM hy_ci()
+10. LLM hy_ci()
    └► tools/ci.ts → gh pr checks 轮询 → 全绿则 transition(ci→merge)；失败则 transition(ci→edit) 回到 edit 修复
 
-9. LLM hy_merge()
+11. LLM hy_merge()
    └► tools/merge.ts → gh pr merge → phase=chain
 
-10. LLM hy_chain(branches)
+12. LLM hy_chain(branches)
     └► tools/chain.ts → 逐个 rebase 下游分支 → phase=done
 ```
 

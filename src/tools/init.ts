@@ -55,7 +55,7 @@ ${MARKER_START}
 ### 流程顺序（禁止跳过或重排）
 
 首次使用: hy_init → hy_plan → ...
-后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
 
 ### 各工具说明
 
@@ -74,15 +74,19 @@ ${MARKER_START}
 
 **6. hy_edit** — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 
-**7. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+**7. hy_read_docs(after_edit)** — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
 
-**8. hy_commit** — git add + commit + push + gh pr create。
+**8. hy_sync_docs** — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 setup prompt 文件内同步；完成后再 hy_verify。
 
-**9. hy_ci** — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
+**9. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
 
-**10. hy_merge** — 合并 PR，删除远程分支。
+**10. hy_commit** — git add + commit + push + gh pr create。
 
-**11. hy_chain** — rebase 下游分支。
+**11. hy_ci** — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
+
+**12. hy_merge** — 合并 PR，删除远程分支。
+
+**13. hy_chain** — rebase 下游分支。
 
 ### 禁止操作
 
@@ -153,7 +157,7 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 ### approve 后自动推进
 
 用户输入 approve 后，agent 必须先自动调用 hy_read_docs({stage:"before_approve"}) 完成文档审计；审计通过后再调用 hy_approve。hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和 stopAfter。
-按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。
+按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。hy_edit 后必须先调用 hy_read_docs({stage:"after_edit"})，再调用 hy_sync_docs，最后才调用 hy_verify。
 每完成一步，用简短语句向用户汇报当前进度（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
 
 任务完成标准不是 hy_commit，而是 PR 合并到 baseBranch 后调用 hy_chain（无下游分支时传空数组）并 hy_reset 回到 plan。
@@ -161,7 +165,7 @@ hy_commit → hy_ci → hy_merge → hy_chain → hy_reset 中间除非工具返
 
 ### 失败处理
 
-hy_verify 失败: 编辑修复后重新 hy_verify。
+hy_verify 失败: 编辑修复后重新 hy_read_docs(after_edit) → hy_sync_docs → hy_verify。
 hy_ci 有红:   停下并展示结构化失败信息；编辑修复后重新 hy_verify → hy_commit → hy_ci。
 hy_ci pending/API 异常: 停下并展示结构化状态；不要进入 edit，等待后重试 hy_ci。
 hy_status 随时可查看当前阶段。

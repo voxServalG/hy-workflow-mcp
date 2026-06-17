@@ -39,11 +39,11 @@ export async function handleEdit(): Promise<ToolResult> {
     boundary: state.plan.boundary,
     display: {
       title: "Scope locked",
-      body: `Edit only files declared in plan.scope, then run hy_verify.`,
+      body: `Edit only files declared in plan.scope, then run hy_read_docs(after_edit).`,
     },
-    hint: "Use standard file editing tools only within plan.scope. When edits are complete, run hy_verify.",
-    allowedTools: ["hy_verify", "hy_edit", "hy_status"],
+    hint: "Use standard file editing tools only within plan.scope. When implementation edits are complete, run hy_read_docs with stage after_edit, then hy_sync_docs, then hy_verify.",
+    allowedTools: ["hy_read_docs", "hy_edit", "hy_status"],
     blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
-    message: `Scope locked. Edit files within plan.scope: ${state.plan.scope.changes.join(", ")}. When done, run hy_verify.`,
+    message: `Scope locked. Edit files within plan.scope: ${state.plan.scope.changes.join(", ")}. When done, run hy_read_docs(after_edit), then hy_sync_docs, then hy_verify.`,
   });
 }
