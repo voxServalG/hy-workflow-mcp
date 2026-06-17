@@ -68,6 +68,15 @@ export async function handlePlan(args) {
             allowedTools: ["hy_plan", "hy_status"],
         });
     }
+    const beforePlan = state.documentReads?.beforePlan;
+    if (beforePlan?.task !== task) {
+        return toolResult("plan", {
+            error: "before_plan document baseline is required before hy_plan.",
+            hint: `Call hy_read_docs with { stage: "before_plan", task } first. This is an automatic agent context step, not a user review gate.`,
+            allowedTools: ["hy_read_docs", "hy_status"],
+            blockedTools: ["hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+        });
+    }
     const p = args.plan;
     if (!p) {
         return toolResult("plan", {
@@ -256,6 +265,10 @@ export async function handlePlan(args) {
     }
     const next = transition(state, "approve");
     next.plan = p;
+    next.documentReads = {
+        ...(state.documentReads ?? {}),
+        beforeApprove: null,
+    };
     writeState(next);
     const summary = buildSummary(p);
     return toolResult("approve", {
@@ -268,8 +281,8 @@ export async function handlePlan(args) {
         },
         requires_user: true,
         stop_here: true,
-        hint: "You MUST show display.body to the user and wait for explicit approval. Do not call hy_approve automatically.",
-        allowedTools: ["hy_approve", "hy_status"],
+        hint: "You MUST show display.body to the user and wait for explicit approval. After the user approves, call hy_read_docs with stage before_approve before hy_approve. Do not call hy_approve before the document audit exists.",
+        allowedTools: ["hy_read_docs", "hy_approve", "hy_status"],
         blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
         recovery: {
             tool: "hy_plan",
