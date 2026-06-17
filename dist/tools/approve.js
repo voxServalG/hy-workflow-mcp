@@ -30,6 +30,8 @@ export async function handleApprove(args) {
                 { step: "hy_branch", description: "create branch" },
                 { step: "hy_edit", description: "lock scope" },
                 { step: "edit files", description: "write code" },
+                { step: "hy_read_docs", description: "run after_edit document audit" },
+                { step: "hy_sync_docs", description: "confirm documentation sync gate" },
                 { step: "hy_verify", description: "run lint + compile + scope + boundary + tests" },
                 { step: "hy_commit", description: "create PR" },
                 { step: "hy_ci", description: "wait for CI to pass" },
@@ -39,7 +41,7 @@ export async function handleApprove(args) {
             ],
             stopAfter: "hy_reset",
             resumeAfter: "任务完成标准为 PR 合并到 baseBranch 并 hy_reset 回到 plan；除 CI 未通过、CI pending/API 异常、push/PR/merge/rebase 失败等非预期情况外，不要中途停下。",
-            hint: "Proceed through the returned pipeline in order until stopAfter. Do not skip hy_verify before hy_commit. After hy_commit, continue to hy_ci, hy_merge, hy_chain, and hy_reset unless a tool returns stop_here/requires_user or an error.",
+            hint: "Proceed through the returned pipeline in order until stopAfter. Do not skip hy_read_docs(after_edit), hy_sync_docs, or hy_verify before hy_commit. After hy_commit, continue to hy_ci, hy_merge, hy_chain, and hy_reset unless a tool returns stop_here/requires_user or an error.",
             allowedTools: ["hy_branch", "hy_status"],
             blockedTools: ["hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
             recovery: {

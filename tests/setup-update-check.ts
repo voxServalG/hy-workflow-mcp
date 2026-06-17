@@ -47,6 +47,12 @@ assert(setupPrompt.includes("[mcp_servers.docs-gardener]"), "setup prompt should
 assert(setupPrompt.includes("required = false"), "setup prompt should mark docs-gardener as optional for Codex");
 assert(setupPrompt.includes("tool_timeout_sec = 600"), "setup prompt should include hy-workflow timeout guidance");
 assert(setupPrompt.includes("tool_timeout_sec = 300"), "setup prompt should include docs-gardener timeout guidance");
+assert(setupPrompt.includes("hy_read_docs(before_plan)"), "setup prompt should include before_plan document read gate");
+assert(setupPrompt.includes("hy_read_docs(before_approve)"), "setup prompt should include before_approve document read gate");
+assert(setupPrompt.includes("hy_read_docs(after_edit)"), "setup prompt should include after_edit document read gate");
+assert(setupPrompt.includes("hy_sync_docs"), "setup prompt should include docs sync gate");
+assert(setupPrompt.includes("hy_amend_plan"), "setup prompt should include amend plan guidance");
+assert(setupPrompt.includes("setup artifact sync PR"), "setup prompt should include setup artifact drift guidance");
 
 try {
   const missingRoot = tempRepo();

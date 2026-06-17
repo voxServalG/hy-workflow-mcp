@@ -6,6 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextpro
 // ― Tool handlers
 import { handleInit } from "./tools/init.js";
 import { handleReadDocs } from "./tools/read_docs.js";
+import { handleSyncDocs } from "./tools/sync_docs.js";
 import { handlePlan } from "./tools/plan.js";
 import { handleApprove } from "./tools/approve.js";
 import { handleBranch } from "./tools/branch.js";
@@ -27,7 +28,7 @@ const SYSTEM_PROMPT = `
 ## 硬性流程（必须严格按顺序，禁止跳过）
 
   首次使用: hy_init → hy_plan → ...
-  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
 
 ### 流程规则
 
@@ -41,11 +42,13 @@ const SYSTEM_PROMPT = `
    **重要**: 严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。收到用户批准后，先自动调用 hy_read_docs({stage:'before_approve'}) 完成 agent 侧审计，再调用 hy_approve。before_approve 不是新增人类审核 gate。犹豫时反问用户确认。用户明确拒绝时，将拒绝理由填入 approved 参数传回。
 5. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
 6. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
-7. hy_verify — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
-8. hy_commit — git add + commit + push + gh pr create，PR 正文嵌入 plan 摘要。
-9. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
-10. hy_merge — 合并 PR，删除远程分支。
-11. hy_chain — rebase 下游分支。
+7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
+8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 setup prompt 文件内同步，完成后再 hy_verify。
+9. hy_verify — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+10. hy_commit — git add + commit + push + gh pr create，PR 正文嵌入 plan 摘要。
+11. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
+12. hy_merge — 合并 PR，删除远程分支。
+13. hy_chain — rebase 下游分支。
 
 ### 禁止操作
 
@@ -83,7 +86,7 @@ hy_status 返回的 action.triggerWords 也会告诉你触发词。
 ## approve 后自动推进
 
 hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和 stopAfter。
-按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。
+按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。hy_edit 后必须先调用 hy_read_docs({stage:"after_edit"})，再调用 hy_sync_docs，最后才调用 hy_verify。
 **每完成一步，用简短语句向用户汇报当前进度**（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
 
 任务完成标准不是 hy_commit，而是 PR 合并到 baseBranch 后调用 hy_chain（无下游分支时传空数组）并 hy_reset 回到 plan。
@@ -113,11 +116,11 @@ const TOOLS = [
     },
     {
         name: "hy_read_docs",
-        description: "自动读取项目文档系统。before_plan 建立规划事实基线；before_approve 对当前 PlanDoc 做 agent 侧文档审计。成功后不需要人类审核。",
+        description: "自动读取项目文档系统。before_plan 建立规划事实基线；before_approve 对当前 PlanDoc 做 agent 侧文档审计；after_edit 审计实现 diff 与文档同步需求。成功后不需要人类审核。",
         inputSchema: {
             type: "object",
             properties: {
-                stage: { type: "string", enum: ["before_plan", "before_approve"], description: "文档读取阶段。before_plan 在 hy_plan 前调用；before_approve 在用户 approve 后、hy_approve 前调用。" },
+                stage: { type: "string", enum: ["before_plan", "before_approve", "after_edit"], description: "文档读取阶段。before_plan 在 hy_plan 前调用；before_approve 在用户 approve 后、hy_approve 前调用；after_edit 在实现编辑后、hy_sync_docs 前调用。" },
                 task: { type: "string", description: "before_plan 必填，用于把文档事实基线绑定到用户任务。" },
             },
             required: ["stage"],
@@ -243,8 +246,13 @@ const TOOLS = [
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
+        name: "hy_sync_docs",
+        description: "实现编辑后、hy_verify 前的文档同步 gate。要求已运行 hy_read_docs(after_edit)，确认只在 plan.scope 声明的文档或 setup prompt 文件内同步。",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    },
+    {
         name: "hy_verify",
-        description: "全量校验：doclint + codelint + scope + boundary + platform + smoke + tests。失败返回按 layer 的 recovery；全绿方可 commit。",
+        description: "全量校验：doclint + codelint + scope + boundary + platform + smoke + tests。要求 after_edit 文档审计和 hy_sync_docs 已完成；失败返回按 layer 的 recovery；全绿方可 commit。",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
@@ -345,6 +353,7 @@ async function dispatch(name, args) {
     switch (name) {
         case "hy_init": return handleInit();
         case "hy_read_docs": return handleReadDocs(args);
+        case "hy_sync_docs": return handleSyncDocs();
         case "hy_plan": return handlePlan(args);
         case "hy_approve": return handleApprove(args);
         case "hy_branch": return handleBranch(args);

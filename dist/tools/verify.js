@@ -1,12 +1,44 @@
-import { readState, writeState, transition, assertPhase, projectRoot, computeVerifyHash } from "../state.js";
-import { runAllChecks } from "../checks.js";
+import { readState, writeState, transition, assertPhase, projectRoot, computeVerifyHash, computePlanHash } from "../state.js";
+import { buildImplementationManifest, runAllChecks } from "../checks.js";
+import { implementationDigest } from "./sync_docs.js";
 import { toolResult } from "./_base.js";
 export async function handleVerify() {
     const state = readState();
     assertPhase(state, "edit", "verify");
     if (!state.plan)
         return toolResult("verify", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
+    const planHash = computePlanHash(state.plan);
+    const afterEdit = state.documentReads?.afterEdit;
+    if (!planHash || afterEdit?.planHash !== planHash) {
+        return toolResult("edit", {
+            phase: state.phase,
+            error: "after_edit document audit is required before hy_verify.",
+            hint: "Call hy_read_docs with { stage: \"after_edit\" }, then hy_sync_docs, then rerun hy_verify.",
+            allowedTools: ["hy_read_docs", "hy_status"],
+            blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+        });
+    }
+    const syncDocs = state.syncDocs;
+    if (syncDocs?.planHash !== planHash || syncDocs.afterEditDigest !== afterEdit.digest) {
+        return toolResult("edit", {
+            phase: state.phase,
+            error: "hy_sync_docs is required after hy_read_docs(after_edit) and before hy_verify.",
+            hint: "Call hy_sync_docs to confirm the document sync gate, then rerun hy_verify.",
+            allowedTools: ["hy_sync_docs", "hy_status"],
+            blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+        });
+    }
     const root = projectRoot();
+    const currentImplementationDigest = implementationDigest(root, state.plan, buildImplementationManifest(root));
+    if (syncDocs.implementationDigest !== currentImplementationDigest) {
+        return toolResult("edit", {
+            phase: state.phase,
+            error: "Implementation diff changed after hy_sync_docs.",
+            hint: "Rerun hy_read_docs with { stage: \"after_edit\" }, then hy_sync_docs, then hy_verify so the document audit matches the final implementation diff.",
+            allowedTools: ["hy_read_docs", "hy_status"],
+            blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+        });
+    }
     const report = runAllChecks(root, state);
     if (!report.allPassed) {
         if (report.status === "amend_required" && report.suggestedAmendment) {
