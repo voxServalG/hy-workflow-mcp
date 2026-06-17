@@ -1,12 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { codeExtOr, formatCodeExt, normalizeCodeExt, type CodeExt, validateCodeExt } from "./code_ext.js";
 
 export type ProjectKind = "python" | "typescript" | "unknown" | "mixed";
 
 type JsonObject = Record<string, any>;
 
 export type ConfigSuggestion = {
-  codeExt: ".py" | ".ts";
+  codeExt: CodeExt;
   codeDirs: string[];
   lintDirs: string[];
   docsDir: string;
@@ -98,6 +99,25 @@ function existingDirs(root: string, candidates: string[]): string[] {
   });
 }
 
+function listFileExts(root: string, dir: string): string[] {
+  const start = path.join(root, dir);
+  if (!fs.existsSync(start)) return [];
+  const out: string[] = [];
+  const walk = (current: string) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else {
+        const ext = path.extname(entry.name);
+        if (ext) out.push(ext);
+      }
+    }
+  };
+  walk(start);
+  return out;
+}
+
 export function detectProject(root: string): { kind: ProjectKind; evidence: string[] } {
   const evidence: string[] = [];
   const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "setup.cfg"].filter(item => exists(root, item));
@@ -122,7 +142,7 @@ export function detectProject(root: string): { kind: ProjectKind; evidence: stri
   return { kind: "unknown", evidence };
 }
 
-function inferDirs(root: string, ext: ".py" | ".ts"): string[] {
+function inferDirs(root: string, ext: string): string[] {
   const dirs = existingDirs(root, ["src", "tests", "scripts", "lib", "packages"]);
   const withFiles = dirs.filter(dir => listFiles(root, dir, ext).length > 0);
   if (withFiles.length) return withFiles;
@@ -135,9 +155,22 @@ function inferLintDirs(root: string, codeDirs: string[]): string[] {
   return codeDirs;
 }
 
+function inferCodeExt(root: string, detected: { kind: ProjectKind }): string {
+  if (detected.kind === "python") return ".py";
+  if (detected.kind === "typescript") return ".ts";
+
+  const dirs = existingDirs(root, ["src", "tests", "scripts", "lib", "packages"]);
+  const counts = new Map<string, number>();
+  for (const dir of dirs) {
+    for (const ext of listFileExts(root, dir)) counts.set(ext, (counts.get(ext) ?? 0) + 1);
+  }
+  const [first] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return first?.[0] ?? ".ts";
+}
+
 export function defaultSuggestion(root: string): ConfigSuggestion {
   const detected = detectProject(root);
-  const codeExt = detected.kind === "python" ? ".py" : ".ts";
+  const codeExt = inferCodeExt(root, detected);
   const codeDirs = inferDirs(root, codeExt);
   return {
     codeExt,
@@ -224,7 +257,7 @@ function normalizedUnified(config: JsonObject, suggestion: ConfigSuggestion): Js
     project: {
       ...project,
       baseBranch: stringOr(project.baseBranch, suggestion.baseBranch),
-      codeExt: stringOr(project.codeExt, suggestion.codeExt),
+      codeExt: codeExtOr(project.codeExt, suggestion.codeExt),
       codeDirs: arrayOr(project.codeDirs, suggestion.codeDirs),
       docsDir: stringOr(project.docsDir, suggestion.docsDir),
     },
@@ -332,6 +365,10 @@ function valueArray(value: any): string[] {
   return Array.isArray(value) ? value.filter(item => typeof item === "string") : [];
 }
 
+function valueCodeExtArray(value: any): string[] {
+  return normalizeCodeExt(value);
+}
+
 function addDrift(drift: ConfigDrift[], file: string, field: string, expected: unknown, actual: unknown): void {
   if (JSON.stringify(expected) !== JSON.stringify(actual)) {
     drift.push({ file, field, expected, actual });
@@ -365,9 +402,9 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const projectConfig = asObject(unified.project);
   const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
 
-  const expectedExt = project.kind === "python" ? ".py" : project.kind === "typescript" ? ".ts" : null;
-  if (expectedExt && projectConfig.codeExt && projectConfig.codeExt !== expectedExt) issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt=${projectConfig.codeExt} but project appears ${project.kind}`);
+  issues.push(...validateCodeExt(projectConfig.codeExt).map(issue => `${UNIFIED_CONFIG_FILE} ${issue}`));
   if (projectConfig.docsDir && !exists(root, projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
+  if (!valueCodeExtArray(projectConfig.codeExt).length) issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt is empty`);
   for (const dir of valueArray(projectConfig.codeDirs)) {
     if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
   }
@@ -380,7 +417,14 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   drift.push(...compareCompat("docs-gardener.json", gardener, expectedCompat["docs-gardener.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "catalogs"]));
   for (const item of drift) issues.push(`${item.file} drift at ${item.field}`);
 
-  const ambiguous = project.kind === "mixed" || project.kind === "unknown";
+  const explicitConfigReady = Boolean(
+    unifiedRaw &&
+    valueCodeExtArray(projectConfig.codeExt).length &&
+    valueArray(projectConfig.codeDirs).length &&
+    valueArray(asObject(unified.codelint).lintDirs).length &&
+    projectConfig.docsDir,
+  );
+  const ambiguous = (project.kind === "mixed" || project.kind === "unknown") && !explicitConfigReady;
   const suggestedCommand = buildSuggestedCommand(suggestion, ambiguous);
   const ok = issues.length === 0 && !ambiguous;
   const driftBody = drift.length
@@ -419,7 +463,7 @@ export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplici
     "npx -y --prefer-online github:voxServalG/hy-workflow-mcp config",
     mode.trim(),
     "--json",
-    "--code-ext", quoteArg(suggestion.codeExt),
+    "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
     "--code-dirs", quoteArg(suggestion.codeDirs.join(",")),
     "--lint-dirs", quoteArg(suggestion.lintDirs.join(",")),
     "--docs-dir", quoteArg(suggestion.docsDir),
@@ -443,7 +487,7 @@ function parseArgs(argv: string[]): ConfigArgs {
     else if (arg === "--apply" || arg === "--apply-suggested") { args.mode = "apply"; args.applySuggested = true; }
     else if (arg === "--python") args.explicit.codeExt = ".py";
     else if (arg === "--typescript") args.explicit.codeExt = ".ts";
-    else if (arg === "--code-ext") args.explicit.codeExt = next() as ".py" | ".ts";
+    else if (arg === "--code-ext") args.explicit.codeExt = next();
     else if (arg === "--code-dirs") args.explicit.codeDirs = parseList(next());
     else if (arg === "--lint-dirs") args.explicit.lintDirs = parseList(next());
     else if (arg === "--docs-dir") args.explicit.docsDir = next();

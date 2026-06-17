@@ -4,7 +4,7 @@
 
 `hy-workflow.json` is the single editable project config. The three older JSON files are generated compatibility artifacts: `codelint.json`, `doclint.json`, and `docs-gardener.json`.
 
-`project.baseBranch`, `project.codeExt`, `project.codeDirs`, and `project.docsDir` are shared config. Tool-specific config stays scoped to its tool section, including `codelint.lintDirs`, `codelint.maxLines`, `doclint.maxLines`, and `docsGardener.catalogs`.
+`project.baseBranch`, `project.codeExt`, `project.codeDirs`, and `project.docsDir` are shared config. `project.codeExt` accepts one extension string, a comma-separated extension string, or a string array. Known extensions are aligned with doclint comment-syntax coverage, and `.tksp` is supported explicitly. Tool-specific config stays scoped to its tool section, including `codelint.lintDirs`, `codelint.maxLines`, `doclint.maxLines`, and `docsGardener.catalogs`.
 
 Tracked setup artifacts include `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`, and the three compatibility JSON files. Local runtime or client artifacts include `.hy/`, `.opencode/`, `.codex/`, and `.mcp.json`.
 
@@ -86,7 +86,7 @@ server.ts  ── 注册 14 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 | 文件 | 用途 |
 |------|------|
-| `codelint.json` | 代码检查规则：`codeExt`（语言检测）、`baseBranch`（Git 基准分支）、`codeDirs`（源码目录）、`maxLines` |
+| `codelint.json` | 代码检查规则：`codeExt`（代码文件扩展名，可为 `.tksp`、`.ts`、`.tksp,.ts` 或数组）、`baseBranch`（Git 基准分支）、`codeDirs`（源码目录）、`maxLines` |
 | `doclint.json` | 文档检查规则 |
 | `docs-gardener.json` | docs-gardener MCP 逻辑规则 |
 
