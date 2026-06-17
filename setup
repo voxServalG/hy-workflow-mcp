@@ -300,9 +300,20 @@ cat <<PROMPT
       hy_init 不会运行 setup、不会启动交互式 TUI；
       若提示 setup 产物缺失或过期，请回到终端重新运行本 setup 脚本。
 
-  6. 之后任何代码/文档任务自动走 9 阶段闭环：
-     hy_plan → hy_approve → hy_branch → hy_edit → hy_verify
+  6. 之后任何代码/文档任务自动走闭环：
+     hy_status → hy_read_docs(before_plan) → hy_plan
+     → hy_read_docs(before_approve) → hy_approve
+     → hy_branch → hy_edit → hy_read_docs(after_edit)
+     → hy_sync_docs → hy_verify
      → hy_commit → hy_ci → hy_merge → hy_chain
+
+     hy_read_docs 是 agent 自动步骤，不是新增人类审核 gate。
+     hy_plan 返回后，必须原样完整展示 summary，等用户明确 approve 后才可继续。
+     hy_edit 后必须先调用 hy_read_docs(after_edit)，再调用 hy_sync_docs，最后才调用 hy_verify。
+     hy_verify 若返回 amend_required，先展示 suggestedAmendment；用户明确批准后调用 hy_amend_plan，再重新走 hy_read_docs(after_edit) → hy_sync_docs → hy_verify。
+
+  7. 不要提交本地或运行时目录：.hy/、.opencode/、.codex/、.mcp.json。
+     若 setup/config/hy_init 产生 tracked artifact drift，先单独创建 setup artifact sync PR，不要混入无关代码/文档任务。
 
    ────── 复制结束 ──────
 

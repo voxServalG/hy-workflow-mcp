@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { assertPhase, computePlanHash, projectRoot, readState, writeState, } from "../state.js";
+import { buildImplementationManifest } from "../checks.js";
+import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
 import { toolResult } from "./_base.js";
 const MAX_FILE_CHARS = 6000;
 const READABLE_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".rst"]);
@@ -69,11 +71,19 @@ function buildFindings(stage, files, task, planHash) {
             "Agent obligation: use these documented facts to identify constraints, terminology, existing workflow rules, relevant files, unknowns, and verification expectations before calling hy_plan.",
         ];
     }
+    if (stage === "before_approve") {
+        return [
+            "Purpose: audit the already generated PlanDoc before calling hy_approve.",
+            `Plan hash audited: ${planHash ?? "none"}`,
+            `Documents read: ${fileList}`,
+            "Agent obligation: compare PlanDoc task, scope, boundary, verification, risks, and discussion against these documents; if facts drift, scope is missing, verification is weak, or risks are incomplete, reject the plan and call hy_plan again instead of approving.",
+        ];
+    }
     return [
-        "Purpose: audit the already generated PlanDoc before calling hy_approve.",
+        "Purpose: audit implementation diff against documentation before final verification.",
         `Plan hash audited: ${planHash ?? "none"}`,
         `Documents read: ${fileList}`,
-        "Agent obligation: compare PlanDoc task, scope, boundary, verification, risks, and discussion against these documents; if facts drift, scope is missing, verification is weak, or risks are incomplete, reject the plan and call hy_plan again instead of approving.",
+        "Agent obligation: compare the implementation diff with documentation, then call hy_sync_docs before hy_verify so documentation changes are included in final lint and tests.",
     ];
 }
 function buildSnapshot(stage, task, planHash) {
@@ -100,7 +110,9 @@ function buildSnapshot(stage, task, planHash) {
         stage,
         purpose: stage === "before_plan"
             ? "Establish planning fact baseline before PlanDoc creation."
-            : "Audit the concrete PlanDoc against docs before approval.",
+            : stage === "before_approve"
+                ? "Audit the concrete PlanDoc against docs before approval."
+                : "Audit implementation diff against docs before final verification.",
         time: new Date().toISOString(),
         task,
         planHash,
@@ -113,10 +125,10 @@ function buildSnapshot(stage, task, planHash) {
 export async function handleReadDocs(args) {
     const state = readState();
     const stage = args.stage;
-    if (stage !== "before_plan" && stage !== "before_approve") {
+    if (stage !== "before_plan" && stage !== "before_approve" && stage !== "after_edit") {
         return toolResult(state.phase, {
-            error: "stage must be either before_plan or before_approve.",
-            hint: "Call hy_read_docs with { stage: \"before_plan\", task } before hy_plan, or { stage: \"before_approve\" } before hy_approve.",
+            error: "stage must be before_plan, before_approve, or after_edit.",
+            hint: "Call hy_read_docs with { stage: \"before_plan\", task }, { stage: \"before_approve\" }, or { stage: \"after_edit\" } at the matching workflow point.",
             allowedTools: ["hy_read_docs", "hy_status"],
         });
     }
@@ -152,6 +164,48 @@ export async function handleReadDocs(args) {
             },
             hint: "Use the document baseline to construct PlanDoc, then call hy_plan. This is not a user review gate.",
             allowedTools: ["hy_plan", "hy_status"],
+        });
+    }
+    if (stage === "after_edit") {
+        assertPhase(state, "edit", "verify");
+        const planHash = computePlanHash(state.plan);
+        if (!state.plan || !planHash) {
+            return toolResult("edit", {
+                phase: state.phase,
+                error: "after_edit document reading requires an existing PlanDoc.",
+                hint: "Call hy_plan and hy_edit before hy_read_docs with stage after_edit.",
+                allowedTools: ["hy_status"],
+            });
+        }
+        const snapshot = buildSnapshot(stage, state.plan.task, planHash);
+        if ("next" in snapshot)
+            return snapshot;
+        const manifest = buildImplementationManifest(projectRoot());
+        const auditedSnapshot = {
+            ...snapshot,
+            implementationFiles: implementationFilesForDigest(state.plan, manifest),
+            implementationDigest: implementationDigest(projectRoot(), state.plan, manifest),
+        };
+        writeState({
+            ...state,
+            documentReads: {
+                ...(state.documentReads ?? {}),
+                afterEdit: auditedSnapshot,
+            },
+            syncDocs: null,
+        });
+        return toolResult("edit", {
+            phase: state.phase,
+            stage,
+            snapshot: auditedSnapshot,
+            display: {
+                title: "Implementation document audit ready",
+                body: auditedSnapshot.findings.join("\n"),
+                files: auditedSnapshot.files.map(f => f.path),
+            },
+            hint: "Use this after_edit audit to identify documentation or setup prompt updates, then call hy_sync_docs before hy_verify.",
+            allowedTools: ["hy_sync_docs", "hy_edit", "hy_status"],
+            blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
         });
     }
     assertPhase(state, "approve");

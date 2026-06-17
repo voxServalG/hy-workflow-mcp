@@ -10,7 +10,7 @@
 | 2 | `plan` | 任务规划，先由 agent 自动执行 `hy_read_docs(before_plan)` 建立文档事实基线，再生成 PlanDoc |
 | 3 | `approve` | 用户审视 PlanDoc；用户批准后 agent 自动执行 `hy_read_docs(before_approve)` 做文档审计，再输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
-| 5 | `edit` | LLM 编写代码，scope 已锁定 |
+| 5 | `edit` | LLM 编写代码，scope 已锁定；实现后运行 `hy_read_docs(after_edit)` 和 `hy_sync_docs` |
 | 6 | `verify` | 全量校验（7 层），通过则进 commit |
 | 7 | `commit` | git commit + push + gh pr create |
 | 8 | `ci` | 轮询 GitHub Checks |
@@ -38,7 +38,7 @@ done     → done
 
 关键路径：
 ```
-init → plan → approve → branch → edit → verify → commit → ci → merge → chain → done
+init → plan → approve → branch → edit → hy_read_docs(after_edit) → hy_sync_docs → verify → commit → ci → merge → chain → done
     ↑                   ↑                        ↑                   ↑
  驳回回到 plan      驳回回到 plan          verify fail→edit      CI fail→edit
                                          edit → verify → commit (新)
@@ -46,12 +46,13 @@ init → plan → approve → branch → edit → verify → commit → ci → m
 
 ## 文档读取 gate
 
-`hy_read_docs` 不新增状态机 phase，而是在 `plan` 和 `approve` phase 内作为自动 gate 运行。
+`hy_read_docs` 不新增状态机 phase，而是在 `plan`、`approve` 和 `edit` phase 内作为自动 gate 运行。
 
 - `before_plan`: 运行于 `plan` phase，绑定用户 task，写入 `documentReads.beforePlan`。`hy_plan` 缺少匹配 baseline 时拒绝执行。
 - `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。`hy_approve` 缺少匹配审计时拒绝批准。
+- `after_edit`: 运行于 `edit` / `verify` phase，绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。`hy_verify` 缺少匹配审计时拒绝执行。
 
-这两个 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc。
+这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。
 
 ## 状态持久化
 
@@ -67,6 +68,7 @@ interface WorkflowState {
   approval: Approval | null;
   verifyHash: string | null;
   documentReads?: DocumentReads | null;
+  syncDocs?: SyncDocsRecord | null;
 }
 ```
 

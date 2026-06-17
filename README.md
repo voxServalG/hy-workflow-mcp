@@ -61,15 +61,15 @@ npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --apply-suggeste
 ## 闭环流程
 
 ```
-hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
-             ↑                     ↑                    ↑           ↑           ↑
-         (用户驳回)           (用户许可)          (verify fail)  (CI fail)    (下游分支)
-                                                     ↳ hy_amend_plan（小范围 scope 修订）
+hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+             ↑                     ↑                    ↑           ↑                                      ↑           ↑           ↑
+         (用户驳回)           (用户许可)          (verify fail)  (实现后文档审计)                    (verify fail)  (CI fail)    (下游分支)
+                                                                                                      ↳ hy_amend_plan（小范围 scope 修订）
 ```
 
 `dev → main` 这类 promotion 是发布/晋级操作，不属于普通开发闭环。用户明确要求 promotion 时，应检查 `origin/main..origin/dev` diff，创建或复用 `base=main, head=dev` 的 PR，等待 CI 全绿后合并；若需要直接使用 `gh`/`git`，agent 必须先获得用户明确授权。
 
-## 12 个工具
+## 14 个工具
 
 | Tool | 阶段 | 硬规则 | 软规则 |
 |------|------|--------|--------|
@@ -98,7 +98,7 @@ hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_appr
 6. tests    → 完整测试套件
 ```
 
-`hy_verify` 会生成 implementation manifest（实际修改、新增、删除、未跟踪文件）。如果失败只来自测试支撑文件或已批准目录内的新拆分文件，结果会返回 `amend_required` 和 `suggestedAmendment`，agent 需要展示给用户；用户明确批准后调用 `hy_amend_plan` 应用修订，再重新运行 `hy_verify`。声明了但最终未修改的文件只是 warning，不阻断流程。
+`hy_verify` 会生成 implementation manifest（实际修改、新增、删除、未跟踪文件）。`hy_verify` 前必须已有匹配当前 PlanDoc 的 `hy_read_docs(after_edit)` 审计和 `hy_sync_docs` 记录；如果同步后又改了代码，需要重新跑 `hy_read_docs(after_edit) → hy_sync_docs → hy_verify`。如果失败只来自测试支撑文件或已批准目录内的新拆分文件，结果会返回 `amend_required` 和 `suggestedAmendment`，agent 需要展示给用户；用户明确批准后调用 `hy_amend_plan` 应用修订，再重新运行文档同步和验证流程。声明了但最终未修改的文件只是 warning，不阻断流程。
 
 ## 文档读取 gate
 

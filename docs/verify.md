@@ -1,6 +1,6 @@
 # Verify Pipeline
 
-`hy_verify` 调用 `src/checks.ts:runAllChecks` 执行 **7 层（lint, compile, scope, boundary, platform, smoke, tests）全量校验**。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **7 层（lint, compile, scope, boundary, platform, smoke, tests）全量校验**。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 
