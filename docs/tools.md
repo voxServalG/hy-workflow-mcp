@@ -48,11 +48,11 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.h
 
 读取行为：从文档入口（`docs/index.md` 或自动检测的首个 `.md` 文件）出发，通过 markdown 内部链接引用图做 BFS 遍历，只读取与 task 关键字匹配的路径上的文档，不再对全量文档做 6000 chars 截断。每个文档的完整内容直接返回。文档引用图持久化在 `.git/hy-workflow/docs-graph.json`。
 
-成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash、task 或实现 digest 不匹配时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑的 gate。
+成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash 或实现 digest 不匹配时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑的下游 gate；before_plan task 文案不一致只作为诊断信息。
 
 ## hy_plan
 
-要求已存在匹配当前 task 的 `before_plan` 文档事实基线。随后校验必填字段、scope 非空、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；task/risks/discussion 过短仅作为 soft warning。成功写入新 PlanDoc 时会清空 `beforeApprove`、`afterEdit` 和 `syncDocs`，避免复用旧 gate。
+要求已存在 `before_plan` 文档事实基线。随后校验必填字段、scope 非空、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；task/risks/discussion 过短仅作为 soft warning。成功写入新 PlanDoc 时会清空 `beforeApprove`、`afterEdit` 和 `syncDocs`，避免复用旧 gate。
 
 - **进入 Phase**: `plan`
 - **转换到**: `approve`
