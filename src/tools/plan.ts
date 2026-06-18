@@ -273,7 +273,9 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   next.documentReads = {
     ...(state.documentReads ?? {}),
     beforeApprove: null,
+    afterEdit: null,
   };
+  next.syncDocs = null;
   writeState(next);
 
   const summary = buildSummary(p);

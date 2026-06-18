@@ -100,6 +100,9 @@ export function checkCi(prNumber) {
             name: c.name,
             conclusion: c.conclusion ?? "UNKNOWN",
         }));
+        if (checks.length === 0) {
+            return { ok: true, allGreen: false, noChecks: true, checks };
+        }
         const relevant = checks.filter((c) => c.conclusion !== "SKIPPED" && c.conclusion !== "NEUTRAL");
         const allGreen = relevant.length > 0 && relevant.every((c) => c.conclusion === "SUCCESS");
         return { ok: true, allGreen, checks };

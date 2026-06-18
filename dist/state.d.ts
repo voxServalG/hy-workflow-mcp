@@ -1,4 +1,21 @@
 export type Phase = "init" | "plan" | "approve" | "branch" | "edit" | "verify" | "commit" | "ci" | "merge" | "chain" | "done";
+export interface DocsGraphLink {
+    anchor: string;
+    target: string;
+    line: number;
+}
+export interface DocsGraphEntry {
+    path: string;
+    sha256: string;
+    links: DocsGraphLink[];
+    referencedBy: string[];
+}
+export interface DocsGraph {
+    digest: string;
+    docsDir: string;
+    entryPoints: string[];
+    entries: Record<string, DocsGraphEntry>;
+}
 export interface CheckItem {
     command: string;
     expected_exit: number;
@@ -74,6 +91,9 @@ export interface DocumentReadSnapshot {
     digest: string;
     files: DocumentReadFile[];
     findings: string[];
+    docsGraphDigest: string;
+    entryPoints: string[];
+    traversalRoots: string[];
     implementationFiles?: string[];
     implementationDigest?: string;
 }
@@ -88,6 +108,28 @@ export interface SyncDocsRecord {
     afterEditDigest: string;
     implementationDigest: string;
     allowedDocs: string[];
+}
+export type DocumentGateStatus = "missing" | "current" | "stale";
+export type DocumentGateName = "beforePlan" | "beforeApprove" | "afterEdit" | "syncDocs";
+export interface DocumentGateHealth {
+    status: DocumentGateStatus;
+    reason: string;
+    expected?: string | null;
+    actual?: string | null;
+}
+export interface DocumentReadHealth {
+    planHash: string | null;
+    gates: Record<DocumentGateName, DocumentGateHealth>;
+    staleDocumentReads: DocumentGateName[];
+    missingDocumentReads: DocumentGateName[];
+    blockedBy: {
+        gate: DocumentGateName;
+        tool: "hy_read_docs" | "hy_sync_docs";
+        arguments?: Record<string, string>;
+        reason: string;
+    } | null;
+    okForApprove: boolean;
+    okForVerify: boolean;
 }
 export interface Approval {
     time: string;
@@ -126,5 +168,6 @@ export declare class StateError extends Error {
 }
 export declare function computeVerifyHash(state: WorkflowState): string;
 export declare function computePlanHash(plan: PlanDoc | null): string | null;
+export declare function documentReadHealth(state: WorkflowState, currentImplementationDigest?: string): DocumentReadHealth;
 export declare function currentBranch(root: string): string;
 export declare function getBaseBranch(root: string): string;

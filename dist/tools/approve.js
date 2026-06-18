@@ -1,17 +1,17 @@
-import { computePlanHash, readState, writeState, transition, assertPhase } from "../state.js";
+import { documentReadHealth, readState, writeState, transition, assertPhase } from "../state.js";
 import { toolResult } from "./_base.js";
 export async function handleApprove(args) {
     const state = readState();
     assertPhase(state, "approve");
     const input = (args.approved ?? "").trim();
     if (input === "approve" || input === "true") {
-        const planHash = computePlanHash(state.plan);
-        const beforeApprove = state.documentReads?.beforeApprove;
-        if (!planHash || beforeApprove?.planHash !== planHash) {
+        const health = documentReadHealth(state);
+        if (!health.okForApprove) {
             return toolResult("approve", {
                 approved: false,
                 error: "before_approve document audit is required before hy_approve can accept user approval.",
-                hint: `Call hy_read_docs with { stage: "before_approve" } first. This is an automatic agent audit step, not a separate user review gate.`,
+                documentReadHealth: health,
+                hint: `${health.gates.beforeApprove.reason} Call hy_read_docs with { stage: "before_approve" } first. This is an automatic agent audit step, not a separate user review gate.`,
                 allowedTools: ["hy_read_docs", "hy_status"],
                 blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
             });

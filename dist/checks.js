@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getBaseBranch } from "./state.js";
+import { JS_TS_CODE_EXTS, PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
 // ── Helpers ──────────────────────────────────────────────────
 function execOr(cmd, cwd) {
     try {
@@ -87,9 +88,10 @@ function resolveCompileCmd(root) {
         return null;
     try {
         const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        if (config.codeExt === ".ts")
+        const exts = normalizeCodeExt(config.codeExt);
+        if (exts.some(ext => JS_TS_CODE_EXTS.has(ext)))
             return "npx tsc --noEmit";
-        if (config.codeExt === ".py")
+        if (exts.some(ext => PYTHON_CODE_EXTS.has(ext)))
             return `${findPython()} -m py_compile src/**/*.py`;
     }
     catch { }

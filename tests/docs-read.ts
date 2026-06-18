@@ -74,9 +74,23 @@ try {
   if (baseline.phase !== "plan" || baseline.stage !== "before_plan") {
     throw new Error(`before_plan should keep workflow in plan, got ${JSON.stringify(baseline)}`);
   }
+  // Check new graph-driven fields in the returned snapshot
+  const bsnap = baseline.snapshot;
+  if (!bsnap || !bsnap.docsGraphDigest) {
+    throw new Error(`before_plan snapshot should include docsGraphDigest, got ${JSON.stringify(bsnap)}`);
+  }
+  if (!bsnap.traversalRoots || bsnap.traversalRoots.length === 0) {
+    throw new Error(`before_plan snapshot should include traversalRoots, got ${JSON.stringify(bsnap)}`);
+  }
+
   const stateWithBaseline = readState();
   if (stateWithBaseline.documentReads?.beforePlan?.task !== plan.task) {
     throw new Error("before_plan should write task-bound document baseline");
+  }
+  // Check persisted snapshot also has graph fields
+  const persistedBeforePlan = stateWithBaseline.documentReads!.beforePlan!;
+  if (!persistedBeforePlan.docsGraphDigest) {
+    throw new Error("before_plan persisted snapshot missing docsGraphDigest");
   }
 
   const planned = await handlePlan({ task: plan.task, plan });
@@ -97,7 +111,19 @@ try {
   if (!stateWithAudit.documentReads?.beforeApprove?.planHash) {
     throw new Error("before_approve should write plan-hash-bound document audit");
   }
+  // Check graph fields in before_approve snapshot
+  if (!stateWithAudit.documentReads!.beforeApprove!.docsGraphDigest) {
+    throw new Error("before_approve snapshot missing docsGraphDigest");
+  }
 
+  const changedPlan = { ...plan, discussion: `${plan.discussion} Changed after the approval audit.` };
+  writeState({ ...stateWithAudit, plan: changedPlan });
+  const staleAudit = await handleApprove({ approved: "approve", note: "user approved" });
+  if (!String(staleAudit.hint).includes("before_approve plan hash does not match")) {
+    throw new Error(`hy_approve should reject stale before_approve audit, got ${JSON.stringify(staleAudit)}`);
+  }
+
+  writeState(stateWithAudit);
   const approved = await handleApprove({ approved: "approve", note: "user approved" });
   if (approved.phase !== "branch" || approved.approved !== true) {
     throw new Error(`hy_approve should pass after before_approve, got ${JSON.stringify(approved)}`);

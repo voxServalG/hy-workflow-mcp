@@ -10,13 +10,17 @@ import {
   type DocumentReadFile,
   type DocumentReadSnapshot,
   type DocumentReadStage,
+  type DocsGraph,
 } from "../state.js";
+import {
+  ensureGraph,
+  traverseByTask,
+  buildDocsGraph,
+  loadDocsGraph,
+} from "../docs_graph.js";
 import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
-
-const MAX_FILE_CHARS = 6000;
-const READABLE_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".rst"]);
 
 function sha256(value: string): string {
   const hash = createHash("sha256");
@@ -40,46 +44,23 @@ function readDocsDir(root: string): string {
   }
 }
 
-function listDocumentFiles(root: string, docsDir: string): string[] {
-  const docsRoot = path.join(root, docsDir);
-  const files: string[] = [];
-  const walk = (current: string) => {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      if (entry.name.startsWith(".")) continue;
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!READABLE_EXTENSIONS.has(path.extname(entry.name))) continue;
-      files.push(path.relative(root, full).split(path.sep).join("/"));
-    }
-  };
-  walk(docsRoot);
-  return files.sort();
-}
+function buildFindings(
+  stage: DocumentReadStage,
+  files: DocumentReadFile[],
+  task: string,
+  planHash: string | null,
+  graph: DocsGraph,
+  traversalRoots: string[]
+): string[] {
+  const fileList = traversalRoots.join(", ") || "none";
+  const graphInfo = `Graph digest: ${graph.digest}, entries: ${Object.keys(graph.entries).length}, entry points: ${graph.entryPoints.join(", ")}`;
 
-function readDocumentFiles(root: string, docsDir: string): DocumentReadFile[] {
-  return listDocumentFiles(root, docsDir).map(rel => {
-    const full = path.join(root, rel);
-    const raw = fs.readFileSync(full, "utf-8");
-    return {
-      path: rel,
-      bytes: Buffer.byteLength(raw, "utf-8"),
-      sha256: sha256(raw),
-      content: raw.length > MAX_FILE_CHARS ? raw.slice(0, MAX_FILE_CHARS) : raw,
-      truncated: raw.length > MAX_FILE_CHARS,
-    };
-  });
-}
-
-function buildFindings(stage: DocumentReadStage, files: DocumentReadFile[], task: string, planHash: string | null): string[] {
-  const fileList = files.map(f => f.path).join(", ") || "none";
   if (stage === "before_plan") {
     return [
       "Purpose: establish a planning fact baseline before writing PlanDoc.",
       `Task to ground: ${task}`,
-      `Documents read: ${fileList}`,
+      `Graph-driven traversal: ${graphInfo}`,
+      `Documents traversed (${traversalRoots.length}): ${fileList}`,
       "Agent obligation: use these documented facts to identify constraints, terminology, existing workflow rules, relevant files, unknowns, and verification expectations before calling hy_plan.",
     ];
   }
@@ -87,22 +68,29 @@ function buildFindings(stage: DocumentReadStage, files: DocumentReadFile[], task
     return [
       "Purpose: audit the already generated PlanDoc before calling hy_approve.",
       `Plan hash audited: ${planHash ?? "none"}`,
-      `Documents read: ${fileList}`,
+      `Graph-driven traversal: ${graphInfo}`,
+      `Documents traversed (${traversalRoots.length}): ${fileList}`,
       "Agent obligation: compare PlanDoc task, scope, boundary, verification, risks, and discussion against these documents; if facts drift, scope is missing, verification is weak, or risks are incomplete, reject the plan and call hy_plan again instead of approving.",
     ];
   }
   return [
     "Purpose: audit implementation diff against documentation before final verification.",
     `Plan hash audited: ${planHash ?? "none"}`,
-    `Documents read: ${fileList}`,
+    `Graph-driven traversal: ${graphInfo}`,
+    `Documents traversed (${traversalRoots.length}): ${fileList}`,
     "Agent obligation: compare the implementation diff with documentation, then call hy_sync_docs before hy_verify so documentation changes are included in final lint and tests.",
   ];
 }
 
-function buildSnapshot(stage: DocumentReadStage, task: string, planHash: string | null): DocumentReadSnapshot | ToolResult {
+function buildSnapshot(
+  stage: DocumentReadStage,
+  task: string,
+  planHash: string | null
+): DocumentReadSnapshot | ToolResult {
   const root = projectRoot();
   const docsDir = readDocsDir(root);
   const docsRoot = path.join(root, docsDir);
+
   if (!fs.existsSync(docsRoot) || !fs.statSync(docsRoot).isDirectory()) {
     return toolResult(stage === "before_plan" ? "plan" : "approve", {
       error: `Configured docsDir does not exist or is not a directory: ${docsDir}`,
@@ -111,16 +99,52 @@ function buildSnapshot(stage: DocumentReadStage, task: string, planHash: string 
     });
   }
 
-  const files = readDocumentFiles(root, docsDir);
-  if (!files.length) {
-    return toolResult(stage === "before_plan" ? "plan" : "approve", {
-      error: `No readable documentation files found in ${docsDir}. Expected .md, .mdx, .txt, or .rst files.`,
-      hint: "Add project documentation or update hy-workflow.json project.docsDir before continuing.",
-      allowedTools: ["hy_status"],
-    });
+  // Ensure graph is current (build or reload)
+  const graph = ensureGraph(root, docsDir);
+  const docsGraphDigest = graph.digest;
+
+  // Run task-driven traversal
+  const extraEntryPoints: string[] = [];
+  // Always include README.md and AGENTS.md as supplemental entry points
+  const readmePath = path.join("docs", "README.md");
+  const agentsPath = "AGENTS.md";
+  if (fs.existsSync(path.join(root, readmePath))) extraEntryPoints.push(readmePath);
+  if (fs.existsSync(path.join(root, agentsPath))) extraEntryPoints.push(agentsPath);
+
+  const traversal = traverseByTask(root, graph, task, extraEntryPoints);
+
+  // Read traversed files
+  const files: DocumentReadFile[] = traversal.read.map(rel => {
+    const full = path.join(root, rel);
+    if (!fs.existsSync(full)) return null;
+    const raw = fs.readFileSync(full, "utf-8");
+    return {
+      path: rel,
+      bytes: Buffer.byteLength(raw, "utf-8"),
+      sha256: sha256(raw),
+      content: raw,
+      truncated: false, // no truncation — we only read matched docs
+    };
+  }).filter(Boolean) as DocumentReadFile[];
+
+  // Fallback: no files matched via traversal? Use entry points directly
+  if (files.length === 0) {
+    for (const ep of graph.entryPoints) {
+      const full = path.join(root, ep);
+      if (fs.existsSync(full)) {
+        const raw = fs.readFileSync(full, "utf-8");
+        files.push({
+          path: ep,
+          bytes: Buffer.byteLength(raw, "utf-8"),
+          sha256: sha256(raw),
+          content: raw,
+          truncated: false,
+        });
+      }
+    }
   }
 
-  const digest = shortHash(JSON.stringify(files.map(f => ({ path: f.path, sha256: f.sha256 }))));
+  const findings = buildFindings(stage, files, task, planHash, graph, traversal.read);
   return {
     stage,
     purpose: stage === "before_plan"
@@ -132,9 +156,12 @@ function buildSnapshot(stage: DocumentReadStage, task: string, planHash: string 
     task,
     planHash,
     docsDir,
-    digest,
+    digest: shortHash(JSON.stringify(files.map(f => ({ path: f.path, sha256: f.sha256 })))),
     files,
-    findings: buildFindings(stage, files, task, planHash),
+    findings,
+    docsGraphDigest,
+    entryPoints: traversal.entryPoints,
+    traversalRoots: traversal.read,
   };
 }
 

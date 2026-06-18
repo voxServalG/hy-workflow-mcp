@@ -11,6 +11,7 @@ import {
   type PlanDoc,
 } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
+import { ensureGraph, incrementalUpdate, detectBrokenLinks } from "../docs_graph.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
 const DOC_EXTENSIONS = [".md", ".mdx", ".txt", ".rst"];
@@ -46,6 +47,18 @@ export function implementationDigest(root: string, plan: PlanDoc, manifest: Impl
   return shortHash(JSON.stringify(files));
 }
 
+function readDocsDir(root: string): string {
+  const configPath = path.join(root, "hy-workflow.json");
+  if (!fs.existsSync(configPath)) return "docs";
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    const docsDir = config?.project?.docsDir;
+    return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
+  } catch {
+    return "docs";
+  }
+}
+
 export async function handleSyncDocs(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "edit", "verify");
@@ -76,7 +89,33 @@ export async function handleSyncDocs(): Promise<ToolResult> {
     });
   }
 
+  const root = projectRoot();
+  const docsDir = readDocsDir(root);
   const allowedDocs = allowedSyncDocumentPaths(state.plan);
+
+  // ── Incremental graph update ──────────────────────────────
+  const graphChangedDocs = allowedDocs.filter(
+    doc => fs.existsSync(path.join(root, doc)) && doc.startsWith(docsDir)
+  );
+  let graphInfo = { updated: false, brokenLinks: 0, brokenLinkDetails: [] as string[] };
+
+  if (graphChangedDocs.length > 0) {
+    // Ensure graph is current before updating
+    const graph = ensureGraph(root, docsDir);
+    const updated = incrementalUpdate(root, graph, graphChangedDocs);
+    graphInfo.updated = true;
+
+    // Detect broken links across the graph
+    const broken = detectBrokenLinks(updated.entries, root);
+    graphInfo.brokenLinks = broken.length;
+    if (broken.length > 0) {
+      graphInfo.brokenLinkDetails = broken.map(
+        b => `${b.source}:${b.line} → ${b.target} ("${b.anchor}")`
+      );
+    }
+  }
+
+  // ── Write syncDocs record ─────────────────────────────────
   const next = { ...state };
   next.syncDocs = {
     time: new Date().toISOString(),
@@ -87,16 +126,26 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   };
   writeState(next);
 
+  const displayBody: string[] = [
+    "after_edit audit is current. Synchronize only the declared documentation or setup prompt files, then run hy_verify.",
+    allowedDocs.length ? `Allowed sync files: ${allowedDocs.join(", ")}` : "No documentation sync files were declared in plan.scope.",
+  ];
+  if (graphInfo.updated) {
+    displayBody.push(`DocsGraph incrementally updated for ${graphChangedDocs.length} changed file(s).`);
+  }
+  if (graphInfo.brokenLinks > 0) {
+    displayBody.push(`⚠ ${graphInfo.brokenLinks} broken link(s) detected:`);
+    displayBody.push(...graphInfo.brokenLinkDetails.map(d => `  - ${d}`));
+  }
+
   return toolResult("verify", {
     phase: "edit",
     synced: true,
     allowedDocs,
+    graphInfo,
     display: {
       title: "Document sync gate ready",
-      body: [
-        "after_edit audit is current. Synchronize only the declared documentation or setup prompt files, then run hy_verify.",
-        allowedDocs.length ? `Allowed sync files: ${allowedDocs.join(", ")}` : "No documentation sync files were declared in plan.scope.",
-      ].join("\n"),
+      body: displayBody.join("\n"),
       files: allowedDocs,
     },
     hint: "Use standard file editing tools only within plan.scope for documentation sync. When done, call hy_verify.",

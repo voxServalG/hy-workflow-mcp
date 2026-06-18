@@ -6,7 +6,7 @@
 
 `project.baseBranch`, `project.codeExt`, `project.codeDirs`, and `project.docsDir` are shared config. `project.codeExt` accepts one extension string, a comma-separated extension string, or a string array. Known extensions are aligned with doclint comment-syntax coverage, and `.tksp` is supported explicitly. Tool-specific config stays scoped to its tool section, including `codelint.lintDirs`, `codelint.maxLines`, `doclint.maxLines`, and `docsGardener.catalogs`.
 
-Tracked setup artifacts include `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`, and the three compatibility JSON files. Local runtime or client artifacts include `.hy/`, `.opencode/`, `.codex/`, and `.mcp.json`.
+Tracked setup artifacts include `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`, and the three compatibility JSON files. Local runtime or client artifacts include `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, and runtime doc artifacts (`.git/hy-workflow/docs-graph.json`).
 
 hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走带文档同步 gate 的闭环工作流。通过状态机锁定 Phase 转换、lint 校验、用户 approve gate 三层机制，确保每次代码/文档变更可审计。
 
