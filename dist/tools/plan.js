@@ -69,7 +69,7 @@ export async function handlePlan(args) {
         });
     }
     const beforePlan = state.documentReads?.beforePlan;
-    if (beforePlan?.task !== task) {
+    if (!beforePlan) {
         return toolResult("plan", {
             error: "before_plan document baseline is required before hy_plan.",
             hint: `Call hy_read_docs with { stage: "before_plan", task } first. This is an automatic agent context step, not a user review gate.`,
@@ -77,6 +77,7 @@ export async function handlePlan(args) {
             blockedTools: ["hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
         });
     }
+    const beforePlanTaskMismatch = beforePlan.task !== task;
     const p = args.plan;
     if (!p) {
         return toolResult("plan", {
@@ -252,6 +253,9 @@ export async function handlePlan(args) {
     }
     // Gate 7: semantic quality (soft — warnings only, do not block)
     const warnings = [];
+    if (beforePlanTaskMismatch) {
+        warnings.push(`before_plan task differs from hy_plan task; using the existing document baseline. before_plan="${beforePlan.task}", hy_plan="${task}"`);
+    }
     if (p.task.length < 20) {
         warnings.push(`task 较简短 (${p.task.length} chars)，建议补充问题动机和上下文`);
     }

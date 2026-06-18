@@ -420,7 +420,7 @@ export function documentReadHealth(state: WorkflowState, currentImplementationDi
     beforePlan: !beforePlan
       ? gate("missing", "before_plan document baseline is missing.")
       : state.plan && beforePlan.task !== state.plan.task
-        ? gate("stale", "before_plan task does not match the current PlanDoc task.", state.plan.task, beforePlan.task)
+        ? gate("current", "before_plan baseline exists; task text differs from the current PlanDoc task.", state.plan.task, beforePlan.task)
         : gate("current", "before_plan document baseline matches the current task."),
     beforeApprove: !beforeApprove
       ? gate("missing", "before_approve document audit is missing.")
