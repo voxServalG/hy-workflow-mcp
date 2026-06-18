@@ -268,7 +268,9 @@ export async function handlePlan(args) {
     next.documentReads = {
         ...(state.documentReads ?? {}),
         beforeApprove: null,
+        afterEdit: null,
     };
+    next.syncDocs = null;
     writeState(next);
     const summary = buildSummary(p);
     return toolResult("approve", {

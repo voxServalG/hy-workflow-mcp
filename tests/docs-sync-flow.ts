@@ -105,6 +105,15 @@ try {
     throw new Error(`hy_sync_docs should report graphInfo with updated status, got ${JSON.stringify(synced.graphInfo)}`);
   }
 
+  const syncedState = readState();
+  const changedPlan = { ...plan, discussion: `${plan.discussion} Changed after after_edit.` };
+  writeState({ ...syncedState, phase: "edit", plan: changedPlan });
+  const staleAfterEdit = await handleVerify();
+  if (!String(staleAfterEdit.error).includes("after_edit plan hash does not match")) {
+    throw new Error(`hy_verify should reject stale after_edit audit, got ${JSON.stringify(staleAfterEdit)}`);
+  }
+
+  writeState(syncedState);
   writeFileSync(join(root, "README.md"), "# App\n\nValue is 2.\n");
   const verified = await handleVerify();
   if (String(verified.error).includes("after_edit") || String(verified.error).includes("hy_sync_docs") || String(verified.error).includes("Implementation diff changed")) {
@@ -114,7 +123,7 @@ try {
   writeState({ ...readState(), phase: "edit" });
   writeFileSync(join(root, "src", "app.ts"), "export const value = 3;\n");
   const stale = await handleVerify();
-  if (!String(stale.error).includes("Implementation diff changed")) {
+  if (!String(stale.error).includes("after_edit implementation digest does not match")) {
     throw new Error(`hy_verify should detect implementation drift after sync docs, got ${JSON.stringify(stale)}`);
   }
 } finally {

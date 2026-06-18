@@ -49,8 +49,10 @@ init → plan → approve → branch → edit → hy_read_docs(after_edit) → h
 `hy_read_docs` 不新增状态机 phase，而是在 `plan`、`approve` 和 `edit` phase 内作为自动 gate 运行。
 
 - `before_plan`: 运行于 `plan` phase，绑定用户 task，写入 `documentReads.beforePlan`。`hy_plan` 缺少匹配 baseline 时拒绝执行。
-- `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。`hy_approve` 缺少匹配审计时拒绝批准。
-- `after_edit`: 运行于 `edit` / `verify` phase，绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。`hy_verify` 缺少匹配审计时拒绝执行。
+- `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。`hy_approve` 缺少 current 审计时拒绝批准。
+- `after_edit`: 运行于 `edit` / `verify` phase，绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。`hy_verify` 缺少 current 审计时拒绝执行。
+
+`documentReadHealth` 从现有状态派生每个 gate 的 `missing` / `current` / `stale` 状态。PlanDoc hash、task 或实现 digest 不匹配时，旧的 `documentReads` 不会被复用；`hy_status` 会显示 `blockedBy`、`staleDocumentReads` 和下一步工具。`hy_plan` 写入新 PlanDoc 时会清空 downstream gate（`beforeApprove`、`afterEdit`、`syncDocs`），避免新 plan 继承旧审计。
 
 这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。
 
