@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { checkConfig, ensureConfigDefaults, runConfigCli } from "../src/config.js";
+import { checkConfig, ensureConfigDefaults, runConfigCli, withRuntimeCompatConfigs } from "../src/config.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -20,6 +20,9 @@ function readJson(root: string, file: string): any {
   return JSON.parse(fs.readFileSync(path.join(root, file), "utf-8"));
 }
 
+function exists(root: string, file: string): boolean {
+  return fs.existsSync(path.join(root, file));
+}
 
 function configuredRoot(codeExt: string | string[], files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-custom-"));
@@ -37,9 +40,6 @@ function configuredRoot(codeExt: string | string[], files: Record<string, string
     docsGardener: { catalogs: {} },
   };
   fs.writeFileSync(path.join(root, "hy-workflow.json"), JSON.stringify(unified, null, 2) + "\n", "utf-8");
-  fs.writeFileSync(path.join(root, "codelint.json"), JSON.stringify({ lintDirs: ["src"], codeDirs: ["src"], codeExt, baseBranch: "main", maxLines: 300 }, null, 2) + "\n", "utf-8");
-  fs.writeFileSync(path.join(root, "doclint.json"), JSON.stringify({ docsDir: "docs", codeDirs: ["src"], codeExt, baseBranch: "main", maxLines: 180 }, null, 2) + "\n", "utf-8");
-  fs.writeFileSync(path.join(root, "docs-gardener.json"), JSON.stringify({ docsDir: "docs", codeDirs: ["src"], codeExt, baseBranch: "main", catalogs: {} }, null, 2) + "\n", "utf-8");
   return root;
 }
 
@@ -67,7 +67,7 @@ fs.writeFileSync(path.join(root, "docs-gardener.json"), JSON.stringify({
 }, null, 2) + "\n", "utf-8");
 
 const before = JSON.stringify({
-  unified: fs.existsSync(path.join(root, "hy-workflow.json")) ? readJson(root, "hy-workflow.json") : null,
+  unified: exists(root, "hy-workflow.json") ? readJson(root, "hy-workflow.json") : null,
   codelint: readJson(root, "codelint.json"),
   doclint: readJson(root, "doclint.json"),
   gardener: readJson(root, "docs-gardener.json"),
@@ -75,7 +75,7 @@ const before = JSON.stringify({
 const dry = ensureConfigDefaults(root, { dryRun: true });
 assert(dry.dryRun === true, "dry-run should be marked");
 assert(JSON.stringify({
-  unified: fs.existsSync(path.join(root, "hy-workflow.json")) ? readJson(root, "hy-workflow.json") : null,
+  unified: exists(root, "hy-workflow.json") ? readJson(root, "hy-workflow.json") : null,
   codelint: readJson(root, "codelint.json"),
   doclint: readJson(root, "doclint.json"),
   gardener: readJson(root, "docs-gardener.json"),
@@ -86,9 +86,8 @@ assert(readJson(root, "hy-workflow.json").project.baseBranch === "main", "setup 
 assert(readJson(root, "hy-workflow.json").project.docsDir === "docs", "setup defaults must write unified docsDir");
 assert(readJson(root, "hy-workflow.json").codelint.lintDirs[0] === "src", "setup defaults must write codelint private lintDirs");
 assert(readJson(root, "hy-workflow.json").doclint.maxLines === 180, "setup defaults must preserve doclint maxLines");
-assert(readJson(root, "codelint.json").codeExt === ".py", "setup defaults must preserve Python codeExt");
-assert(readJson(root, "codelint.json").baseBranch === "main", "setup defaults must preserve baseBranch");
-assert(readJson(root, "docs-gardener.json").catalogs.cli[0] === "hy_init", "setup defaults must preserve catalogs");
+assert(readJson(root, "hy-workflow.json").docsGardener.catalogs.cli[0] === "hy_init", "setup defaults must preserve catalogs");
+assert(readJson(root, "codelint.json").codeExt === ".py", "setup defaults must not overwrite existing legacy codelint");
 
 const check = checkConfig(root);
 assert(check.ok, `Python config should be consistent: ${check.issues.join(", ")}`);
@@ -98,14 +97,14 @@ fs.writeFileSync(path.join(root, "doclint.json"), JSON.stringify({
   docsDir: "wrong-docs",
 }, null, 2) + "\n", "utf-8");
 const drift = checkConfig(root);
-assert(!drift.ok, "legacy compatibility drift should fail config check");
-assert(drift.drift.some(item => item.file === "doclint.json" && item.field === "docsDir"), "drift should report the mismatched legacy field");
-assert(drift.display.body.includes("Config drift"), "drift output should be visible in display body");
+assert(drift.ok, "legacy compatibility drift should not fail config check");
+assert(drift.drift.some(item => item.file === "doclint.json" && item.field === "docsDir"), "drift should still be reported for diagnostics");
+assert(!drift.display.body.includes("Config drift"), "drift should not be shown as blocking output when unified config is valid");
 
 const mismatchRoot = tempRoot();
 fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ codeExt: ".ts", codeDirs: ["src"] }, null, 2) + "\n", "utf-8");
 const mismatch = checkConfig(mismatchRoot);
-assert(!mismatch.ok, "Python project with .ts config should need confirmation");
+assert(!mismatch.ok, "missing unified config should need confirmation");
 assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
 assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include detected Python ext");
 assert(mismatch.issues.includes("Missing hy-workflow.json"), "missing unified config should be reported");
@@ -117,24 +116,35 @@ assert(cli.exitCode === 0, "config CLI should exit 0");
 assert(parsed.ok === true, "config CLI should emit ok envelope");
 assert(parsed.display?.title, "config CLI should emit display title");
 assert(readJson(cliRoot, "hy-workflow.json").project.codeExt === ".py", "config CLI should write unified config");
-assert(readJson(cliRoot, "codelint.json").codeExt === ".py", "config CLI should write Python codeExt");
-assert(readJson(cliRoot, "doclint.json").codeDirs[0] === "src", "config CLI should derive doclint from unified config");
+assert(!exists(cliRoot, "codelint.json"), "config CLI should not write root codelint compatibility file");
+assert(!exists(cliRoot, "doclint.json"), "config CLI should not write root doclint compatibility file");
+
+withRuntimeCompatConfigs(cliRoot, () => {
+  assert(readJson(cliRoot, "codelint.json").codeExt === ".py", "runtime compat should materialize codelint from unified config");
+  assert(readJson(cliRoot, "doclint.json").codeDirs[0] === "src", "runtime compat should materialize doclint from unified config");
+});
+assert(!exists(cliRoot, "codelint.json"), "runtime compat should clean up generated codelint file");
+assert(!exists(cliRoot, "doclint.json"), "runtime compat should clean up generated doclint file");
 
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");
 assert(help.stdout.includes("hy-workflow.json is the source of truth"), "help should document unified config");
 
-
 const tkspRoot = configuredRoot(".tksp", { "src/main.tksp": "module demo\n" });
 const tkspCheck = checkConfig(tkspRoot);
 assert(tkspCheck.ok, `.tksp config should be accepted: ${tkspCheck.issues.join(", ")}`);
-assert(readJson(tkspRoot, "codelint.json").codeExt === ".tksp", "compat artifacts should preserve .tksp codeExt");
+withRuntimeCompatConfigs(tkspRoot, () => {
+  assert(readJson(tkspRoot, "codelint.json").codeExt === ".tksp", "runtime compat should preserve .tksp codeExt");
+});
+assert(!exists(tkspRoot, "codelint.json"), "runtime compat should clean up tksp codelint file");
 
 const tkspTsRoot = configuredRoot([".tksp", ".ts"], { "src/main.tksp": "module demo\n", "src/index.ts": "export {};\n" });
 const tkspTsCheck = checkConfig(tkspTsRoot);
 assert(tkspTsCheck.ok, `.tksp + .ts array config should be accepted: ${tkspTsCheck.issues.join(", ")}`);
 assert(Array.isArray(readJson(tkspTsRoot, "hy-workflow.json").project.codeExt), "unified config should preserve array codeExt");
-assert(Array.isArray(readJson(tkspTsRoot, "doclint.json").codeExt), "doclint compatibility artifact should preserve array codeExt when configured that way");
+withRuntimeCompatConfigs(tkspTsRoot, () => {
+  assert(Array.isArray(readJson(tkspTsRoot, "doclint.json").codeExt), "doclint compatibility artifact should preserve array codeExt when configured that way");
+});
 
 const commaRoot = configuredRoot(".tksp,.ts", { "src/main.tksp": "module demo\n", "src/index.ts": "export {};\n" });
 const commaCheck = checkConfig(commaRoot);

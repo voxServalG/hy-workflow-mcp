@@ -13,9 +13,6 @@ export const INIT_COMMIT_ARTIFACTS = [
   "AGENTS.md",
   ".gitignore",
   UNIFIED_CONFIG_FILE,
-  "codelint.json",
-  "doclint.json",
-  "docs-gardener.json",
 ];
 
 export const INIT_LOCAL_ARTIFACTS = [
@@ -23,24 +20,20 @@ export const INIT_LOCAL_ARTIFACTS = [
   ".opencode/",
   ".codex/",
   ".mcp.json",
-];
-
-export const REQUIRED_SETUP_ARTIFACTS = [
-  ".github/workflows/code-quality.yml",
-  ".github/workflows/docs-check.yml",
-  UNIFIED_CONFIG_FILE,
   "codelint.json",
   "doclint.json",
   "docs-gardener.json",
+];
+
+export const REQUIRED_SETUP_ARTIFACTS = [
+  ".github/workflows/hy-workflow.yml",
+  UNIFIED_CONFIG_FILE,
   SETUP_STAMP,
 ];
 
 const LEGACY_HARNESS_ARTIFACTS = [
   ".github/",
   UNIFIED_CONFIG_FILE,
-  "codelint.json",
-  "doclint.json",
-  "docs-gardener.json",
 ];
 
 const LEGACY_HARNESS_MISSING_TYPE = "harness_missing";
@@ -94,21 +87,21 @@ ${MARKER_START}
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
-- 不要提交本地或运行时目录：.hy/、.opencode/、.codex/、.mcp.json
+- 不要提交本地、运行时或兼容产物：.hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json
 
 ### hy_init 初始化产物
 
-hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json。
+hy_init 后通常应提交这些项目配置：.github/、AGENTS.md、.gitignore、hy-workflow.json。
 hy_init 后不要提交这些本地或运行时文件：.hy/、.opencode/、.codex/、.mcp.json。
 
 ### Artifact contract
 
 setup / hy_init 可能产生两类产物，必须分开处理：
-- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、hy-workflow.json、codelint.json、doclint.json、docs-gardener.json
-- **不应提交的 local/runtime artifacts**: .hy/、.opencode/、.codex/、.mcp.json、MCP 客户端本地配置和 setup stamp（.hy/hy-workflow-setup.json）
+- **应提交的 tracked project artifacts**: .github/、AGENTS.md、.gitignore、hy-workflow.json
+- **不应提交的 local/runtime/client/compat artifacts**: .hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json、MCP 客户端本地配置和 setup stamp
 
-如果运行 setup 后出现 tracked diff（例如 CI workflow、lint config、docs-gardener config 或 .gitignore 变化），应优先创建单独的 setup artifact sync PR 提交这些变更。
-不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交 .hy/、.opencode/、.codex/ 或 .mcp.json。
+如果运行 setup 后出现 tracked diff（例如 CI workflow、hy-workflow.json 或 .gitignore 变化），应优先创建单独的 setup artifact sync PR 提交这些变更。
+不要把 setup 产生的 tracked artifact drift 混入无关代码/文档任务；也不要提交本地客户端配置或运行时兼容 JSON。
 
 ### Promotion / release 例外
 
@@ -176,11 +169,11 @@ hy_status 随时可查看当前阶段。
 
 ### 统一配置源头
 
-hy-workflow.json 是人工维护的唯一项目配置源头。codelint.json、doclint.json、docs-gardener.json 短期继续作为 compatibility artifacts 提交，由 setup/config 从 hy-workflow.json 生成或同步。
+hy-workflow.json 是人工维护的唯一项目配置源头。codelint.json、doclint.json、docs-gardener.json 只作为运行时 compatibility artifacts 临时生成，不作为根目录提交产物。
 
 共享字段统一放在 project：baseBranch、codeExt、codeDirs、docsDir。工具私有字段保留在各自段落：codelint.lintDirs、codelint.maxLines、doclint.maxLines、docsGardener.catalogs。
 
-.opencode/、.codex/、.mcp.json 默认都是本地客户端配置，不要提交。若 setup/config/hy_init 产生 tracked artifact drift，先单独创建 setup artifact sync PR。
+.opencode/、.codex/、.mcp.json 默认都是本地客户端配置，不要提交。若 setup/config/hy_init 产生 tracked artifact drift，先单独创建 setup artifact sync PR。根目录兼容 JSON 由运行时临时生成，不要纳入提交。
 
 ${MARKER_END}
 `;

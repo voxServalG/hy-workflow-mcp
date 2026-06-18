@@ -6,9 +6,9 @@
 
 Shared fields live under `project`: `baseBranch`, `codeExt`, `codeDirs`, and `docsDir`. Tool-private fields stay under their tool sections: `codelint.lintDirs`, `codelint.maxLines`, `doclint.maxLines`, and `docsGardener.catalogs`.
 
-`codelint.json`, `doclint.json`, and `docs-gardener.json` are still tracked compatibility artifacts. `setup` and `hy-workflow config --apply-suggested --json` derive them from `hy-workflow.json`, so existing CI and external CLI consumers keep working.
+`codelint.json`, `doclint.json`, and `docs-gardener.json` are runtime compatibility artifacts. `setup` and `hy-workflow config --apply-suggested --json` keep `hy-workflow.json` as the only editable source; verification materializes compatibility JSON only when legacy CLIs need it.
 
-Tracked project artifacts: `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`, `codelint.json`, `doclint.json`, `docs-gardener.json`.
+Tracked project artifacts: `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`.
 
 Local/runtime/client artifacts: `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, and MCP client-local config. Do not commit them unless explicitly requested.
 
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/set
 iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh; bash setup.sh; rm setup.sh
 ```
 
-脚本会直接部署/更新项目 bootstrap 产物（`.github/`、`hy-workflow.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`、`.hy/hy-workflow-setup.json`），再输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。已有 JSON 配置会 preserve-first 合并，不会把 Python 等项目配置重置成默认 TypeScript。
+脚本会直接部署/更新项目 bootstrap 产物（`.github/workflows/hy-workflow.yml`、`hy-workflow.json`、`.git/hy-workflow/setup.json`），再输出一段文字——**原样发给你的 LLM agent**，由它完成项目级 MCP 配置（hy-workflow + docs-gardener）和 `hy_init`。已有 JSON 配置会 preserve-first 合并，不会把 Python 等项目配置重置成默认 TypeScript。
 
 setup 输出的 prompt 会给出 OpenCode 的 `.opencode/opencode.json` 示例和 Codex 的 `.codex/config.toml` 项目级 TOML 示例。Codex 示例中 `hy-workflow` 是 required，`docs-gardener` 是非阻塞辅助。
 
@@ -44,7 +44,7 @@ setup 输出的 prompt 会给出 OpenCode 的 `.opencode/opencode.json` 示例�
 
 之后任何代码/文档任务，agent 自动走闭环。
 
-`hy_init` 后，通常应提交项目配置：`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`。
+`hy_init` 后，通常应提交项目配置：`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`。
 不要提交本地或运行时目录：`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`；`hy_init` 会默认把它们写入 `.gitignore`。如果运行 setup 后出现 tracked diff，先单独提交 setup artifact sync PR，再继续其他任务。
 
 ## 配置检测

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, WorkflowState } from "./state.js";
 import { getBaseBranch } from "./state.js";
 import { JS_TS_CODE_EXTS, PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
+import { readUnifiedConfig, withRuntimeCompatConfigs } from "./config.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ function parseDocLintReport(report: any): CheckResult {
 }
 
 export function runDocLint(root: string): CheckResult[] {
-  const r = execOr("npx --yes github:voxServalG/doclint lint --json", root);
+  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes github:voxServalG/doclint lint --json", root));
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [parseDocLintReport(report)];
@@ -90,7 +91,7 @@ export function runDocLint(root: string): CheckResult[] {
 }
 
 export function runCodeLint(root: string): CheckResult[] {
-  const r = execOr("npx --yes github:voxServalG/codelint check --json", root);
+  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes github:voxServalG/codelint check --json", root));
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [report.errors === 0
@@ -104,11 +105,12 @@ export function runCodeLint(root: string): CheckResult[] {
 // ── 2. Compile (hard) ───────────────────────────────────────
 
 function resolveCompileCmd(root: string): string | null {
-  const configPath = path.join(root, "codelint.json");
-  if (!fs.existsSync(configPath)) return null;
   try {
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    const exts = normalizeCodeExt(config.codeExt);
+    const unified = readUnifiedConfig(root);
+    const configPath = path.join(root, "codelint.json");
+    const legacy = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf-8")) : null;
+    const project = unified && typeof unified.project === "object" ? unified.project as Record<string, unknown> : {};
+    const exts = normalizeCodeExt(project.codeExt ?? legacy?.codeExt);
     if (exts.some(ext => JS_TS_CODE_EXTS.has(ext))) return "npx tsc --noEmit";
     if (exts.some(ext => PYTHON_CODE_EXTS.has(ext))) return `${findPython()} -m py_compile src/**/*.py`;
   } catch {}
@@ -117,7 +119,7 @@ function resolveCompileCmd(root: string): string | null {
 
 export function runCompile(root: string): CheckResult[] {
   const cmd = resolveCompileCmd(root);
-  if (!cmd) return [ok("compile", "compile", "No compile command configured (missing codelint.json)", false)];
+  if (!cmd) return [ok("compile", "compile", "No compile command configured", false)];
   const r = execOr(cmd, root);
   return [r.ok
     ? ok("compile", "compile", "Build OK")

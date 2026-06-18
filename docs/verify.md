@@ -45,7 +45,7 @@ hardFailed = 失败的 hard 检查数量
 |------|-----------|
 | doclint | hard |
 | codelint | hard |
-| compile | hard (无 codelint.json 时为 soft) |
+| compile | hard (无可识别 codeExt 时为 soft) |
 | scope: extra files | hard |
 | scope: missing files | soft |
 | boundary: entry_points | hard |
@@ -85,9 +85,9 @@ interface VerifyReport {
 
 | 配置 | 影响 |
 |------|------|
-| `codelint.json: codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；任一 JS/TS 扩展触发 `npx tsc --noEmit`，任一 Python 扩展触发 `py_compile`，`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层；boundary entry_points 始终按 shell 执行 |
-| `codelint.json: baseBranch` | scope check 的 Git diff 基线分支 |
-| `doclint.json` | doclint 检查规则，验证文档质量 |
+| `hy-workflow.json: project.codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；任一 JS/TS 扩展触发 `npx tsc --noEmit`，任一 Python 扩展触发 `py_compile`，`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层；boundary entry_points 始终按 shell 执行 |
+| `hy-workflow.json: project.baseBranch` | scope check 的 Git diff 基线分支 |
+| runtime `doclint.json` | 由 `hy-workflow.json` 临时生成给 doclint 使用，验证文档质量 |
 
 ## Related
 

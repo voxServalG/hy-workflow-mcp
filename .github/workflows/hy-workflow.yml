@@ -1,0 +1,65 @@
+name: hy-workflow
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - "README.md"
+      - "hy-workflow.json"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - "README.md"
+      - "hy-workflow.json"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npm ci
+      - run: npm run build
+      - name: Materialize legacy lint configs
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('hy-workflow.json', 'utf8'));
+          const project = config.project || {};
+          const codelint = config.codelint || {};
+          const doclint = config.doclint || {};
+          const gardener = config.docsGardener || {};
+          const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+          write('codelint.json', { lintDirs: codelint.lintDirs, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: codelint.maxLines });
+          write('doclint.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: doclint.maxLines });
+          write('docs-gardener.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, catalogs: gardener.catalogs || {} });
+          NODE
+      - run: npx --yes github:voxServalG/doclint lint --json > doclint-report.json || true
+      - name: Fail if doclint errors
+        run: |
+          failed=$(jq '.failed // .data.counts.failed // .data.summary.failed // .counts.failed // .summary.failed // 0' doclint-report.json)
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::doclint found $failed errors"
+            exit 1
+          fi
+      - run: npx --yes github:voxServalG/codelint check --json > codelint-report.json || true
+      - name: Fail if codelint errors
+        run: |
+          errors=$(jq '.errors // .data.errors // 0' codelint-report.json)
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::codelint found $errors errors"
+            exit 1
+          fi

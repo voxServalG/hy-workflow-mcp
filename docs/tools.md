@@ -23,24 +23,24 @@ hy-workflow MCP server 注册了 14 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-验证 setup 已部署 bootstrap 产物（codelint + doclint + docs-gardener + CI workflows + setup stamp），写入/更新 `AGENTS.md` workflow 规则，清理旧 `.opencode/instructions.md` 规则片段，并幂等维护 `.gitignore` 中的本地运行态忽略项。`hy_init` 不会在 MCP 内执行 setup，也不会启动交互式 TUI。
+验证 setup 已部署 bootstrap 产物（hy-workflow.json + 单一 CI workflow + setup stamp），写入/更新 `AGENTS.md` workflow 规则，清理旧 `.opencode/instructions.md` 规则片段，并幂等维护 `.gitignore` 中的本地运行态忽略项。`hy_init` 不会在 MCP 内执行 setup，也不会启动交互式 TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredSetupArtifacts, gitignoreChanged }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是派生兼容产物。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（CI workflows、`hy-workflow.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
+`hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是运行时兼容产物，不提交。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（单一 CI workflow、`hy-workflow.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
 
 Artifact contract: setup/hy_init 产生的 tracked project artifacts 应通过 PR 提交，local/runtime artifacts 不提交。若运行 setup 后出现 tracked diff，应先做 setup artifact sync PR，不要混入无关任务。
 
 ## Session setup check
 
-MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.hy/hy-workflow-setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
+MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.git/hy-workflow/setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
 
 ## Config CLI
 
-`npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --check --json` 会只读检查项目语言、目录和三份 JSON 配置；不一致时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`。`config --apply-suggested --json` 或显式配置会同步三份 JSON，并保留未知字段与 `catalogs`。
+`npx -y --prefer-online github:voxServalG/hy-workflow-mcp config --check --json` 会只读检查项目语言、目录和 `hy-workflow.json`；不一致时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`。`config --apply-suggested --json` 或显式配置只写入 `hy-workflow.json`，并从既有兼容 JSON preserve-first 合并未知字段与 `catalogs`。运行旧 doclint/codelint CLI 时才会临时生成根目录兼容 JSON，执行后清理。
 
 ## hy_read_docs
 
@@ -140,7 +140,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 ## Promotion / release exception
 
-`hy_branch` 和 `hy_commit` 固定围绕 `codelint.json: baseBranch` 工作：普通开发分支从 `origin/<baseBranch>` 创建，并把 PR 合回 baseBranch。因此 baseBranch 到 releaseBranch 的 promotion（例如 dev → main）不是普通 hy-workflow 开发任务，不应伪造空 scope 或空 diff 来通过 `hy_verify`。
+`hy_branch` 和 `hy_commit` 固定围绕 `hy-workflow.json: project.baseBranch` 工作：普通开发分支从 `origin/<baseBranch>` 创建，并把 PR 合回 baseBranch。因此 baseBranch 到 releaseBranch 的 promotion（例如 dev → main）不是普通 hy-workflow 开发任务，不应伪造空 scope 或空 diff 来通过 `hy_verify`。
 
 当用户明确要求 promotion 时，正确流程是确认 source/target，检查 `origin/<target>..origin/<source>` diff，创建或复用 `base=<target>, head=<source>` 的 promotion PR，等待 CI 全绿后合并。若需要直接调用 `gh` 或 `git`，必须先获得用户明确授权。
 
@@ -148,7 +148,7 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 ## hy_chain
 
-依次 checkout 每个下游分支 → rebase 到 `codelint.json: baseBranch` 对应的最新基准分支 → force push → 切回基准分支。
+依次 checkout 每个下游分支 → rebase 到 `hy-workflow.json: project.baseBranch` 对应的最新基准分支 → force push → 切回基准分支。
 
 - **进入 Phase**: `chain`
 - **转换到**: `done`

@@ -4,7 +4,8 @@ import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
 
 export const SETUP_VERSION = "2026.06.16.2";
-export const SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
+export const SETUP_STAMP = path.join(".git", "hy-workflow", "setup.json");
+export const LEGACY_SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
 export const SETUP_COMMAND = "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
 
 export type SetupStamp = {
@@ -29,8 +30,10 @@ export function setupStampPath(root = projectRoot()): string {
 
 export function readSetupStamp(root = projectRoot()): SetupStamp | null {
   const filePath = setupStampPath(root);
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  const legacyPath = path.join(root, LEGACY_SETUP_STAMP);
+  const target = fs.existsSync(filePath) ? filePath : legacyPath;
+  if (!fs.existsSync(target)) return null;
+  return JSON.parse(fs.readFileSync(target, "utf-8"));
 }
 
 export function checkSetupStamp(root = projectRoot()): SetupCheck {
