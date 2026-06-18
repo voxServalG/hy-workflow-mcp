@@ -151,6 +151,31 @@ export interface SyncDocsRecord {
   allowedDocs: string[];
 }
 
+export type DocumentGateStatus = "missing" | "current" | "stale";
+export type DocumentGateName = "beforePlan" | "beforeApprove" | "afterEdit" | "syncDocs";
+
+export interface DocumentGateHealth {
+  status: DocumentGateStatus;
+  reason: string;
+  expected?: string | null;
+  actual?: string | null;
+}
+
+export interface DocumentReadHealth {
+  planHash: string | null;
+  gates: Record<DocumentGateName, DocumentGateHealth>;
+  staleDocumentReads: DocumentGateName[];
+  missingDocumentReads: DocumentGateName[];
+  blockedBy: {
+    gate: DocumentGateName;
+    tool: "hy_read_docs" | "hy_sync_docs";
+    arguments?: Record<string, string>;
+    reason: string;
+  } | null;
+  okForApprove: boolean;
+  okForVerify: boolean;
+}
+
 export interface Approval {
   time: string;
   note: string;
@@ -377,6 +402,64 @@ export function computePlanHash(plan: PlanDoc | null): string | null {
   const hash = createHash("sha256");
   hash.update(payload);
   return hash.digest("hex").slice(0, 12);
+}
+
+function gate(status: DocumentGateStatus, reason: string, expected?: string | null, actual?: string | null): DocumentGateHealth {
+  return { status, reason, expected, actual };
+}
+
+export function documentReadHealth(state: WorkflowState, currentImplementationDigest?: string): DocumentReadHealth {
+  const planHash = computePlanHash(state.plan);
+  const reads = state.documentReads ?? {};
+  const beforePlan = reads.beforePlan ?? null;
+  const beforeApprove = reads.beforeApprove ?? null;
+  const afterEdit = reads.afterEdit ?? null;
+  const syncDocs = state.syncDocs ?? null;
+
+  const gates: Record<DocumentGateName, DocumentGateHealth> = {
+    beforePlan: !beforePlan
+      ? gate("missing", "before_plan document baseline is missing.")
+      : state.plan && beforePlan.task !== state.plan.task
+        ? gate("stale", "before_plan task does not match the current PlanDoc task.", state.plan.task, beforePlan.task)
+        : gate("current", "before_plan document baseline matches the current task."),
+    beforeApprove: !beforeApprove
+      ? gate("missing", "before_approve document audit is missing.")
+      : !planHash || beforeApprove.planHash !== planHash
+        ? gate("stale", "before_approve plan hash does not match the current PlanDoc.", planHash, beforeApprove.planHash)
+        : gate("current", "before_approve document audit matches the current PlanDoc."),
+    afterEdit: !afterEdit
+      ? gate("missing", "after_edit document audit is missing.")
+      : !planHash || afterEdit.planHash !== planHash
+        ? gate("stale", "after_edit plan hash does not match the current PlanDoc.", planHash, afterEdit.planHash)
+        : currentImplementationDigest && afterEdit.implementationDigest !== currentImplementationDigest
+          ? gate("stale", "after_edit implementation digest does not match the current implementation diff.", currentImplementationDigest, afterEdit.implementationDigest)
+          : gate("current", "after_edit document audit matches the current PlanDoc and implementation diff."),
+    syncDocs: !syncDocs
+      ? gate("missing", "hy_sync_docs record is missing.")
+      : !planHash || syncDocs.planHash !== planHash
+        ? gate("stale", "hy_sync_docs plan hash does not match the current PlanDoc.", planHash, syncDocs.planHash)
+        : afterEdit && syncDocs.afterEditDigest !== afterEdit.digest
+          ? gate("stale", "hy_sync_docs was recorded for a different after_edit document audit.", afterEdit.digest, syncDocs.afterEditDigest)
+          : currentImplementationDigest && syncDocs.implementationDigest !== currentImplementationDigest
+            ? gate("stale", "hy_sync_docs implementation digest does not match the current implementation diff.", currentImplementationDigest, syncDocs.implementationDigest)
+            : gate("current", "hy_sync_docs record matches the current PlanDoc and after_edit audit."),
+  };
+
+  const staleDocumentReads = (Object.keys(gates) as DocumentGateName[]).filter(name => gates[name].status === "stale");
+  const missingDocumentReads = (Object.keys(gates) as DocumentGateName[]).filter(name => gates[name].status === "missing");
+  const okForApprove = gates.beforeApprove.status === "current";
+  const okForVerify = gates.afterEdit.status === "current" && gates.syncDocs.status === "current";
+
+  let blockedBy: DocumentReadHealth["blockedBy"] = null;
+  if (state.phase === "approve" && !okForApprove) {
+    blockedBy = { gate: "beforeApprove", tool: "hy_read_docs", arguments: { stage: "before_approve" }, reason: gates.beforeApprove.reason };
+  } else if ((state.phase === "edit" || state.phase === "verify") && gates.afterEdit.status !== "current") {
+    blockedBy = { gate: "afterEdit", tool: "hy_read_docs", arguments: { stage: "after_edit" }, reason: gates.afterEdit.reason };
+  } else if ((state.phase === "edit" || state.phase === "verify") && gates.syncDocs.status !== "current") {
+    blockedBy = { gate: "syncDocs", tool: "hy_sync_docs", reason: gates.syncDocs.reason };
+  }
+
+  return { planHash, gates, staleDocumentReads, missingDocumentReads, blockedBy, okForApprove, okForVerify };
 }
 
 // ── Branch name ──────────────────────────────────────────────

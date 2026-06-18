@@ -1,4 +1,4 @@
-import { computePlanHash, legacyRuntimeDiagnostics, readState } from "../state.js";
+import { documentReadHealth, legacyRuntimeDiagnostics, readState } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { initArtifactGuidance } from "./init.js";
 import { checkSetupStamp } from "../bootstrap.js";
@@ -8,9 +8,9 @@ export async function handleStatus(): Promise<ToolResult> {
   const legacyDiagnostics = legacyRuntimeDiagnostics();
   const artifactGuidance = initArtifactGuidance();
   const setupUpdateCheck = checkSetupStamp();
-  const planHash = computePlanHash(state.plan);
+  const health = documentReadHealth(state);
   const needsBeforePlan = state.phase === "plan" && !state.plan;
-  const needsBeforeApprove = state.phase === "approve" && state.documentReads?.beforeApprove?.planHash !== planHash;
+  const needsBeforeApprove = state.phase === "approve" && !health.okForApprove;
   const allowedTools = state.pendingAmendment && state.phase === "verify"
     ? ["hy_amend_plan", "hy_verify", "hy_status"]
     : needsBeforePlan
@@ -36,6 +36,9 @@ export async function handleStatus(): Promise<ToolResult> {
     pendingAmendment: state.pendingAmendment ?? undefined,
     implementationManifest: state.implementationManifest ?? undefined,
     documentReads: state.documentReads ?? undefined,
+    documentReadHealth: health,
+    blockedBy: health.blockedBy ?? undefined,
+    staleDocumentReads: health.staleDocumentReads.length ? health.staleDocumentReads : undefined,
     legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
   });
 

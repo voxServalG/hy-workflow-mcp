@@ -116,6 +116,14 @@ try {
     throw new Error("before_approve snapshot missing docsGraphDigest");
   }
 
+  const changedPlan = { ...plan, discussion: `${plan.discussion} Changed after the approval audit.` };
+  writeState({ ...stateWithAudit, plan: changedPlan });
+  const staleAudit = await handleApprove({ approved: "approve", note: "user approved" });
+  if (!String(staleAudit.hint).includes("before_approve plan hash does not match")) {
+    throw new Error(`hy_approve should reject stale before_approve audit, got ${JSON.stringify(staleAudit)}`);
+  }
+
+  writeState(stateWithAudit);
   const approved = await handleApprove({ approved: "approve", note: "user approved" });
   if (approved.phase !== "branch" || approved.approved !== true) {
     throw new Error(`hy_approve should pass after before_approve, got ${JSON.stringify(approved)}`);
