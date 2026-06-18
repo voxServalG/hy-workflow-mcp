@@ -257,9 +257,15 @@ export function currentBranch(root) {
 }
 export function getBaseBranch(root) {
     try {
-        const configPath = path.join(root, "codelint.json");
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        const unifiedPath = path.join(root, "hy-workflow.json");
+        if (fs.existsSync(unifiedPath)) {
+            const config = JSON.parse(fs.readFileSync(unifiedPath, "utf-8"));
+            if (config?.project?.baseBranch)
+                return config.project.baseBranch;
+        }
+        const legacyPath = path.join(root, "codelint.json");
+        if (fs.existsSync(legacyPath)) {
+            const config = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
             if (config.baseBranch)
                 return config.baseBranch;
         }

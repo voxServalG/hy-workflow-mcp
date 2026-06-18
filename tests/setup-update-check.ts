@@ -38,21 +38,19 @@ function listFiles(root: string): string[] {
 const originalCwd = process.cwd();
 const setupPrompt = fs.readFileSync(path.join(originalCwd, "setup"), "utf-8");
 
-assert(setupPrompt.includes(".opencode/opencode.json"), "setup prompt should keep OpenCode config path");
-assert(setupPrompt.includes("\"\\$schema\": \"https://opencode.ai/config.json\""), "setup prompt should keep OpenCode JSON example");
-assert(setupPrompt.includes(".codex/config.toml"), "setup prompt should include Codex project config path");
-assert(setupPrompt.includes("[mcp_servers.hy-workflow]"), "setup prompt should include Codex hy-workflow server");
-assert(setupPrompt.includes("required = true"), "setup prompt should mark hy-workflow as required for Codex");
-assert(setupPrompt.includes("[mcp_servers.docs-gardener]"), "setup prompt should include Codex docs-gardener server");
-assert(setupPrompt.includes("required = false"), "setup prompt should mark docs-gardener as optional for Codex");
-assert(setupPrompt.includes("tool_timeout_sec = 600"), "setup prompt should include hy-workflow timeout guidance");
-assert(setupPrompt.includes("tool_timeout_sec = 300"), "setup prompt should include docs-gardener timeout guidance");
+assert(setupPrompt.includes(".github/workflows/hy-workflow.yml"), "setup prompt should name the single tracked workflow");
+assert(setupPrompt.includes("hy-workflow.json 是唯一人工维护配置源"), "setup prompt should describe unified config as source of truth");
+assert(setupPrompt.includes("只有在用户明确要求配置某个客户端时"), "setup prompt should not ask agents to always write client config");
+assert(setupPrompt.includes(".opencode/opencode.json"), "setup prompt should describe OpenCode config path as local client state");
+assert(setupPrompt.includes(".codex/config.toml"), "setup prompt should describe Codex config path as local client state");
+assert(!setupPrompt.includes("[mcp_servers.hy-workflow]"), "setup prompt should not include a concrete Codex config block by default");
+assert(!setupPrompt.includes("\"\\$schema\": \"https://opencode.ai/config.json\""), "setup prompt should not include a concrete OpenCode JSON block by default");
 assert(setupPrompt.includes("hy_read_docs(before_plan)"), "setup prompt should include before_plan document read gate");
 assert(setupPrompt.includes("hy_read_docs(before_approve)"), "setup prompt should include before_approve document read gate");
 assert(setupPrompt.includes("hy_read_docs(after_edit)"), "setup prompt should include after_edit document read gate");
 assert(setupPrompt.includes("hy_sync_docs"), "setup prompt should include docs sync gate");
 assert(setupPrompt.includes("hy_amend_plan"), "setup prompt should include amend plan guidance");
-assert(setupPrompt.includes("setup artifact sync PR"), "setup prompt should include setup artifact drift guidance");
+assert(setupPrompt.includes("理想项目状态"), "setup prompt should describe the ideal project state");
 
 try {
   const missingRoot = tempRepo();
