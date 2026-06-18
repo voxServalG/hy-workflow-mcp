@@ -1,5 +1,6 @@
 import { type CodeExt } from "./code_ext.js";
 export type ProjectKind = "python" | "typescript" | "unknown" | "mixed";
+export type JsonObject = Record<string, any>;
 export type ConfigSuggestion = {
     codeExt: CodeExt;
     codeDirs: string[];
@@ -49,9 +50,12 @@ export declare function detectProject(root: string): {
     evidence: string[];
 };
 export declare function defaultSuggestion(root: string): ConfigSuggestion;
+export declare function compatConfigs(existing: Record<string, JsonObject | null>, unified: JsonObject): Record<string, JsonObject>;
 export declare function ensureConfigDefaults(root: string, options?: {
     dryRun?: boolean;
 }): ConfigCheckResult;
+export declare function readUnifiedConfig(root: string, suggestion?: ConfigSuggestion): JsonObject | null;
+export declare function withRuntimeCompatConfigs<T>(root: string, run: () => T): T;
 export declare function applyConfig(root: string, suggestion: ConfigSuggestion, options: {
     preserveExisting: boolean;
     dryRun: boolean;

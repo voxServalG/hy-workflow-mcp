@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { codeExtOr, formatCodeExt, normalizeCodeExt, validateCodeExt } from "./code_ext.js";
 export const UNIFIED_CONFIG_FILE = "hy-workflow.json";
 const COMPAT_CONFIG_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"];
-const CONFIG_FILES = [UNIFIED_CONFIG_FILE, ...COMPAT_CONFIG_FILES];
 function exists(root, rel) {
     return fs.existsSync(path.join(root, rel));
 }
@@ -224,7 +223,7 @@ function normalizedUnified(config, suggestion) {
         },
     };
 }
-function compatConfigs(existing, unified) {
+export function compatConfigs(existing, unified) {
     const project = asObject(unified.project);
     const codelint = asObject(unified.codelint);
     const doclint = asObject(unified.doclint);
@@ -260,6 +259,39 @@ export function ensureConfigDefaults(root, options = {}) {
     const suggestion = defaultSuggestion(root);
     return applyConfig(root, suggestion, { preserveExisting: true, dryRun: options.dryRun ?? false, mode: "setup" });
 }
+export function readUnifiedConfig(root, suggestion = defaultSuggestion(root)) {
+    const unifiedRaw = readJson(root, UNIFIED_CONFIG_FILE);
+    if (!unifiedRaw)
+        return null;
+    return normalizedUnified(unifiedRaw, suggestion);
+}
+export function withRuntimeCompatConfigs(root, run) {
+    const suggestion = defaultSuggestion(root);
+    const unified = readUnifiedConfig(root, suggestion);
+    const created = [];
+    if (unified) {
+        const existing = Object.fromEntries(COMPAT_CONFIG_FILES.map(file => [file, readJson(root, file)]));
+        const configs = compatConfigs(existing, unified);
+        for (const [file, value] of Object.entries(configs)) {
+            const filePath = path.join(root, file);
+            if (fs.existsSync(filePath))
+                continue;
+            fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf-8");
+            created.push(filePath);
+        }
+    }
+    try {
+        return run();
+    }
+    finally {
+        for (const filePath of created) {
+            try {
+                fs.unlinkSync(filePath);
+            }
+            catch { }
+        }
+    }
+}
 function preservedKeys(before, after) {
     if (!before)
         return Object.keys(after);
@@ -273,13 +305,10 @@ export function applyConfig(root, suggestion, options) {
         "docs-gardener.json": readJson(root, "docs-gardener.json"),
     };
     const unified = normalizedUnified(unifiedFromInputs(before[UNIFIED_CONFIG_FILE], before, suggestion, options.preserveExisting), suggestion);
-    const after = {
-        [UNIFIED_CONFIG_FILE]: unified,
-        ...compatConfigs(before, unified),
-    };
+    const after = { [UNIFIED_CONFIG_FILE]: unified };
     const changed = [];
     const preserved = {};
-    for (const file of CONFIG_FILES) {
+    for (const file of [UNIFIED_CONFIG_FILE]) {
         const prev = before[file];
         const next = after[file];
         if (JSON.stringify(prev) !== JSON.stringify(next))
@@ -299,7 +328,7 @@ export function applyConfig(root, suggestion, options) {
         dryRun: options.dryRun,
         display: {
             title: options.dryRun ? "Config dry run complete" : "Config updated",
-            body: `${options.dryRun ? "Would update" : "Updated"} ${changed.length ? changed.join(", ") : "no config files"} while preserving unknown fields and deriving compatibility artifacts from ${UNIFIED_CONFIG_FILE}.`,
+            body: `${options.dryRun ? "Would update" : "Updated"} ${changed.length ? changed.join(", ") : "no config files"} while preserving unknown fields in ${UNIFIED_CONFIG_FILE}.`,
         },
         hint: "Rerun hy_init after applying config changes so setup artifacts and workflow state can be validated.",
     };
@@ -333,12 +362,6 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
     const gardener = readJson(root, "docs-gardener.json");
     if (!unifiedRaw)
         issues.push(`Missing ${UNIFIED_CONFIG_FILE}`);
-    if (!codelint)
-        issues.push("Missing codelint.json");
-    if (!doclint)
-        issues.push("Missing doclint.json");
-    if (!gardener)
-        issues.push("Missing docs-gardener.json");
     const unified = normalizedUnified(unifiedRaw ?? unifiedFromInputs(null, { "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, suggestion, true), suggestion);
     const projectConfig = asObject(unified.project);
     const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
@@ -358,8 +381,6 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
     drift.push(...compareCompat("codelint.json", codelint, expectedCompat["codelint.json"], ["lintDirs", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
     drift.push(...compareCompat("doclint.json", doclint, expectedCompat["doclint.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
     drift.push(...compareCompat("docs-gardener.json", gardener, expectedCompat["docs-gardener.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "catalogs"]));
-    for (const item of drift)
-        issues.push(`${item.file} drift at ${item.field}`);
     const explicitConfigReady = Boolean(unifiedRaw &&
         valueCodeExtArray(projectConfig.codeExt).length &&
         valueArray(projectConfig.codeDirs).length &&
@@ -378,7 +399,7 @@ export function checkConfig(root, suggestion = defaultSuggestion(root)) {
         display: {
             title: ok ? "Config looks consistent" : "Project config needs confirmation",
             body: ok
-                ? `${UNIFIED_CONFIG_FILE} is the source of truth and compatibility JSON artifacts are in sync.`
+                ? `${UNIFIED_CONFIG_FILE} is the source of truth; compatibility JSON is materialized only at runtime when legacy CLIs need it.`
                 : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}\n\nSuggested command:\n${suggestedCommand}`,
         },
         hint: ok ? "Continue with hy_init or the requested workflow task." : "Show display.body and run the suggested config command only after user approval.",
@@ -459,7 +480,7 @@ export function configHelp() {
         "  hy-workflow config --apply-suggested --json",
         "  hy-workflow config --python --code-dirs src,tests --docs-dir docs --base-branch dev --json",
         "",
-        `${UNIFIED_CONFIG_FILE} is the source of truth. codelint.json, doclint.json, and docs-gardener.json are generated compatibility artifacts.`,
+        `${UNIFIED_CONFIG_FILE} is the source of truth. codelint.json, doclint.json, and docs-gardener.json are runtime compatibility artifacts and should not be tracked.`,
         "Config commands emit a single JSON envelope when --json is passed.",
     ].join("\n");
 }

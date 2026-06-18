@@ -57,66 +57,76 @@ PROJECT_NAME=$(basename "$PROJECT_ROOT")
 
 echo "  ⏳ bootstrap artifacts ..."
 
-write_file ".github/workflows/code-quality.yml" <<'YAML'
-name: Code Quality
+write_file ".github/workflows/hy-workflow.yml" <<'YAML'
+name: hy-workflow
 
 on:
-  push: { paths: ["src/**", "codelint.json"] }
-  pull_request: { paths: ["src/**", "codelint.json"] }
+  push:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - "README.md"
+      - "hy-workflow.json"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - "README.md"
+      - "hy-workflow.json"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
   workflow_dispatch:
 
 jobs:
-  lint:
-    name: Layer Check
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
-      - run: npx --yes github:voxServalG/codelint check --json > report.json || true
-      - name: Fail if errors
+      - run: npm ci
+      - run: npm run build
+      - name: Materialize legacy lint configs
         run: |
-          errors=$(jq '.errors // .data.errors // 0' report.json)
-          if [ "$errors" -gt 0 ]; then
-            echo "::error::codelint found $errors errors"
-            exit 1
-          fi
-
-  compile:
-    name: Compile Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      - run: npx tsc --noEmit || python -m py_compile src/**/*.py || true
-YAML
-
-write_file ".github/workflows/docs-check.yml" <<'YAML'
-name: Docs Lint
-
-on:
-  push: { paths: ["docs/**", "README.md", "doclint.json"] }
-  pull_request: { paths: ["docs/**", "README.md", "doclint.json"] }
-  workflow_dispatch:
-
-jobs:
-  lint:
-    name: Docs Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      - run: npx --yes github:voxServalG/doclint lint --json > report.json || true
-      - name: Fail if lint errors
+          node <<'NODE'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('hy-workflow.json', 'utf8'));
+          const project = config.project || {};
+          const codelint = config.codelint || {};
+          const doclint = config.doclint || {};
+          const gardener = config.docsGardener || {};
+          const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+          write('codelint.json', { lintDirs: codelint.lintDirs, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: codelint.maxLines });
+          write('doclint.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: doclint.maxLines });
+          write('docs-gardener.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, catalogs: gardener.catalogs || {} });
+          NODE
+      - run: npx --yes github:voxServalG/doclint lint --json > doclint-report.json || true
+      - name: Fail if doclint errors
         run: |
-          failed=$(jq '.failed // .data.counts.failed // .data.summary.failed // .counts.failed // .summary.failed // 0' report.json)
+          failed=$(jq '.failed // .data.counts.failed // .data.summary.failed // .counts.failed // .summary.failed // 0' doclint-report.json)
           if [ "$failed" -gt 0 ]; then
             echo "::error::doclint found $failed errors"
             exit 1
           fi
+      - run: npx --yes github:voxServalG/codelint check --json > codelint-report.json || true
+      - name: Fail if codelint errors
+        run: |
+          errors=$(jq '.errors // .data.errors // 0' codelint-report.json)
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::codelint found $errors errors"
+            exit 1
+          fi
 YAML
+
+if [ -f ".github/workflows/code-quality.yml" ]; then rm ".github/workflows/code-quality.yml"; _updated ".github/workflows/code-quality.yml (removed)"; fi
+if [ -f ".github/workflows/docs-check.yml" ]; then rm ".github/workflows/docs-check.yml"; _updated ".github/workflows/docs-check.yml (removed)"; fi
 
 CONFIG_RESULT=$(node <<'NODE'
 const fs = require('fs');
@@ -220,12 +230,7 @@ const source = nextUnified.project;
 const nextCode = nextUnified.codelint;
 const nextDocs = nextUnified.doclint;
 const nextGardener = nextUnified.docsGardener;
-const next = {
-  'hy-workflow.json': nextUnified,
-  'codelint.json': { ...(codelint || {}), lintDirs: nextCode.lintDirs, codeDirs: source.codeDirs, codeExt: source.codeExt, baseBranch: source.baseBranch, maxLines: nextCode.maxLines },
-  'doclint.json': { ...(doclint || {}), docsDir: source.docsDir, codeDirs: source.codeDirs, codeExt: source.codeExt, baseBranch: source.baseBranch, maxLines: nextDocs.maxLines },
-  'docs-gardener.json': { ...(gardener || {}), docsDir: source.docsDir, codeDirs: source.codeDirs, codeExt: source.codeExt, baseBranch: source.baseBranch, catalogs: nextGardener.catalogs },
-};
+const next = { 'hy-workflow.json': nextUnified };
 for (const [file, value] of Object.entries(next)) console.log(`${file}:${writeJson(file, value)}`);
 NODE
 )
@@ -243,21 +248,20 @@ ensure_gitignore_line ".hy/"
 ensure_gitignore_line ".opencode/"
 ensure_gitignore_line ".codex/"
 ensure_gitignore_line ".mcp.json"
+ensure_gitignore_line "codelint.json"
+ensure_gitignore_line "doclint.json"
+ensure_gitignore_line "docs-gardener.json"
 
-mkdir -p .hy
+mkdir -p .git/hy-workflow
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-write_file ".hy/hy-workflow-setup.json" <<JSON
+write_file ".git/hy-workflow/setup.json" <<JSON
 {
   "schemaVersion": "1",
   "setupVersion": "${SETUP_VERSION}",
   "generatedAt": "${GENERATED_AT}",
   "artifacts": [
-    ".github/workflows/code-quality.yml",
-    ".github/workflows/docs-check.yml",
-    "hy-workflow.json",
-    "codelint.json",
-    "doclint.json",
-    "docs-gardener.json"
+    ".github/workflows/hy-workflow.yml",
+    "hy-workflow.json"
   ]
 }
 JSON
@@ -273,59 +277,38 @@ cat <<PROMPT
 
   ────── 复制以下内容发给 LLM ──────
 
-  请为项目 ${PROJECT_NAME} 配置 hy-workflow 和 docs-gardener MCP（项目级，非全局）。
+  项目 ${PROJECT_NAME} 已部署 hy-workflow bootstrap。
 
-  1. 找到或创建项目根目录下的 MCP 配置文件：
+  理想项目状态：
 
-      opencode     →  .opencode/opencode.json
-      Codex        →  .codex/config.toml
-      Claude Dsktp →  .mcp.json
-      其他客户端   →  按其项目级 MCP 配置规范
+  1. 应提交的项目产物只有：
+     - .github/workflows/hy-workflow.yml
+     - AGENTS.md
+     - .gitignore
+     - hy-workflow.json
 
-  2. OpenCode 示例（.opencode/opencode.json）：
+  2. 不应提交的本地、运行时、客户端产物：
+     - .opencode/
+     - .codex/
+     - .mcp.json
+     - codelint.json
+     - doclint.json
+     - docs-gardener.json
 
-  {
-    "\$schema": "https://opencode.ai/config.json",
-    "mcp": {
-      "hy-workflow": {
-        "type": "local",
-        "command": ["npx", "-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"],
-        "enabled": true
-      },
-      "docs-gardener": {
-        "type": "local",
-        "command": ["npx", "-y", "--prefer-online", "github:voxServalG/docs-gardener", "mcp"],
-        "enabled": true
-      }
-    }
-  }
+  3. hy-workflow.json 是唯一人工维护配置源。doclint/codelint/docs-gardener 需要旧配置文件时，由 hy-workflow 在运行时临时生成兼容配置；不要把这些兼容 JSON 当成项目源文件。
 
-  3. Codex 示例（.codex/config.toml）：
+  4. MCP 客户端配置属于用户本地环境。只有在用户明确要求配置某个客户端时，才按该客户端的项目级 MCP 配置规范写入：
+     - OpenCode: .opencode/opencode.json
+     - Codex: .codex/config.toml
+     - Claude Desktop 或其他客户端: .mcp.json 或其项目级配置规范
 
-  [mcp_servers.hy-workflow]
-  command = "npx"
-  args = ["-y", "--prefer-online", "github:voxServalG/hy-workflow-mcp"]
-  enabled = true
-  required = true
-  startup_timeout_sec = 60
-  tool_timeout_sec = 600
+  5. 客户端里需要两个 server：
+     - hy-workflow: npx -y --prefer-online github:voxServalG/hy-workflow-mcp
+     - docs-gardener: npx -y --prefer-online github:voxServalG/docs-gardener mcp
 
-  [mcp_servers.docs-gardener]
-  command = "npx"
-  args = ["-y", "--prefer-online", "github:voxServalG/docs-gardener", "mcp"]
-  enabled = true
-  required = false
-  startup_timeout_sec = 60
-  tool_timeout_sec = 300
+  6. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。hy_init 不会运行 setup，也不会启动交互式 TUI。
 
-  4. 其他客户端请按其项目级 MCP 配置规范，添加同样两个 server。
-
-  5. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。
-
-      hy_init 不会运行 setup、不会启动交互式 TUI；
-      若提示 setup 产物缺失或过期，请回到终端重新运行本 setup 脚本。
-
-  6. 之后任何代码/文档任务自动走闭环：
+  7. 之后任何代码/文档任务自动走闭环：
      hy_status → hy_read_docs(before_plan) → hy_plan
      → hy_read_docs(before_approve) → hy_approve
      → hy_branch → hy_edit → hy_read_docs(after_edit)
@@ -337,8 +320,7 @@ cat <<PROMPT
      hy_edit 后必须先调用 hy_read_docs(after_edit)，再调用 hy_sync_docs，最后才调用 hy_verify。
      hy_verify 若返回 amend_required，先展示 suggestedAmendment；用户明确批准后调用 hy_amend_plan，再重新走 hy_read_docs(after_edit) → hy_sync_docs → hy_verify。
 
-  7. 不要提交本地或运行时目录：.hy/、.opencode/、.codex/、.mcp.json。
-     若 setup/config/hy_init 产生 tracked artifact drift，先单独创建 setup artifact sync PR，不要混入无关代码/文档任务。
+  8. 如果 setup 后出现 diff，由 agent 自行判断如何把工作区调整到上面的理想状态；不要因为仍有本地产物就新增无关提交。
 
    ────── 复制结束 ──────
 
