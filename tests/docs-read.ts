@@ -63,6 +63,7 @@ try {
   chdir(root);
 
   const plan = basePlan();
+  const baselineTask = "add document read gates before planning and approval";
   writeState(planState());
 
   const missingBaseline = await handlePlan({ task: plan.task, plan });
@@ -70,7 +71,7 @@ try {
     throw new Error(`hy_plan should require before_plan baseline, got ${JSON.stringify(missingBaseline)}`);
   }
 
-  const baseline = await handleReadDocs({ stage: "before_plan", task: plan.task });
+  const baseline = await handleReadDocs({ stage: "before_plan", task: baselineTask });
   if (baseline.phase !== "plan" || baseline.stage !== "before_plan") {
     throw new Error(`before_plan should keep workflow in plan, got ${JSON.stringify(baseline)}`);
   }
@@ -84,8 +85,8 @@ try {
   }
 
   const stateWithBaseline = readState();
-  if (stateWithBaseline.documentReads?.beforePlan?.task !== plan.task) {
-    throw new Error("before_plan should write task-bound document baseline");
+  if (stateWithBaseline.documentReads?.beforePlan?.task !== baselineTask) {
+    throw new Error("before_plan should write the provided baseline task");
   }
   // Check persisted snapshot also has graph fields
   const persistedBeforePlan = stateWithBaseline.documentReads!.beforePlan!;
@@ -95,7 +96,10 @@ try {
 
   const planned = await handlePlan({ task: plan.task, plan });
   if (planned.phase !== "approve") {
-    throw new Error(`hy_plan should pass after before_plan, got ${JSON.stringify(planned)}`);
+    throw new Error(`hy_plan should pass after before_plan even when task text differs, got ${JSON.stringify(planned)}`);
+  }
+  if (!planned.warnings?.some((warning: string) => warning.includes("before_plan task differs"))) {
+    throw new Error(`hy_plan should warn when before_plan task differs, got ${JSON.stringify(planned)}`);
   }
 
   const missingAudit = await handleApprove({ approved: "approve", note: "user approved" });
