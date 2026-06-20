@@ -8,7 +8,7 @@ hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在
 
 ## 一键部署
 
-在项目根目录执行同一条 Bash 命令：
+进入你想管理的项目根目录，执行同一条 Bash 命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
@@ -48,7 +48,7 @@ hy_status
 
 这个流程的重点很简单：
 
-1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。
+1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。没有被上下文捉到的东西，与不存在没有区别。
 2. `hy_plan` 产出 scope、dependency DAG、验证命令、风险和取舍，并完整展示给用户。
 3. 用户明确 approve 后，`hy_read_docs(before_approve)` 再审计一次 PlanDoc，确认事实没有偏移。
 4. `hy_branch` 和 `hy_edit` 创建分支并锁定 scope，agent 只能改 PlanDoc 声明的文件。
@@ -97,9 +97,9 @@ hy_status
 `hy_verify` 包含 7 层 gate：
 
 ```text
-1. lint     → doclint + codelint
+1. lint     → doclint（文档长度、文档引用）+ codelint（代码长度、代码依赖）
 2. compile  → 项目编译或类型检查
-3. scope    → git diff 文件必须属于 PlanDoc scope
+3. scope    → git diff 文件必须属于说好的范围内
 4. boundary → entry_points 逐条执行
 5. platform → 平台和运行环境检查
 6. smoke    → 快速冒烟
@@ -110,7 +110,7 @@ hy_status
 
 ## 自举
 
-本项目自身也用 hy-workflow 管理。运行态状态和 scope lock 写入 Git 私有目录 `.git/hy-workflow/`，不会进入业务 diff。
+本项目自身也使用 hy-workflow 管理。
 
 ## 许可
 
