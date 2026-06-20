@@ -2,56 +2,137 @@ import { readState, writeState, transition, assertPhase } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
 
+type CheckItem = PlanDoc["verify"]["smoke"][number];
+type TestCategory = {
+  title: string;
+  explanation: string;
+  checks: CheckItem[];
+};
+
+function plural(count: number, singular: string, pluralWord = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralWord}`;
+}
+
+function pathReason(path: string, action: "change" | "new" | "delete"): string {
+  if (path.startsWith("src/")) return action === "delete" ? "移除不再需要的源码入口" : "调整运行时代码行为";
+  if (path.startsWith("dist/")) return action === "delete" ? "移除对应编译产物" : "同步发布用编译产物";
+  if (path.startsWith("tests/")) return action === "delete" ? "移除不再适用的测试" : "更新验证覆盖";
+  if (path.startsWith("docs/")) return action === "delete" ? "移除过期文档" : "同步用户和 agent 可读说明";
+  if (path === "README.md") return action === "delete" ? "移除入口说明" : "同步项目入口说明";
+  if (action === "new") return "新增本次任务需要的文件";
+  if (action === "delete") return "删除本次任务不再需要的文件";
+  return "更新本次任务涉及的文件";
+}
+
+function addPathList(lines: string[], paths: string[], action: "change" | "new" | "delete"): void {
+  if (!paths.length) {
+    lines.push("- 无");
+    return;
+  }
+  for (const path of paths) {
+    lines.push(`- \`${path}\`: ${pathReason(path, action)}`);
+  }
+}
+
+function classifyChecks(smoke: CheckItem[], tests: CheckItem[]): TestCategory[] {
+  const categories: TestCategory[] = [
+    {
+      title: "单元测试 (Unit Test)",
+      explanation: "开发人员编写并执行，测试代码中的最小模块或函数。",
+      checks: [],
+    },
+    {
+      title: "集成测试 (Integration Test)",
+      explanation: "在单元测试后进行，检查多个模块组合在一起时的数据交互和接口是否正常。",
+      checks: [],
+    },
+    {
+      title: "系统测试 (System Test)",
+      explanation: "将整个系统作为一个整体，进行功能、性能、安全及兼容性测试。",
+      checks: [],
+    },
+    {
+      title: "验收测试 (Acceptance Test)",
+      explanation: "业务方或最终用户介入，验证系统是否满足实际需求。",
+      checks: [],
+    },
+  ];
+
+  const assign = (check: CheckItem, fallback: number) => {
+    const text = `${check.command} ${check.description}`.toLowerCase();
+    if (/acceptance|验收|user|用户/.test(text)) categories[3].checks.push(check);
+    else if (/integration|集成|e2e|端到端/.test(text)) categories[1].checks.push(check);
+    else if (/system|系统|dist|doclint|codelint|build|compile|tsc|lint/.test(text)) categories[2].checks.push(check);
+    else if (/unit|单元|vitest|jest|test|tsx/.test(text)) categories[0].checks.push(check);
+    else categories[fallback].checks.push(check);
+  };
+
+  smoke.forEach(check => assign(check, 2));
+  tests.forEach(check => assign(check, 0));
+
+  return categories;
+}
+
+function addCheck(lines: string[], check: CheckItem): void {
+  lines.push(`- command: \`${check.command}\``);
+  lines.push(`  thing to test: ${check.description}`);
+  lines.push(`  expectation: exit ${check.expected_exit}`);
+}
+
 function buildSummary(p: PlanDoc): string {
   const lines: string[] = [];
-  lines.push(`## Plan: ${p.task}`);
+  lines.push("## Plan");
+  lines.push("");
+  lines.push(`**现在状态**: ${p.task}`);
+  lines.push("");
+  lines.push("**期望状态**: 完成后，审批摘要会继续由结构化函数生成，但用户看到的是清楚的审批说明：改什么、为什么改、怎么验证、有什么风险，以及为什么选这个方案。");
   lines.push("");
 
   lines.push("### Scope");
-  const changes = p.scope.changes;
-  lines.push(`- **Changes** (string[], ${changes.length} item${changes.length !== 1 ? "s" : ""}):`);
-  if (changes.length) { changes.forEach(f => lines.push(`  - \`${f}\``)); }
-  else { lines.push("  (none)"); }
-  const newFiles = p.scope.new_files;
-  lines.push(`- **New files** (string[], ${newFiles.length} item${newFiles.length !== 1 ? "s" : ""}):`);
-  if (newFiles.length) { newFiles.forEach(f => lines.push(`  - \`${f}\``)); }
-  else { lines.push("  (none)"); }
-  const deleted = p.scope.delete;
-  lines.push(`- **Delete** (string[], ${deleted.length} item${deleted.length !== 1 ? "s" : ""}):`);
-  if (deleted.length) { deleted.forEach(f => lines.push(`  - \`${f}\``)); }
-  else { lines.push("  (none)"); }
+  lines.push(`**将要增加** (${plural(p.scope.new_files.length, "file")}):`);
+  addPathList(lines, p.scope.new_files, "new");
+  lines.push("");
+  lines.push(`**将要改动** (${plural(p.scope.changes.length, "file")}):`);
+  addPathList(lines, p.scope.changes, "change");
+  lines.push("");
+  lines.push(`**将要删除** (${plural(p.scope.delete.length, "file")}):`);
+  addPathList(lines, p.scope.delete, "delete");
 
   lines.push("");
   lines.push("### Boundary");
-  lines.push(`- **Dependency DAG:** ${p.boundary.dependency_dag}`);
-  const eps = p.boundary.entry_points;
-  lines.push(`- **Entry points** (string[], ${eps.length} item${eps.length !== 1 ? "s" : ""}):`);
-  eps.forEach(ep => lines.push(`  - \`${ep}\``));
-  lines.push(`- **No new external deps** (boolean): \`${p.boundary.no_new_external}\``);
+  lines.push(`**影响范围**: ${p.boundary.dependency_dag}`);
+  lines.push("");
+  lines.push(`**外部依赖**: ${p.boundary.no_new_external ? "本次不会新增外部依赖。" : "本次计划会新增或调整外部依赖，需要额外确认。"}`);
+  lines.push("");
+  lines.push("**关键检查入口**:");
+  p.boundary.entry_points.forEach(ep => lines.push(`- \`${ep}\``));
 
   lines.push("");
   lines.push("### Verify");
   const plat = p.verify.platform;
-  lines.push(`- **Platform:** Python ${plat.python_version}`);
-  const setup = plat.setup;
-  lines.push(`  - setup (string[], ${setup.length} item${setup.length !== 1 ? "s" : ""}): ${setup.map(s => `\`${s}\``).join(", ") || "(none)"}`);
-  const smokes = p.verify.smoke;
-  lines.push(`- **Smoke** (CheckItem[], ${smokes.length} check${smokes.length !== 1 ? "s" : ""}):`);
-  smokes.forEach(s => lines.push(`  - \`${s.command}\` → exit ${s.expected_exit}: ${s.description}`));
-  const tests = p.verify.tests;
-  lines.push(`- **Tests** (CheckItem[], ${tests.length} check${tests.length !== 1 ? "s" : ""}):`);
-  tests.forEach(t => lines.push(`  - \`${t.command}\` → exit ${t.expected_exit}: ${t.description}`));
+  lines.push("**测试平台搭建**:");
+  lines.push(`- Python version: ${plat.python_version}`);
+  if (plat.setup.length) plat.setup.forEach(command => lines.push(`- command: \`${command}\``));
+  else lines.push("- command: 无需额外搭建命令");
+  for (const category of classifyChecks(p.verify.smoke, p.verify.tests)) {
+    lines.push("");
+    lines.push(`**${category.title}**: ${category.explanation}`);
+    if (category.checks.length) category.checks.forEach(check => addCheck(lines, check));
+    else lines.push("- 本次计划未声明这一层级的测试。");
+  }
 
   lines.push("");
-  const risks = p.risks;
-  lines.push(`### Risks (string[], ${risks.length} item${risks.length !== 1 ? "s" : ""})`);
-  risks.forEach(r => lines.push(`- ${r}`));
+  lines.push("### Risks");
+  p.risks.forEach(r => lines.push(`- ${r}`));
 
   lines.push("");
   lines.push("### Discussion");
-  lines.push(p.discussion);
+  p.discussion.split(/\n{2,}/).map(paragraph => paragraph.trim()).filter(Boolean).forEach(paragraph => {
+    lines.push(paragraph);
+    lines.push("");
+  });
 
-  return lines.join("\n");
+  return lines.join("\n").trimEnd();
 }
 
 export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promise<ToolResult> {

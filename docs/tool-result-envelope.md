@@ -49,7 +49,7 @@ Terminal CLI commands follow the same contract when `--json` is passed. For exam
 
 ## Examples
 
-`hy_plan` success returns the legacy `summary` and also puts the same content in `display.body`. It sets `requires_user: true` and `stop_here: true`. The agent must show the plan and wait for approval.
+`hy_plan` success returns the legacy `summary` and also puts the same content in `display.body`. This text is the user approval summary: it should explain the current state, expected state, files and reasons, boundary, verification plan, risks, and tradeoffs in reader-friendly language. The full PlanDoc remains available in `plan` for agents and compatibility clients. `hy_plan` sets `requires_user: true` and `stop_here: true`; the agent must show the approval summary and wait for explicit approval.
 
 `hy_verify` failure returns `checks` and `failedChecks` as before. It also returns `recovery.byLayer` guidance for lint, compile, scope, boundary, platform, smoke, and tests failures.
 
