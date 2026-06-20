@@ -8,18 +8,25 @@ hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在
 
 ## 一键部署
 
-进入你想管理的项目的根目录
-在项目根目录执行：
+进入你想管理的项目根目录，执行同一条 Bash 命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
 
+macOS、Linux、Windows Git Bash / WSL 都使用这条命令。Windows PowerShell 用户请先进入 Git Bash 或 WSL，再执行同一条 Bash 命令。
+
 脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
 
 ## Workflow
 
-每个代码或文档任务, 除非`AGENTS.md`另有指定, 都走同一个闭环：
+首次接入项目时：
+
+```text
+setup → agent receives setup prompt → hy_init → hy_plan
+```
+
+后续每个代码或文档任务都走同一个闭环：
 
 ```text
 hy_status
@@ -41,15 +48,15 @@ hy_status
 
 这个流程的重点很简单：
 
-1. `hy_read_docs(before_plan)` 先读取项目文档，建立事实印象。(没有被上下文捉到的东西, 与不存在没有区别!)
+1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。没有被上下文捉到的东西，与不存在没有区别。
 2. `hy_plan` 产出 scope、dependency DAG、验证命令、风险和取舍，并完整展示给用户。
-3. 用户明确同意计划后，`hy_read_docs(before_approve)` 再审计一次文档系统，确认plan中描述是否出错。
-4. `hy_branch` 和 `hy_edit` 创建分支并锁定可修改范围，agent 只能改白名单内文件。
-5. 实现后再次审计文档并更新文档，确认文档状态和本次修改对齐。
+3. 用户明确 approve 后，`hy_read_docs(before_approve)` 再审计一次 PlanDoc，确认事实没有偏移。
+4. `hy_branch` 和 `hy_edit` 创建分支并锁定 scope，agent 只能改 PlanDoc 声明的文件。
+5. 实现后先跑 `hy_read_docs(after_edit)` 和 `hy_sync_docs`，确认文档状态和实现 diff 对齐。
 6. `hy_verify` 做完整 gate：lint、scope、boundary、platform、smoke、tests。
-7. 验证通过后才进入提交 push pr环节。
+7. 验证通过后才进入 `hy_commit`、`hy_ci`、`hy_merge`、`hy_chain` 和 `hy_reset`。
 
-*注意: `dev → main` 这类 promotion 不属于本工具所述开发任务。
+`dev → main` 这类 promotion 是发布或晋级操作，不属于普通开发任务。agent 应先检查 `origin/main..origin/dev` diff，创建或复用 `base=main, head=dev` 的 PR，等待 CI 全绿后合并。
 
 ## 产物边界
 
@@ -90,7 +97,7 @@ hy_status
 `hy_verify` 包含 7 层 gate：
 
 ```text
-1. lint     → doclint(文档长度 文档引用 ) + codelint(代码长度 代码依赖)
+1. lint     → doclint（文档长度、文档引用）+ codelint（代码长度、代码依赖）
 2. compile  → 项目编译或类型检查
 3. scope    → git diff 文件必须属于说好的范围内
 4. boundary → entry_points 逐条执行

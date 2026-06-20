@@ -46,13 +46,36 @@ async function test1_buildSummaryDirect() {
   // But we need to be in "plan" phase. Let's hack the state.
   const mod = await import("../dist/state.js");
   const p = mod.statePath();
-  const { unlinkSync, writeFileSync, mkdirSync, existsSync } = await import("node:fs");
+  const { unlinkSync, writeFileSync, mkdirSync, existsSync, readFileSync } = await import("node:fs");
   const { dirname } = await import("node:path");
+
+  const priorState = existsSync(p) ? readFileSync(p, "utf8") : null;
 
   // Overwrite state to be in "plan" phase
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(p, JSON.stringify({ version: "1", phase: "plan", branch: null, prNumber: null, plan: null, approval: null, verifyHash: null }, null, 2));
+  writeFileSync(p, JSON.stringify({
+    version: "1",
+    phase: "plan",
+    branch: null,
+    prNumber: null,
+    plan: null,
+    approval: null,
+    verifyHash: null,
+    documentReads: {
+      beforePlan: {
+        stage: "before_plan",
+        purpose: "test baseline",
+        time: new Date().toISOString(),
+        task: SAMPLE_PLAN.task,
+        planHash: null,
+        docsDir: "docs",
+        digest: "test",
+        files: [],
+        findings: [],
+      },
+    },
+  }, null, 2));
 
   try {
     const result = await handlePlan({ task: SAMPLE_PLAN.task, plan: SAMPLE_PLAN });
@@ -69,18 +92,27 @@ async function test1_buildSummaryDirect() {
     // Check all required sections present
     const s = result.summary ?? "";
     const checks = [
-      { name: "## Plan:", test: s.includes("## Plan:") },
+      { name: "## Plan", test: s.includes("## Plan") },
+      { name: "现在状态", test: s.includes("**现在状态**") },
+      { name: "期望状态", test: s.includes("**期望状态**") },
       { name: "### Scope", test: s.includes("### Scope") },
-      { name: "Changes", test: s.includes("**Changes**") },
-      { name: "New files", test: s.includes("**New files**") },
-      { name: "Delete", test: s.includes("**Delete**") },
+      { name: "将要增加", test: s.includes("**将要增加**") },
+      { name: "将要改动", test: s.includes("**将要改动**") },
+      { name: "将要删除", test: s.includes("**将要删除**") },
+      { name: "path reason", test: s.includes("`src/tools/approve.ts`: 调整运行时代码行为") },
       { name: "### Boundary", test: s.includes("### Boundary") },
-      { name: "Dependency DAG", test: s.includes("**Dependency DAG:**") },
-      { name: "Entry points", test: s.includes("**Entry points**") },
+      { name: "影响范围", test: s.includes("**影响范围**") },
+      { name: "外部依赖", test: s.includes("**外部依赖**") },
+      { name: "关键检查入口", test: s.includes("**关键检查入口**") },
       { name: "### Verify", test: s.includes("### Verify") },
-      { name: "Platform", test: s.includes("**Platform:**") },
-      { name: "Smoke", test: s.includes("**Smoke**") },
-      { name: "Tests", test: s.includes("**Tests**") },
+      { name: "测试平台搭建", test: s.includes("**测试平台搭建**") },
+      { name: "Unit Test", test: s.includes("**单元测试 (Unit Test)**") },
+      { name: "Integration Test", test: s.includes("**集成测试 (Integration Test)**") },
+      { name: "System Test", test: s.includes("**系统测试 (System Test)**") },
+      { name: "Acceptance Test", test: s.includes("**验收测试 (Acceptance Test)**") },
+      { name: "command", test: s.includes("command: `npx vitest run`") },
+      { name: "thing to test", test: s.includes("thing to test: 单元测试套件") },
+      { name: "expectation", test: s.includes("expectation: exit 0") },
       { name: "### Risks", test: s.includes("### Risks") },
       { name: "### Discussion", test: s.includes("### Discussion") },
     ];
@@ -103,8 +135,12 @@ async function test1_buildSummaryDirect() {
     console.log("\nTest 1 result:", allOk ? "ALL SECTIONS PRESENT" : "SOME SECTIONS MISSING");
     return { allOk, summary: s };
   } finally {
-    // Clean up test state
-    try { unlinkSync(p); } catch {}
+    // Restore the workflow state that was active before this diagnostic test.
+    if (priorState === null) {
+      try { unlinkSync(p); } catch {}
+    } else {
+      writeFileSync(p, priorState);
+    }
   }
 }
 
@@ -115,12 +151,20 @@ async function test2_mcpRoundtrip() {
   console.log("TEST 2: MCP roundtrip — raw JSON response");
   console.log("=".repeat(60));
 
+  const mod = await import("../dist/state.js");
+  const p = mod.statePath();
+  const { unlinkSync, writeFileSync, existsSync, readFileSync } = await import("node:fs");
+  const priorState = existsSync(p) ? readFileSync(p, "utf8") : null;
   const harness = new McpHarness();
   await harness.init();
 
   try {
-    // Reset to plan phase
+    // Reset to plan phase and create the required before_plan document baseline.
     await harness.call("hy_reset");
+    await harness.call("hy_read_docs", {
+      stage: "before_plan",
+      task: SAMPLE_PLAN.task,
+    });
 
     // Now call hy_plan
     const raw = await harness.call("hy_plan", {
@@ -158,6 +202,11 @@ async function test2_mcpRoundtrip() {
     return raw;
   } finally {
     await harness.close();
+    if (priorState === null) {
+      try { unlinkSync(p); } catch {}
+    } else {
+      writeFileSync(p, priorState);
+    }
   }
 }
 
