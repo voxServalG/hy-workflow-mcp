@@ -11,11 +11,16 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
-    "test": "npx tsc --noEmit",
-    "test:dist": "npx tsx tests/dist-artifacts.ts",
-    "test:doclint-output": "npx tsx tests/doclint-output.ts",
-    "test:setup-update": "npx tsx tests/setup-update-check.ts",
-    "test:config-update": "npx tsx tests/config-update.ts"
+    "lint:contract": "node dist/lint-contract/index.js",
+    "test:unit": "for f in test/unit/*.ts; do npx tsx \"$f\" || exit 1; done",
+    "test:e2e": "for f in test/e2e/*.ts; do npx tsx \"$f\" || exit 1; done",
+    "test:contract": "for f in test/contract/*.ts; do npx tsx \"$f\" || exit 1; done",
+    "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
+    "verify": "npm run build && npm run lint:contract && npm test",
+    "test:dist": "npx tsx test/contract/dist-artifacts.ts",
+    "test:doclint-output": "npx tsx test/unit/doclint-output.ts",
+    "test:setup-update": "npx tsx test/e2e/setup-update-check.ts",
+    "test:config-update": "npx tsx test/unit/config-update.ts"
   },
   "author": "Haiyi",
   "license": "MIT",
@@ -27,5 +32,10 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md"
+  ]
 }

@@ -13,7 +13,7 @@ hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走带文档同步 gate 
 ## 组件关系
 
 ```
-server.ts  ── 注册 14 个 MCP Tool ──►  tools/*.ts  ── 读写状态 ──►  state.ts
+server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状态 ──►  state.ts
     │                                      │                       │
     │                              ┌───┬───┼───┬───┐               │
     │                              │   │       │   │               │
@@ -94,7 +94,7 @@ server.ts  ── 注册 14 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 构建与 CI
 
-`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、doclint 和 codelint。
+`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、workflow-contract lint、tests、doclint 和 codelint。workflow-contract lint 位于 `src/lint-contract/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
 
 ## Related
 

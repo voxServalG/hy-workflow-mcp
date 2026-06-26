@@ -121,7 +121,7 @@ export function detectProject(root: string): { kind: ProjectKind; evidence: stri
   const evidence: string[] = [];
   const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "setup.cfg"].filter(item => exists(root, item));
   const tsMarkers = ["tsconfig.json", "package.json"].filter(item => exists(root, item));
-  const dirs = existingDirs(root, ["src", "tests", "scripts", "lib", "packages"]);
+  const dirs = existingDirs(root, ["src", "test", "tests", "scripts", "lib", "packages"]);
   const pyCount = dirs.reduce((sum, dir) => sum + listFiles(root, dir, ".py").length, 0);
   const tsCount = dirs.reduce((sum, dir) => sum + listFiles(root, dir, ".ts").length, 0);
   if (pyMarkers.length) evidence.push(`python markers: ${pyMarkers.join(", ")}`);
@@ -142,7 +142,7 @@ export function detectProject(root: string): { kind: ProjectKind; evidence: stri
 }
 
 function inferDirs(root: string, ext: string): string[] {
-  const dirs = existingDirs(root, ["src", "tests", "scripts", "lib", "packages"]);
+  const dirs = existingDirs(root, ["src", "test", "tests", "scripts", "lib", "packages"]);
   const withFiles = dirs.filter(dir => listFiles(root, dir, ext).length > 0);
   if (withFiles.length) return withFiles;
   if (exists(root, "src")) return ["src"];
@@ -158,7 +158,7 @@ function inferCodeExt(root: string, detected: { kind: ProjectKind }): string {
   if (detected.kind === "python") return ".py";
   if (detected.kind === "typescript") return ".ts";
 
-  const dirs = existingDirs(root, ["src", "tests", "scripts", "lib", "packages"]);
+  const dirs = existingDirs(root, ["src", "test", "tests", "scripts", "lib", "packages"]);
   const counts = new Map<string, number>();
   for (const dir of dirs) {
     for (const ext of listFileExts(root, dir)) counts.set(ext, (counts.get(ext) ?? 0) + 1);
@@ -526,7 +526,7 @@ export function configHelp(): string {
     "  hy-workflow --help          Show this help",
     "  hy-workflow config --check --json",
     "  hy-workflow config --apply-suggested --json",
-    "  hy-workflow config --python --code-dirs src,tests --docs-dir docs --base-branch dev --json",
+    "  hy-workflow config --python --code-dirs src,test --docs-dir docs --base-branch dev --json",
     "",
     `${UNIFIED_CONFIG_FILE} is the source of truth. codelint.json, doclint.json, and docs-gardener.json are runtime compatibility artifacts and should not be tracked.`,
     "Config commands emit a single JSON envelope when --json is passed.",

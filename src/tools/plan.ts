@@ -16,7 +16,7 @@ function plural(count: number, singular: string, pluralWord = `${singular}s`): s
 function pathReason(path: string, action: "change" | "new" | "delete"): string {
   if (path.startsWith("src/")) return action === "delete" ? "移除不再需要的源码入口" : "调整运行时代码行为";
   if (path.startsWith("dist/")) return action === "delete" ? "移除对应编译产物" : "同步发布用编译产物";
-  if (path.startsWith("tests/")) return action === "delete" ? "移除不再适用的测试" : "更新验证覆盖";
+  if (path.startsWith("test/") || path.startsWith("tests/")) return action === "delete" ? "移除不再适用的测试" : "更新验证覆盖";
   if (path.startsWith("docs/")) return action === "delete" ? "移除过期文档" : "同步用户和 agent 可读说明";
   if (path === "README.md") return action === "delete" ? "移除入口说明" : "同步项目入口说明";
   if (action === "new") return "新增本次任务需要的文件";

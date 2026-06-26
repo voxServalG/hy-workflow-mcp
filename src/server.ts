@@ -27,6 +27,10 @@ import { handleStatus } from "./tools/status.js";
 import { handleReset } from "./tools/reset.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
 import { configHelp, runConfigCli } from "./config.js";
+import { assertCommandCatalogMatchesTools } from "./commands/catalog.js";
+import { runContractLint } from "./lint-contract/run.js";
+import { structuredError } from "./errors/structured.js";
+import { toolResult } from "./output/envelope.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -337,6 +341,8 @@ const TOOLS = [
 const setupGate = createSetupGate();
 
 // ― System prompt capability
+assertCommandCatalogMatchesTools(TOOLS);
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS,
   _systemPrompt: SYSTEM_PROMPT,
@@ -356,11 +362,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const setupCheck = checkSetupStamp();
     return { content: [{ type: "text", text: JSON.stringify(attachSetupCheck(result, setupCheck), null, 2) }] };
   } catch (e: any) {
-    const message = e instanceof SyntaxError
-      ? `PlanDoc JSON 解析失败：${e.message}. 请检查 risks / discussion / command 等字符串字段中的反斜杠、反引号、换行和未转义引号；建议重新生成不含 Markdown inline-code 的纯 JSON。`
-      : e.message || String(e);
+    const error = e instanceof SyntaxError
+      ? structuredError({ type: "validation", subtype: "invalid_plan", message: "PlanDoc JSON parse failed: " + e.message })
+      : structuredError(e);
+    const result = toolResult("plan", {
+      error,
+      display: { title: "hy-workflow tool error", body: error.message },
+      hint: "Inspect the structured error and call hy_status before retrying the workflow step.",
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+    });
     return {
-      content: [{ type: "text", text: JSON.stringify({ error: message }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       isError: true,
     };
   }
@@ -401,6 +415,12 @@ async function main() {
     const result = runConfigCli(argv.slice(1));
     process.stdout.write(result.stdout);
     process.exitCode = result.exitCode;
+    return;
+  }
+  if (argv[0] === "lint-contract") {
+    const report = runContractLint(process.cwd());
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    process.exitCode = report.ok ? 0 : 1;
     return;
   }
 

@@ -5,6 +5,7 @@ import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, 
 import { getBaseBranch } from "./state.js";
 import { JS_TS_CODE_EXTS, PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
 import { readUnifiedConfig, withRuntimeCompatConfigs } from "./config.js";
+import { runContractLint } from "./lint-contract/run.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -102,6 +103,16 @@ export function runCodeLint(root: string): CheckResult[] {
   }
 }
 
+export function runWorkflowContractLint(root: string): CheckResult[] {
+  const report = runContractLint(root);
+  const detail = report.ok
+    ? "contract lint passed"
+    : report.findings.map(finding => finding.severity + ":" + finding.rule + ":" + finding.message).join("; ");
+  return [report.ok
+    ? ok("workflow-contract", "lint", detail)
+    : fail("workflow-contract", "lint", detail, true)];
+}
+
 // ── 2. Compile (hard) ───────────────────────────────────────
 
 function resolveCompileCmd(root: string): string | null {
@@ -183,9 +194,10 @@ function isTestSupportFile(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   const base = path.basename(normalized);
   return (
+    normalized.startsWith("test/") ||
     normalized.startsWith("tests/") ||
     base === "conftest.py" ||
-    (base === "__init__.py" && normalized.includes("/tests/")) ||
+    (base === "__init__.py" && (normalized.includes("/test/") || normalized.includes("/tests/"))) ||
     /^test[_-]/.test(base) ||
     /\.test\.[jt]sx?$/.test(base) ||
     /\.spec\.[jt]sx?$/.test(base)
@@ -390,6 +402,7 @@ export function runAllChecks(root: string, state: WorkflowState): VerifyReport {
   const all: CheckResult[] = [
     ...runDocLint(root),
     ...runCodeLint(root),
+    ...runWorkflowContractLint(root),
     ...runCompile(root),
     ...(manifestError ? [manifestError] : runScopeCheck(root, p, implementationManifest)),
     ...runBoundaryCheck(root, p),
