@@ -60,3 +60,7 @@ Terminal CLI commands follow the same contract when `--json` is passed. For exam
 ## Compatibility
 
 The envelope is additive. Existing clients that read `next`, `message`, `summary`, `checks`, `prNumber`, or `url` can keep doing so. New CLI agents should use `display`, `hint`, `requires_user`, `stop_here`, `allowedTools`, `blockedTools`, and `recovery` to decide what to show and what to call next.
+
+## Structured errors
+
+Failures include `error.type`, `error.subtype`, and `error.message`. Implementations may pass a string to helper code, but `src/output/envelope.ts` normalizes it before returning JSON to MCP clients.

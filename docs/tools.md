@@ -1,6 +1,6 @@
 # Tools Reference
 
-hy-workflow MCP server 注册了 14 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
+hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分发逻辑在 `src/server.ts`。工具返回保留 legacy 字段，同时补充 agent-facing envelope；详见 [Tool Result Envelope](./tool-result-envelope.md)。
 
 ## 概览
 
@@ -14,6 +14,7 @@ hy-workflow MCP server 注册了 14 个工具，定义在 `src/tools/` 中。分
 | `hy_edit`   | branch, edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_sync_docs` | edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
+| `hy_amend_plan` | verify | `{approved, note?}` | edit / verify | 否 |
 | `hy_commit` | commit | `{title, body}` | ci | 否 |
 | `hy_ci`     | ci, edit | — | merge (全绿) / edit (失败) | 否 |
 | `hy_merge`  | merge | — | chain | 否 |
@@ -110,6 +111,14 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 - **失败后转换到**: `edit`
 - **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash, hint, allowedTools }`
 - **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks, failedChecks, recovery.byLayer }`
+
+## hy_amend_plan
+
+`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，不替代 `hy_plan` 的人类审批。
+
+- **进入 Phase**: `verify`
+- **转换到**: `edit` / `verify`
+- **返回**: `{ next, approved, amendment, allowedTools }`
 
 ## hy_commit
 

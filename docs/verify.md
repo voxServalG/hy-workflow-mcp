@@ -45,6 +45,7 @@ hardFailed = 失败的 hard 检查数量
 |------|-----------|
 | doclint | hard |
 | codelint | hard |
+| workflow-contract | hard |
 | compile | hard (无可识别 codeExt 时为 soft) |
 | scope: extra files | hard |
 | scope: missing files | soft |

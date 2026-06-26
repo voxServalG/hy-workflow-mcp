@@ -6,3 +6,7 @@ tests/_test_*
 .opencode/
 .codex/
 .mcp.json
+test/_test_*
+codelint.json
+doclint.json
+docs-gardener.json
