@@ -115,3 +115,7 @@ hy_status
 ## 许可
 
 MIT
+
+## Workflow contract lint
+
+This repository validates its own agent-facing contract with `npm run lint:contract`. The rule set checks CLI and MCP tool parity, structured errors, output envelopes, workflow state, Skill references, artifact boundaries, and npm package sanity. Run `npm run verify` for build + contract lint + tests.

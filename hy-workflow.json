@@ -4,7 +4,7 @@
     "codeExt": ".ts",
     "codeDirs": [
       "src",
-      "tests"
+      "test"
     ],
     "docsDir": "docs"
   },

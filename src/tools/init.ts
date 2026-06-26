@@ -4,26 +4,14 @@ import * as path from "node:path";
 import { toolResult, type ToolResult } from "./_base.js";
 import { SETUP_COMMAND, SETUP_STAMP } from "../bootstrap.js";
 import { checkConfig, UNIFIED_CONFIG_FILE } from "../config.js";
+import { LOCAL_RUNTIME_ARTIFACTS, TRACKED_PROJECT_ARTIFACTS } from "../policy/artifacts.js";
 
 const MARKER_START = "<!-- hy-workflow-rules -->";
 const MARKER_END = "<!-- /hy-workflow-rules -->";
 
-export const INIT_COMMIT_ARTIFACTS = [
-  ".github/",
-  "AGENTS.md",
-  ".gitignore",
-  UNIFIED_CONFIG_FILE,
-];
+export const INIT_COMMIT_ARTIFACTS = [...TRACKED_PROJECT_ARTIFACTS];
 
-export const INIT_LOCAL_ARTIFACTS = [
-  ".hy/",
-  ".opencode/",
-  ".codex/",
-  ".mcp.json",
-  "codelint.json",
-  "doclint.json",
-  "docs-gardener.json",
-];
+export const INIT_LOCAL_ARTIFACTS = [...LOCAL_RUNTIME_ARTIFACTS];
 
 export const REQUIRED_SETUP_ARTIFACTS = [
   ".github/workflows/hy-workflow.yml",

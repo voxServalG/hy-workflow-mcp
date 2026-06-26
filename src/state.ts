@@ -1,22 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
+import { PHASES, VALID_TRANSITIONS, type Phase } from "./runtime/state-machine.js";
+import { configuredBaseBranch, currentGitBranch, findProjectRoot, resolveGitPrivatePath } from "./runtime/project.js";
 import { createHash } from "node:crypto";
 
 // ── Types ────────────────────────────────────────────────────
 
-export type Phase =
-  | "init"
-  | "plan"
-  | "approve"
-  | "branch"
-  | "edit"
-  | "verify"
-  | "commit"
-  | "ci"
-  | "merge"
-  | "chain"
-  | "done";
+export type { Phase };
+export { PHASES, VALID_TRANSITIONS };
 
 // ── DocsGraph types ────────────────────────────────────────
 
@@ -226,25 +218,11 @@ function legacyScopePath(root: string): string {
 }
 
 function gitPrivatePath(root: string, relativePath: string): string {
-  try {
-    const resolved = execSync(`git rev-parse --git-path ${relativePath}`, { cwd: root })
-      .toString()
-      .trim();
-    return path.isAbsolute(resolved) ? resolved : path.join(root, resolved);
-  } catch {
-    return path.join(root, ".git", relativePath);
-  }
+  return resolveGitPrivatePath(root, relativePath);
 }
 
 export function projectRoot(): string {
-  let dir = process.cwd();
-  while (dir !== "/") {
-    if (fs.existsSync(path.join(dir, ".git"))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return process.cwd();
+  return findProjectRoot(process.cwd());
 }
 
 function isTracked(root: string, file: string): boolean | null {
@@ -332,20 +310,6 @@ export function writeState(state: WorkflowState): void {
 }
 
 // ── Phase transitions ────────────────────────────────────────
-
-const VALID_TRANSITIONS: Record<Phase, Phase[]> = {
-  init: ["init", "plan", "done"],
-  plan: ["plan", "approve", "done"],
-  approve: ["approve", "branch", "plan"], // plan = retry after reject
-  branch: ["branch", "edit", "done"],
-  edit: ["edit", "verify", "commit", "done"],
-  verify: ["verify", "edit", "commit", "done"], // edit = fix, commit = pass
-  commit: ["commit", "ci", "done"],
-  ci: ["ci", "edit", "merge", "done"], // edit = fix, merge = pass
-  merge: ["merge", "chain", "done"],
-  chain: ["chain", "done"],
-  done: ["done"],
-};
 
 export function assertPhase(state: WorkflowState, ...expected: Phase[]): void {
   if (!expected.includes(state.phase)) {
@@ -465,26 +429,9 @@ export function documentReadHealth(state: WorkflowState, currentImplementationDi
 // ── Branch name ──────────────────────────────────────────────
 
 export function currentBranch(root: string): string {
-  try {
-    return execSync("git branch --show-current", { cwd: root })
-      .toString().trim();
-  } catch {
-    return "unknown";
-  }
+  return currentGitBranch(root);
 }
 
 export function getBaseBranch(root: string): string {
-  try {
-    const unifiedPath = path.join(root, "hy-workflow.json");
-    if (fs.existsSync(unifiedPath)) {
-      const config = JSON.parse(fs.readFileSync(unifiedPath, "utf-8"));
-      if (config?.project?.baseBranch) return config.project.baseBranch;
-    }
-    const legacyPath = path.join(root, "codelint.json");
-    if (fs.existsSync(legacyPath)) {
-      const config = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
-      if (config.baseBranch) return config.baseBranch;
-    }
-  } catch {}
-  return "dev";
+  return configuredBaseBranch(root);
 }
