@@ -20,8 +20,6 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
     ▼                              ▼   ▼       ▼   ▼               ▼
  MCP Client                  git.ts  checks.ts     ── exec ──►  .git/hy-workflow/workflow.json
  (stdio transport)               │       │
-                                 │       ├── doclint
-                                 │       ├── codelint
                                  │       ├── compile (tsc)
                                  │       ├── scope check
                                  │       ├── boundary check
@@ -94,7 +92,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 构建与 CI
 
-`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、workflow-contract lint、tests、doclint 和 codelint。workflow-contract lint 位于 `src/lint-contract/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
+`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、contract lint、tests、doclint 和 codelint。Contract lint 位于 `src/contralint/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
 
 ## Related
 

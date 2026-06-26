@@ -1,5 +1,5 @@
 import type { Phase } from "../runtime/state-machine.js";
-import { structuredError, type StructuredError } from "../errors/structured.js";
+import { structuredError, type StructuredError } from "../errs/structured.js";
 
 export type ToolResult = {
   next: Phase;

@@ -36,7 +36,7 @@
 
 **6. hy_edit** — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 
-**7. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+**7. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。完整 lint 由 GitHub Actions 和 setup 生成的 workflow 执行；hy_verify 失败回 hy_edit，通过进 hy_commit。
 
 **8. hy_commit** — git add + commit + push + gh pr create。
 

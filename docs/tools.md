@@ -104,7 +104,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_verify
 
-执行 7 层全量校验（lint、compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后计算 verifyHash 并转换到 commit。
+执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后计算 verifyHash 并转换到 commit。
 
 - **进入 Phase**: `edit`, `verify`
 - **通过后转换到**: `commit`

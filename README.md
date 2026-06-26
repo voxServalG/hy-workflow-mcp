@@ -97,7 +97,7 @@ hy_status
 `hy_verify` 包含 7 层 gate：
 
 ```text
-1. lint     → doclint（文档长度、文档引用）+ codelint（代码长度、代码依赖）
+1. lint     → doclint + codelint（在 GitHub Actions 中执行，不在 hy_verify 内）
 2. compile  → 项目编译或类型检查
 3. scope    → git diff 文件必须属于说好的范围内
 4. boundary → entry_points 逐条执行

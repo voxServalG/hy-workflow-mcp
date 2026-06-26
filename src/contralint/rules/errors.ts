@@ -1,4 +1,4 @@
-import { ERROR_SUBTYPES, ERROR_TYPES } from "../../errors/catalog.js";
+import { ERROR_SUBTYPES, ERROR_TYPES } from "../../errs/catalog.js";
 import { readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
@@ -8,7 +8,7 @@ export function checkErrorContracts(context: ContractRuleContext): ContractFindi
   const findings: ContractFinding[] = [];
   for (const type of REQUIRED_TYPES) {
     if (!(ERROR_TYPES as readonly string[]).includes(type)) {
-      findings.push({ rule: "errors", severity: "hard_fail", message: "Missing required error type " + type + ".", file: "src/errors/catalog.ts" });
+      findings.push({ rule: "errors", severity: "hard_fail", message: "Missing required error type " + type + ".", file: "src/errs/catalog.ts" });
     }
   }
   const docs = readText(context.root, "docs/errors.md");

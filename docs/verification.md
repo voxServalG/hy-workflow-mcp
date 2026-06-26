@@ -15,5 +15,5 @@ Verification has two layers of meaning:
 - npm test
 - npm run verify
 
-CI runs build, workflow-contract lint, tests, doclint, and codelint.
+CI runs build, contract lint, tests, doclint, and codelint.
 

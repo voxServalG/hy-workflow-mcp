@@ -1,5 +1,5 @@
 import { exists } from "../files.js";
-import { npmPackDryRun, readPackageJson } from "../../adapters/npm-package.js";
+import { npmPackDryRun, readPackageJson } from "../../npm/package.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const REQUIRED_SCRIPTS = ["build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "verify"];
