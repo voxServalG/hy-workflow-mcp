@@ -3,9 +3,23 @@ import { isErrorSubtype, isErrorType, type ErrorSubtype, type ErrorType } from "
 export type StructuredError = {
   type: ErrorType;
   subtype: ErrorSubtype;
+  code?: string;
   message: string;
+  hint?: string;
   detail?: unknown;
   cause?: string;
+  retryable?: boolean;
+  risk?: string | {
+    level?: string;
+    action?: string;
+    impact?: string;
+    [key: string]: unknown;
+  };
+  permission_violations?: Array<Record<string, unknown> | string>;
+  missing_scopes?: string[];
+  console_url?: string;
+  request_id?: string;
+  trace_id?: string;
   [key: string]: unknown;
 };
 
@@ -59,4 +73,3 @@ export function structuredError(input: unknown, fallbackType: ErrorType = "inter
 export function errorMessage(error: unknown): string {
   return isStructuredError(error) ? error.message : String(error ?? "");
 }
-

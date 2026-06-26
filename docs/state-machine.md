@@ -90,20 +90,44 @@ interface WorkflowState {
 
 ## ToolResult envelope
 
-定义在 `src/tools/_base.ts`。`next` 是状态机下一步；`phase` 默认等于 `next`，但 `hy_edit` 等工具可返回 `phase: "edit"`、`next: "verify"` 来表达“当前仍在 edit，但下一步建议 verify”。
+字段契约定义在 `src/output/contract.ts`，运行时 helper 和 TypeScript shape 定义在 `src/output/envelope.ts`。`next` 是状态机下一步；`phase` 默认等于 `next`，但 `hy_edit` 等工具可返回 `phase: "edit"`、`next: "verify"` 来表达“当前仍在 edit，但下一步建议 verify”。
 
 ```typescript
 interface ToolResult {
   ok?: boolean;
   phase?: Phase;
   next: Phase;
+  status?: string;
+  data?: unknown;
+  error?: {
+    type: string;
+    subtype: string;
+    code?: string;
+    message: string;
+    hint?: string;
+    detail?: unknown;
+    cause?: string;
+    retryable?: boolean;
+    risk?: unknown;
+    permission_violations?: unknown[];
+    missing_scopes?: string[];
+    console_url?: string;
+    request_id?: string;
+    trace_id?: string;
+  };
   display?: { title?: string; body?: string; files?: string[]; urls?: string[] };
+  summary?: string;
   hint?: string;
   requires_user?: boolean;
   stop_here?: boolean;
   allowedTools?: string[];
   blockedTools?: string[];
-  recovery?: { tool?: string; instruction?: string; byLayer?: Record<string, string> };
+  recovery?: { tool?: string; command?: string; instruction?: string; byLayer?: Record<string, string> };
+  checks?: unknown[];
+  findings?: unknown[];
+  pagination?: { has_more?: boolean; page_token?: string; next_page_token?: string };
+  meta?: { command?: string; cwd?: string; identity?: string; format?: string; version?: string; request_id?: string; trace_id?: string; duration_ms?: number };
+  _notice?: { update?: { message?: string; command?: string; current_version?: string; latest_version?: string } };
 }
 ```
 
