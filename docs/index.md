@@ -14,6 +14,12 @@ This documentation is the contract source for hy-workflow-mcp. Source code imple
 - [Skills](./skills.md)
 - [Verification](./verification.md)
 - [Verify Pipeline](./verify.md)
+- [Log](./log.md)
+- [NPM](./npm.md)
+- [Setup](./setup.md)
 - [Workflow Contract Lint](./lint-contract.md)
 - [Core Skill](./skills/core/SKILL.md)
+- [Log](./log.md)
+- [NPM](./npm.md)
+- [Setup](./setup.md)
 

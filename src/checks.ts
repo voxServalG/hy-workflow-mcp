@@ -5,7 +5,7 @@ import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, 
 import { getBaseBranch } from "./state.js";
 import { JS_TS_CODE_EXTS, PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
 import { readUnifiedConfig, withRuntimeCompatConfigs } from "./config.js";
-import { runContractLint } from "./lint-contract/run.js";
+import { runContractLint } from "./contralint/run.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ function findPython(): string {
   return "python3";
 }
 
-// ── 1. Lint (hard) ──────────────────────────────────────────
+// ── CI lint helpers (not run by hy_verify) ───────────────────
 
 function numberFrom(...values: unknown[]): number | null {
   for (const value of values) {
@@ -400,9 +400,6 @@ export function runAllChecks(root: string, state: WorkflowState): VerifyReport {
   }
 
   const all: CheckResult[] = [
-    ...runDocLint(root),
-    ...runCodeLint(root),
-    ...runWorkflowContractLint(root),
     ...runCompile(root),
     ...(manifestError ? [manifestError] : runScopeCheck(root, p, implementationManifest)),
     ...runBoundaryCheck(root, p),

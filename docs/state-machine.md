@@ -11,7 +11,7 @@
 | 3 | `approve` | 用户审视 PlanDoc；用户批准后 agent 自动执行 `hy_read_docs(before_approve)` 做文档审计，再输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
 | 5 | `edit` | LLM 编写代码，scope 已锁定；实现后运行 `hy_read_docs(after_edit)` 和 `hy_sync_docs` |
-| 6 | `verify` | 全量校验（7 层），通过则进 commit |
+| 6 | `verify` | 本地任务 gate（compile/scope/boundary/platform/smoke/tests），通过则进 commit |
 | 7 | `commit` | git commit + push + gh pr create |
 | 8 | `ci` | 轮询 GitHub Checks |
 | 9 | `merge` | CI 全绿后合并 PR |

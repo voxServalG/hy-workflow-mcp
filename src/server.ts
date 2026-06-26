@@ -28,8 +28,8 @@ import { handleReset } from "./tools/reset.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
 import { configHelp, runConfigCli } from "./config.js";
 import { assertCommandCatalogMatchesTools } from "./commands/catalog.js";
-import { runContractLint } from "./lint-contract/run.js";
-import { structuredError } from "./errors/structured.js";
+import { runContractLint } from "./contralint/run.js";
+import { structuredError } from "./errs/structured.js";
 import { toolResult } from "./output/envelope.js";
 
 // ― System prompt injected via MCP
@@ -55,7 +55,7 @@ const SYSTEM_PROMPT = `
 6. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
 8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 setup prompt 文件内同步，完成后再 hy_verify。
-9. hy_verify — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。完整 lint 由 GitHub Actions 和 setup 生成的 workflow 执行；hy_verify 失败回 hy_edit，通过进 hy_commit。
 10. hy_commit — git add + commit + push + gh pr create，PR 正文嵌入 plan 摘要。
 11. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
 12. hy_merge — 合并 PR，删除远程分支。
@@ -268,7 +268,7 @@ const TOOLS = [
   },
   {
     name: "hy_verify",
-    description: "全量校验：doclint + codelint + scope + boundary + platform + smoke + tests。要求 after_edit 文档审计和 hy_sync_docs 已完成；失败返回按 layer 的 recovery；全绿方可 commit。",
+    description: "本地任务校验：compile + scope + boundary + platform + smoke + tests。完整 lint 由 GitHub Actions/setup workflow 执行；要求 after_edit 文档审计和 hy_sync_docs 已完成；失败返回按 layer 的 recovery；全绿方可 commit。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {

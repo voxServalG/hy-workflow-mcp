@@ -6,6 +6,8 @@ import { checkOutputContracts } from "./rules/output.js";
 import { checkSkillContracts } from "./rules/skills.js";
 import { checkToolContracts } from "./rules/tools.js";
 import { checkWorkflowContracts } from "./rules/workflow.js";
+import { checkModuleContracts } from "./rules/modules.js";
+import { checkSetupContracts } from "./rules/setup.js";
 
 const RULES: ContractRule[] = [
   { name: "tools", run: checkToolContracts },
@@ -15,6 +17,8 @@ const RULES: ContractRule[] = [
   { name: "artifacts", run: checkArtifactContracts },
   { name: "skills", run: checkSkillContracts },
   { name: "npm", run: checkNpmContracts },
+  { name: "modules", run: checkModuleContracts },
+  { name: "setup", run: checkSetupContracts },
 ];
 
 export function runContractLint(root = process.cwd()): ContractLintReport {

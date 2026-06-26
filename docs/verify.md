@@ -1,14 +1,10 @@
 # Verify Pipeline
 
-`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **7 层（lint, compile, scope, boundary, platform, smoke, tests）全量校验**。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。完整 lint（doclint, codelint, workflow-contract lint）由 GitHub Actions/setup workflow 承担。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 
 ```
-Layer 1: lint
-├── doclint  — npx --yes github:voxServalG/doclint lint --json
-└── codelint — npx --yes github:voxServalG/codelint check --json
-
 Layer 2: compile
 └── npx tsc --noEmit (.ts/.tsx/.js/.jsx/.mjs/.cjs) / py_compile (.py/.pyw/.pyi) / soft skip (.tksp and custom extensions without built-in compiler)
 
@@ -43,9 +39,6 @@ hardFailed = 失败的 hard 检查数量
 
 | 检查 | hard/soft |
 |------|-----------|
-| doclint | hard |
-| codelint | hard |
-| workflow-contract | hard |
 | compile | hard (无可识别 codeExt 时为 soft) |
 | scope: extra files | hard |
 | scope: missing files | soft |

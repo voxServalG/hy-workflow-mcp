@@ -17,7 +17,7 @@ Every user-facing tool response is a JSON envelope. Legacy fields can remain, bu
 
 ## Error Envelope
 
-Failures return error with type, subtype, and message. The subtype must exist in docs/errors.md and src/errors/catalog.ts. The server catch block must not return a bare string error.
+Failures return error with type, subtype, and message. The subtype must exist in docs/errors.md and src/errs/catalog.ts. The server catch block must not return a bare string error.
 
 ## Result Envelope
 

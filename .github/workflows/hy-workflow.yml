@@ -7,6 +7,8 @@ on:
       - "test/**"
       - "docs/**"
       - "README.md"
+      - "AGENTS.md"
+      - "setup"
       - "hy-workflow.json"
       - "package.json"
       - "package-lock.json"
@@ -17,6 +19,8 @@ on:
       - "test/**"
       - "docs/**"
       - "README.md"
+      - "AGENTS.md"
+      - "setup"
       - "hy-workflow.json"
       - "package.json"
       - "package-lock.json"
@@ -33,7 +37,7 @@ jobs:
         with: { node-version: "20" }
       - run: npm ci
       - run: npm run build
-      - run: npm run lint:contract
+      - run: npm run lint:contract:built
       - run: npm test
       - name: Materialize legacy lint configs
         run: |
