@@ -15,7 +15,8 @@ curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/set
 ```
 Windows:
 ```bash
-iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh | bash
+iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh
+bash setup.sh
 rm setup.sh
 ```
 
