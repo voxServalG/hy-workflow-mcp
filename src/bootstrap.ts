@@ -3,10 +3,11 @@ import * as path from "node:path";
 import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
 
-export const SETUP_VERSION = "2026.06.26.1";
+export const SETUP_VERSION = "2026.06.29.1";
 export const SETUP_STAMP = path.join(".git", "hy-workflow", "setup.json");
 export const LEGACY_SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
 export const SETUP_COMMAND = "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
+export const WINDOWS_SETUP_COMMAND = "curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
 
 export type SetupStamp = {
   schemaVersion?: string;
@@ -74,8 +75,9 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
         "hy-workflow project bootstrap artifacts need to be installed or refreshed.",
         reason,
         "",
-        "Run this command in the project root, then restart the agent/MCP session:",
-        SETUP_COMMAND,
+        "Run one of these commands in the project root, then restart the agent/MCP session:",
+        `macOS/Linux/Git Bash/WSL: ${SETUP_COMMAND}`,
+        `Windows PowerShell: ${WINDOWS_SETUP_COMMAND}`,
       ].join("\n"),
     },
     hint: "Stop here. Ask the user to run the setup command in a terminal and restart the agent. Do not call other hy_* tools until setup has been refreshed.",
@@ -83,7 +85,7 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
     stop_here: true,
     allowedTools: ["hy_status"],
     blockedTools: BLOCKED_TOOLS,
-    recovery: { tool: "terminal", instruction: SETUP_COMMAND },
+    recovery: { tool: "terminal", instruction: `${SETUP_COMMAND}\nWindows PowerShell: ${WINDOWS_SETUP_COMMAND}` },
     setupUpdateCheck: check,
   });
 }

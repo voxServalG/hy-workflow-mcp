@@ -8,24 +8,18 @@ hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在
 
 ## 一键部署
 
-进入你想管理的项目根目录，执行同一条命令：
+进入你想管理的项目根目录，执行对应命令。所有入口最终都执行同一个 `setup`。
 
-**Windows（PowerShell · 原生）**
+**Windows PowerShell（需要 Git for Windows 的 `bash`）**
 
 ```powershell
-iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup.ps1 | iex
+curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
 
-**macOS、Linux、Windows Git Bash / WSL**
+**macOS、Linux、Windows Git Bash / WSL shell**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
-```
-Windows:
-```bash
-iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh
-bash setup.sh
-rm setup.sh
 ```
 
 脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
