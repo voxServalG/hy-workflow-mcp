@@ -68,7 +68,9 @@ try {
   assert(missingResult.stop_here === true, "missing setup envelope should stop here");
   assert(missingResult.allowedTools?.includes("hy_status"), "missing setup envelope should allow hy_status");
   assert(missingResult.blockedTools?.includes("hy_plan"), "missing setup envelope should block hy_plan");
-  assert(missingResult.recovery?.instruction?.includes("curl -fsSL"), "missing setup envelope should include recovery command");
+  assert(missingResult.recovery?.instruction?.includes("curl -fsSL"), "missing setup envelope should include bash recovery command");
+  assert(missingResult.recovery?.instruction?.includes("curl.exe -fsSL"), "missing setup envelope should include Windows PowerShell recovery command");
+  assert(missingResult.display?.body?.includes("Windows PowerShell"), "missing setup display should mention Windows PowerShell");
   assert(JSON.stringify(before) === JSON.stringify(listFiles(missingRoot)), "setup check must not write files");
 
   const gate = createSetupGate(missingRoot);

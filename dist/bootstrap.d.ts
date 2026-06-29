@@ -1,8 +1,9 @@
 import { type ToolResult } from "./tools/_base.js";
-export declare const SETUP_VERSION = "2026.06.16.2";
+export declare const SETUP_VERSION = "2026.06.29.1";
 export declare const SETUP_STAMP: string;
 export declare const LEGACY_SETUP_STAMP: string;
 export declare const SETUP_COMMAND = "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
+export declare const WINDOWS_SETUP_COMMAND = "curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
 export type SetupStamp = {
     schemaVersion?: string;
     setupVersion?: string;

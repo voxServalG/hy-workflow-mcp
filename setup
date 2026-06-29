@@ -3,7 +3,7 @@ set -e
 
 # ── hy-workflow: one-command project setup/update (idempotent) ──
 
-SETUP_VERSION="2026.06.26.1"
+SETUP_VERSION="2026.06.29.1"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -70,6 +70,7 @@ on:
       - "README.md"
       - "AGENTS.md"
       - "setup"
+      - "setup.ps1"
       - "hy-workflow.json"
       - "package.json"
       - "package-lock.json"
@@ -83,6 +84,7 @@ on:
       - "README.md"
       - "AGENTS.md"
       - "setup"
+      - "setup.ps1"
       - "hy-workflow.json"
       - "package.json"
       - "package-lock.json"
