@@ -36,7 +36,7 @@
 
 **6. hy_edit** — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 
-**7. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+**7. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。完整 lint 由 GitHub Actions 和 setup 生成的 workflow 执行；hy_verify 失败回 hy_edit，通过进 hy_commit。
 
 **8. hy_commit** — git add + commit + push + gh pr create。
 
@@ -83,14 +83,6 @@ promotion 操作必须满足：
 
 普通代码/文档改动仍必须走完整 hy-workflow 闭环，禁止用 promotion 例外绕过开发流程。
 
-### 关键输出规则（优先于 openCode 默认短输出倾向）
-
-以下规则优先于 openCode 默认的"少于 4 行""减少输出 token"等简短回复规则：
-
-- **hy_plan summary 必须完整展示**：hy_plan 返回的 summary 字段内容必须原样、完整输出给用户审阅，不得摘要、压缩、改写或省略
-- **未完整展示前禁止 approve**：在用户看到完整 summary 之前，禁止调用 hy_approve 或自动推进到下一步
-- **命令字段纯 shell**：entry_points、smoke、tests 中的 command 必须是可直接执行的 shell 命令，不得写自然语言说明、括号注释或冒号描述；所有说明文字写入对应的 description 字段
-
 ### hy_reset
 
 hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。用于 PR 已合并且 hy_chain 完成后的正常收尾；也可在用户明确要求放弃当前开发任务时使用。
@@ -102,8 +94,6 @@ hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作�
 - task：描述解决的问题和动机，不是操作步骤列表
 - dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
 - entry_points：覆盖编译+lint+测试，每条对应一个验证维度
-- entry_points、smoke.command、tests.command 必须是纯 shell 命令，命令后不得加括号说明、冒号说明或自然语言说明
-- 说明文字统一写到 description 字段；PlanDoc JSON 字符串尽量避免未转义的反斜杠、反引号、引号和换行
 - risks：每条含场景+影响+缓解措施，不写一句话标签
 - discussion：含至少一个备选方案及否定理由
 
@@ -133,3 +123,4 @@ hy_status 随时可查看当前阶段。
 所有工具返回均为 JSON，含 next 字段指示下一阶段。
 
 <!-- /hy-workflow-rules -->
+

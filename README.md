@@ -4,12 +4,20 @@
 
 让任何开发 agent 听话。
 
-hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在“先读文档、先计划、等用户批准、锁定 scope、实现、同步文档、验证、提交、CI、合并、整理下游”的闭环里，减少跳步、乱改和把本地产物混进 PR 的机会。
+hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在"先读文档、先计划、等用户批准、锁定 scope、实现、同步文档、验证、提交、CI、合并、整理下游"的闭环里，减少跳步、乱改和把本地产物混进 PR 的机会。
 
 ## 一键部署
 
-进入你想管理的项目根目录，执行同一条 Bash 命令：
-Linux/macOS: 
+进入你想管理的项目根目录，执行同一条命令：
+
+**Windows（PowerShell · 原生）**
+
+```powershell
+iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup.ps1 | iex
+```
+
+**macOS、Linux、Windows Git Bash / WSL**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
@@ -19,7 +27,6 @@ iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -Out
 bash setup.sh
 rm setup.sh
 ```
-
 
 脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
 
@@ -102,7 +109,7 @@ hy_status
 `hy_verify` 包含 7 层 gate：
 
 ```text
-1. lint     → doclint（文档长度、文档引用）+ codelint（代码长度、代码依赖）
+1. lint     → doclint + codelint（在 GitHub Actions 中执行，不在 hy_verify 内）
 2. compile  → 项目编译或类型检查
 3. scope    → git diff 文件必须属于说好的范围内
 4. boundary → entry_points 逐条执行

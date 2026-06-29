@@ -10,6 +10,7 @@ import { handleCi } from "../../src/tools/ci.js";
 import { handleMerge } from "../../src/tools/merge.js";
 import { handleStatus } from "../../src/tools/status.js";
 import { handleApprove } from "../../src/tools/approve.js";
+import { OUTPUT_CONTROL_FIELDS } from "../../src/output/contract.js";
 import { computePlanHash, writeState } from "../../src/state.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
 
@@ -47,6 +48,10 @@ function assertEnvelope(name: string, result: any): void {
   if (typeof result.ok !== "boolean") throw new Error(`${name} missing ok`);
   if (!result.phase) throw new Error(`${name} missing phase`);
   if (!result.next) throw new Error(`${name} missing next`);
+}
+
+for (const field of ["ok", "phase", "next", "status", "data", "error", "summary", "checks", "findings", "pagination", "meta", "_notice"]) {
+  if (!(OUTPUT_CONTROL_FIELDS as readonly string[]).includes(field)) throw new Error(`output contract missing ${field}`);
 }
 
 function run(cmd: string, root: string): void {

@@ -3,7 +3,7 @@ set -e
 
 # ── hy-workflow: one-command project setup/update (idempotent) ──
 
-SETUP_VERSION="2026.06.16.2"
+SETUP_VERSION="2026.06.26.1"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -64,9 +64,12 @@ on:
   push:
     paths:
       - "src/**"
+      - "test/**"
       - "tests/**"
       - "docs/**"
       - "README.md"
+      - "AGENTS.md"
+      - "setup"
       - "hy-workflow.json"
       - "package.json"
       - "package-lock.json"
@@ -74,9 +77,12 @@ on:
   pull_request:
     paths:
       - "src/**"
+      - "test/**"
       - "tests/**"
       - "docs/**"
       - "README.md"
+      - "AGENTS.md"
+      - "setup"
       - "hy-workflow.json"
       - "package.json"
       - "package-lock.json"
@@ -92,7 +98,22 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
       - run: npm ci
-      - run: npm run build
+      - name: Run package CI scripts
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const cp = require('child_process');
+          const pkg = fs.existsSync('package.json') ? JSON.parse(fs.readFileSync('package.json', 'utf8')) : {};
+          const scripts = pkg.scripts || {};
+          const run = (label, command) => {
+            console.log('::group::' + label);
+            cp.execSync(command, { stdio: 'inherit' });
+            console.log('::endgroup::');
+          };
+          if (scripts.build) run('build', 'npm run build');
+          if (scripts['lint:contract']) run('lint:contract', 'npm run lint:contract');
+          if (scripts.test) run('test', 'npm test');
+          NODE
       - name: Materialize legacy lint configs
         run: |
           node <<'NODE'

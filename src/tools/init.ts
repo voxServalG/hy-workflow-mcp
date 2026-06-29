@@ -59,7 +59,7 @@ ${MARKER_START}
 
 **8. hy_sync_docs** — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 setup prompt 文件内同步；完成后再 hy_verify。
 
-**9. hy_verify** — 全量校验: lint → compile → scope → boundary → platform → smoke → tests。失败回 hy_edit，通过进 hy_commit。
+**9. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。完整 lint 由 GitHub Actions 和 setup 生成的 workflow 执行；hy_verify 失败回 hy_edit，通过进 hy_commit。
 
 **10. hy_commit** — git add + commit + push + gh pr create。
 
