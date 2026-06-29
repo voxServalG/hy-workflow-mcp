@@ -21,6 +21,12 @@ iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup.ps1 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
+Windows:
+```bash
+iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh
+bash setup.sh
+rm setup.sh
+```
 
 脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
 
