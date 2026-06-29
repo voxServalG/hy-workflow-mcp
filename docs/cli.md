@@ -1,6 +1,6 @@
 # CLI Contract
 
-The package exposes one bin entrypoint: hy-workflow. Running it without a subcommand starts the MCP stdio server from dist/server.js.
+The package exposes one bin entrypoint: hy-workflow. GitHub npx installs build dist/server.js via the prepare script; running without a subcommand starts the MCP stdio server.
 
 ## Commands
 

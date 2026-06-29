@@ -3,7 +3,7 @@ set -e
 
 # ── hy-workflow: one-command project setup/update (idempotent) ──
 
-SETUP_VERSION="2026.06.29.1"
+SETUP_VERSION="2026.06.29.2"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -326,7 +326,7 @@ cat <<PROMPT
      - Claude Desktop 或其他客户端: .mcp.json 或其项目级配置规范
 
   5. 客户端里需要两个 server：
-     - hy-workflow: npx -y --prefer-online github:voxServalG/hy-workflow-mcp
+     - hy-workflow: npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main
      - docs-gardener: npx -y --prefer-online github:voxServalG/docs-gardener mcp
 
   6. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。hy_init 不会运行 setup，也不会启动交互式 TUI。

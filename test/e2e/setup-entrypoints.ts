@@ -42,3 +42,5 @@ assert(setup.includes('"setup.ps1"'), "setup-generated workflow should include s
 assert(workflow.includes('"setup.ps1"'), "checked-in workflow should include setup.ps1 in path filters");
 
 console.log("setup-entrypoints: cross-platform setup entrypoints are consistent");
+
+assert(setup.includes("hy-workflow-mcp#main"), "setup prompt should include the preferred GitHub npx #main MCP command");

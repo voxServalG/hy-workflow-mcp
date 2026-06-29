@@ -480,7 +480,7 @@ function quoteArg(value: string): string {
 export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
   const mode = needsExplicit ? " --dry-run" : " --apply-suggested";
   return [
-    "npx -y --prefer-online github:voxServalG/hy-workflow-mcp config",
+    "npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config",
     mode.trim(),
     "--json",
     "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
