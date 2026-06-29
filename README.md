@@ -54,6 +54,12 @@ hy_status
 
 这个流程的重点很简单：
 
+MCP server 通过 GitHub npx 在线运行，不需要本地 clone 仓库：
+
+```bash
+npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main
+```
+
 1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。没有被上下文捉到的东西，与不存在没有区别。
 2. `hy_plan` 产出 scope、dependency DAG、验证命令、风险和取舍，并完整展示给用户。
 3. 用户明确 approve 后，`hy_read_docs(before_approve)` 再审计一次 PlanDoc，确认事实没有偏移。
@@ -69,6 +75,8 @@ hy_status
 `hy-workflow.json` 是人工维护的唯一项目配置源头。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
 
 项目内产物分三类：
+
+`dist/` 是编译生成产物，不提交到仓库。GitHub npx 安装时由 `prepare` 脚本自动构建。
 
 | 类别 | 产物 | 规则 |
 | --- | --- | --- |

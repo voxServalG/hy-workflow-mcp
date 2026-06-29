@@ -23,4 +23,4 @@ workflow-contract lint is a first-class project lint layer. It checks contracts 
 - workflow: src/runtime/state-machine.ts and docs/state-machine.md must agree on phases and transitions.
 - artifacts: local runtime files such as .hy/, .opencode/, .codex/, .mcp.json, codelint.json, doclint.json, and docs-gardener.json must not be tracked.
 - skills: docs/skills/core/SKILL.md must reference real tools and include workflow order, output, error, and recovery guidance.
-- npm: package.json must expose clean scripts, bin, main, and minimal files; npm pack dry-run must not include local, test, source, or generated garbage.
+- npm: package.json must expose clean scripts including prepare, bin at dist/server.js, and minimal files including setup/setup.ps1; dist must not be tracked by git; npm pack dry-run must not include local, test, source, or generated garbage.
