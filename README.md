@@ -108,19 +108,19 @@ npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main
 
 ## 验证
 
-`hy_verify` 包含 7 层 gate：
+`hy_verify` 包含本地任务 gate；完整 lint 由 GitHub Actions/setup workflow 执行：
 
 ```text
-1. lint     → doclint + codelint（在 GitHub Actions 中执行，不在 hy_verify 内）
-2. compile  → 项目编译或类型检查
-3. scope    → git diff 文件必须属于说好的范围内
-4. boundary → entry_points 逐条执行
-5. platform → 平台和运行环境检查
-6. smoke    → 快速冒烟
-7. tests    → 完整测试套件
+CI lint  → doclint + codelint + workflow-contract lint
+compile  → 项目编译或类型检查
+scope    → git diff 文件必须属于说好的范围内
+boundary → entry_points 逐条执行
+platform → 平台和运行环境检查
+smoke    → 快速冒烟
+tests    → 完整测试套件
 ```
 
-如果 verify 失败，agent 回到 edit 修复后重新验证。只有 verify 通过，才允许 commit 和进入 CI。
+如果本地 gate 失败，agent 回到 edit 修复后重新验证。只有本地 gate 通过，才允许 commit 并进入 CI；CI 继续执行完整 lint 和测试。
 
 ## 自举
 
