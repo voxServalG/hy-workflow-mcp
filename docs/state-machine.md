@@ -86,7 +86,7 @@ interface WorkflowState {
 
 ## verifyHash
 
-`computeVerifyHash()` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_verify` 写入 `verifyHash`；当前 `hy_commit` 检查该值存在，确保 commit 前成功跑过 verify。
+`computeVerifyHash()` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_verify` 写入顶层 `WorkflowState.verifyHash`；当前 `hy_commit` 检查该值存在，确保 commit 前成功跑过 verify。`hy_commit` 生成 commit/PR body 时，会从当前 `WorkflowState.plan` 直接序列化完整 PlanDoc JSON，并额外写入 `planHash` 与顶层 `verifyHash`。如果 `hy_amend_plan` 修改过 scope，必须重新 `hy_verify` 后才能进入 commit，因此 PR body 记录的是 amended 后重新验证过的当前 PlanDoc 快照。CI、merge、chain 和 reset 阶段不会再改写 PR body。
 
 ## ToolResult envelope
 

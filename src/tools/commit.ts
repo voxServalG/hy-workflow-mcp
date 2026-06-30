@@ -1,6 +1,49 @@
-import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computePlanHash, type PlanDoc } from "../state.js";
 import { commitScope, push, createPr } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
+
+function markdownFenceFor(value: string): string {
+  const runs = value.match(/`+/g) ?? [];
+  const longest = runs.reduce((max, run) => Math.max(max, run.length), 2);
+  return "`".repeat(longest + 1);
+}
+
+export function buildCommitBody(args: { body: string; plan: PlanDoc; verifyHash: string }): string {
+  const planDocJson = JSON.stringify(args.plan, null, 2);
+  const fence = markdownFenceFor(planDocJson);
+
+  return [
+    args.body,
+    "",
+    "---",
+    "",
+    "**Scope**",
+    `- Changes: ${args.plan.scope.changes.join(", ") || "none"}`,
+    `- New files: ${args.plan.scope.new_files.join(", ") || "none"}`,
+    `- Delete: ${args.plan.scope.delete.join(", ") || "none"}`,
+    "",
+    "**Boundary**",
+    `- Entry points: ${args.plan.boundary.entry_points.length} checks`,
+    `- No new deps: ${args.plan.boundary.no_new_external}`,
+    "",
+    "**Verify**",
+    `- smoke: ${args.plan.verify.smoke.length} checks, tests: ${args.plan.verify.tests.length} checks`,
+    `- hash: \`${args.verifyHash}\``,
+    "",
+    "**PlanDoc audit**",
+    `- planHash: \`${computePlanHash(args.plan) ?? "none"}\``,
+    `- verifyHash: \`${args.verifyHash}\``,
+    "",
+    "<details>",
+    "<summary>Raw PlanDoc JSON</summary>",
+    "",
+    `${fence}json`,
+    planDocJson,
+    fence,
+    "",
+    "</details>",
+  ].join("\n");
+}
 
 export async function handleCommit(args: { title: string; body: string }): Promise<ToolResult> {
   const state = readState();
@@ -12,25 +55,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
 
   const root = projectRoot();
 
-  // Build enhanced PR body with plan context
-  const body = [
-    args.body,
-    "",
-    "---",
-    "",
-    "**Scope**",
-    `- Changes: ${state.plan.scope.changes.join(", ") || "none"}`,
-    `- New files: ${state.plan.scope.new_files.join(", ") || "none"}`,
-    `- Delete: ${state.plan.scope.delete.join(", ") || "none"}`,
-    "",
-    "**Boundary**",
-    `- Entry points: ${state.plan.boundary.entry_points.length} checks`,
-    `- No new deps: ${state.plan.boundary.no_new_external}`,
-    "",
-    "**Verify**",
-    `- smoke: ${state.plan.verify.smoke.length} checks, tests: ${state.plan.verify.tests.length} checks`,
-    `- hash: \`${state.verifyHash}\``,
-  ].join("\n");
+  const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: state.verifyHash });
 
   const c = commitScope(root, state.plan.scope, args.title, body);
   if (!c.ok) return toolResult("commit", { error: c.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
