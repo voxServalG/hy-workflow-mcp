@@ -79,13 +79,92 @@ function addCheck(lines: string[], check: CheckItem): void {
   lines.push(`  expectation: exit ${check.expected_exit}`);
 }
 
+function cleanSentence(text: string): string {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed) return "";
+  return /[。.!?]$/.test(trimmed) ? trimmed : `${trimmed}。`;
+}
+
+function allScopePaths(p: PlanDoc): string[] {
+  return [...p.scope.new_files, ...p.scope.changes, ...p.scope.delete];
+}
+
+function unique(items: string[]): string[] {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+function inlineCodeList(items: string[], max = 4): string {
+  const shown = items.slice(0, max).map(item => `\`${item}\``).join("、");
+  return items.length > max ? `${shown} 等 ${items.length} 项` : shown;
+}
+
+function pathKind(path: string): "runtime" | "test" | "docs" | "config" | "artifact" | "other" {
+  if (path.startsWith("src/")) return "runtime";
+  if (path.startsWith("test/") || path.startsWith("tests/")) return "test";
+  if (path.startsWith("docs/") || path === "README.md") return "docs";
+  if (path.startsWith("dist/")) return "artifact";
+  if (path.startsWith(".github/") || path === "setup" || path === "setup.ps1" || path === "package.json" || path === "hy-workflow.json" || path === ".gitignore") return "config";
+  return "other";
+}
+
+function describeScopeEffect(p: PlanDoc): string {
+  const kinds = new Set(allScopePaths(p).map(pathKind));
+  const has = (kind: ReturnType<typeof pathKind>) => kinds.has(kind);
+  let effect: string;
+
+  if (has("runtime") && has("test") && has("docs")) {
+    effect = "运行时代码、测试覆盖和文档说明会保持一致，用户可见行为、回归验证和公开契约同步更新";
+  } else if (has("runtime") && has("test")) {
+    effect = "运行时代码会体现本次行为变化，并由测试覆盖对应回归场景";
+  } else if (has("runtime") && has("docs")) {
+    effect = "运行时代码和用户可读说明会同步更新，公开契约反映新的行为边界";
+  } else if (has("runtime")) {
+    effect = "运行时代码会体现本次计划声明的行为变化";
+  } else if (has("docs") && has("test")) {
+    effect = "文档契约和验证覆盖会同步更新，后续变更能被测试守住";
+  } else if (has("docs")) {
+    effect = "文档体系会呈现本次计划声明的信息结构和用户可读说明，代码行为保持不变";
+  } else if (has("test")) {
+    effect = "测试体系会覆盖本次计划声明的验证场景，生产代码行为保持不变";
+  } else if (has("config")) {
+    effect = "项目配置、入口或自动化契约会反映本次计划声明的运行边界";
+  } else if (has("artifact")) {
+    effect = "发布或构建产物会与本次计划声明的分发边界保持一致";
+  } else {
+    effect = "计划 scope 内的项目文件会达到本次任务声明的目标状态";
+  }
+
+  if (p.scope.delete.length) {
+    effect += "，计划删除项会从项目中移除";
+  }
+  return effect;
+}
+
+function describeVerificationState(p: PlanDoc): string {
+  const commands = unique([...p.verify.smoke, ...p.verify.tests].map(check => check.command));
+  if (!commands.length) return "验证通过时，计划声明的检查应证明该项目状态成立。";
+  return `验证通过时，${inlineCodeList(commands, 3)} 均应 exit 0，证明该项目状态成立。`;
+}
+
+function buildExpectedState(p: PlanDoc): string {
+  const paths = unique(allScopePaths(p));
+  const keyPaths = paths.length ? inlineCodeList(paths, 4) : "PlanDoc 声明的 scope";
+  return [
+    `计划应用后，项目应满足：${cleanSentence(p.task)}`,
+    `${describeScopeEffect(p)}。`,
+    `主要落点：${keyPaths}。`,
+    `边界状态：${cleanSentence(p.boundary.dependency_dag)}`,
+    describeVerificationState(p),
+  ].join(" ");
+}
+
 function buildSummary(p: PlanDoc): string {
   const lines: string[] = [];
   lines.push("## Plan");
   lines.push("");
   lines.push(`**现在状态**: ${p.task}`);
   lines.push("");
-  lines.push("**期望状态**: 完成后，审批摘要会继续由结构化函数生成，但用户看到的是清楚的审批说明：改什么、为什么改、怎么验证、有什么风险，以及为什么选这个方案。");
+  lines.push(`**期望状态**: ${buildExpectedState(p)}`);
   lines.push("");
 
   lines.push("### Scope");
