@@ -124,7 +124,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_commit
 
-git add -A → commit → push → gh pr create。PR body 自动附加 scope/boundary/verify 元信息和 verifyHash。
+git add -A → commit → push → gh pr create。PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 GitHub PR 创建成功之后，不反向改写 PR body。
 
 - **进入 Phase**: `commit`
 - **转换到**: `ci`
