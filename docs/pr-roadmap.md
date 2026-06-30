@@ -2,6 +2,8 @@
 
 This document turns the current open issues into small, reviewable PRs. Each PR should have one owner, one branch, one verification path, and a scope small enough to review without rereading every issue.
 
+The product direction behind this roadmap is captured in [Product Vision](./product-vision.md). This roadmap is the implementation split; the vision document is the long-term product target.
+
 ## Rules
 
 - Trust and recovery work come before public polish.
