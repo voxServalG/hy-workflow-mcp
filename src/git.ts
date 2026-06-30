@@ -24,11 +24,60 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export function createBranch(root: string, category: string, topic: string): { ok: boolean; branch: string; error?: string } {
+type GitOperationError = {
+  type: "config" | "io";
+  subtype: "config_invalid" | "io_failure";
+  code: string;
+  message: string;
+  hint: string;
+  detail?: Record<string, unknown>;
+  cause?: string;
+  retryable?: boolean;
+};
+
+function remoteBaseRefExists(root: string, baseBranch: string): boolean {
+  const ref = `refs/remotes/origin/${baseBranch}`;
+  return run(`git show-ref --verify --quiet ${shellQuote(ref)}`, root).ok;
+}
+
+export function createBranch(root: string, category: string, topic: string): { ok: boolean; branch: string; error?: GitOperationError } {
   const name = `${category}/${topic}`;
   const base = getBaseBranch(root);
-  const r = run(`git checkout -b ${name} origin/${base}`, root);
-  if (!r.ok) return { ok: false, branch: name, error: r.stderr };
+  const remoteRef = `origin/${base}`;
+
+  if (!remoteBaseRefExists(root, base)) {
+    return {
+      ok: false,
+      branch: name,
+      error: {
+        type: "config",
+        subtype: "config_invalid",
+        code: "BASE_BRANCH_REMOTE_MISSING",
+        message: `Base branch remote ref is missing: ${remoteRef}.`,
+        hint: `Fetch or publish the configured base branch before retrying hy_branch, for example: git fetch origin ${base}. If this project uses a different base branch, update hy-workflow.json project.baseBranch.`,
+        detail: { branch: name, baseBranch: base, remoteRef },
+        retryable: true,
+      },
+    };
+  }
+
+  const r = run(`git checkout -b ${shellQuote(name)} ${shellQuote(remoteRef)}`, root);
+  if (!r.ok) {
+    return {
+      ok: false,
+      branch: name,
+      error: {
+        type: "io",
+        subtype: "io_failure",
+        code: "GIT_CHECKOUT_FAILED",
+        message: `Could not create branch ${name} from ${remoteRef}.`,
+        hint: "Inspect git status and the branch name, fix the checkout failure, then retry hy_branch.",
+        detail: { branch: name, baseBranch: base, remoteRef },
+        cause: r.stderr,
+        retryable: false,
+      },
+    };
+  }
   return { ok: true, branch: name };
 }
 
