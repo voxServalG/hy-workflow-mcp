@@ -33,11 +33,13 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 
 `hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是运行时兼容产物，不提交。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（单一 CI workflow、`hy-workflow.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
 
+如果这些 local/runtime artifacts 已经被 Git 跟踪，`hy_init` 成功返回但会额外给出 `trackedLocalArtifacts`，并在 display/hint 中提示把它们放进 setup artifact sync PR 里用 `git rm --cached -- <file...>` 从索引移除。这个提示用于迁移期清理，不会阻止进入 `plan`。
+
 Artifact contract: setup/hy_init 产生的 tracked project artifacts 应通过 PR 提交，local/runtime artifacts 不提交。若运行 setup 后出现 tracked diff，应先做 setup artifact sync PR，不要混入无关任务。
 
 ## Session setup check
 
-MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.git/hy-workflow/setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
+MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.git/hy-workflow/setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。`error.message` 必须是人类可读的 setup refresh 说明，同时保留 `setup_update_required` subtype、版本和 stamp path 字段，不能把结构化对象序列化成 JSON 字符串。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
 
 ## Config CLI
 
@@ -74,7 +76,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_branch
 
-创建 git 分支，格式 `{category}/{topic}`。category 必须在 `["refactor","feat","chore","docs","ci","fix","test"]` 中。
+创建 git 分支，格式 `{category}/{topic}`。category 必须在 `["refactor","feat","chore","docs","ci","fix","test"]` 中。分支从 `origin/<baseBranch>` 创建；如果该远程基准 ref 不存在，`hy_branch` 返回结构化 `config/config_invalid` 错误和 `BASE_BRANCH_REMOTE_MISSING` code，提示 fetch/push base branch 或修正 `hy-workflow.json: project.baseBranch`，而不是把 git fatal 暴露为 internal uncaught。
 
 - **进入 Phase**: `approve`, `branch`
 - **转换到**: `edit`

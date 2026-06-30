@@ -311,6 +311,7 @@ cat <<PROMPT
      - hy-workflow.json
 
   2. 不应提交的本地、运行时、客户端产物：
+     - .hy/
      - .opencode/
      - .codex/
      - .mcp.json

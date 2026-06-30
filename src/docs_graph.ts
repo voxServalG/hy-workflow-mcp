@@ -33,6 +33,7 @@ function graphPath(root: string): string {
 function normalizeLink(
   fromFile: string,
   linkTarget: string,
+  root: string,
   docsRoot: string
 ): string | null {
   // Skip anchor-only links, external URLs
@@ -40,10 +41,15 @@ function normalizeLink(
   if (linkTarget.startsWith("http://") || linkTarget.startsWith("https://")) return null;
   if (linkTarget.startsWith("mailto:")) return null;
 
+  const targetPath = linkTarget.split(/[?#]/, 1)[0];
+  if (!targetPath) return null;
+
   // Resolve relative to the source file's directory
-  const resolved = path.resolve(path.dirname(fromFile), linkTarget);
-  const rel = path.relative(docsRoot, resolved).split(path.sep).join("/");
-  if (rel.startsWith("..")) return null; // outside docsDir, skip
+  const resolved = path.resolve(path.dirname(fromFile), targetPath);
+  const docsRel = path.relative(docsRoot, resolved).split(path.sep).join("/");
+  if (docsRel.startsWith("..") || path.isAbsolute(docsRel)) return null; // outside docsDir, skip
+
+  const rel = path.relative(root, resolved).split(path.sep).join("/");
 
   const ext = path.extname(rel).toLowerCase();
   if (!DOC_EXTENSIONS.has(ext)) return null;
@@ -86,6 +92,7 @@ const LINK_RE = /\[([^\]]*)\]\(([^)]*)\)/g;
 function parseLinks(
   content: string,
   sourceFile: string,
+  root: string,
   docsRoot: string
 ): DocsGraphLink[] {
   const links: DocsGraphLink[] = [];
@@ -99,7 +106,7 @@ function parseLinks(
     while ((m = LINK_RE.exec(line)) !== null) {
       const anchor = m[1].trim();
       const rawTarget = m[2].trim();
-      const target = normalizeLink(sourceFile, rawTarget, docsRoot);
+      const target = normalizeLink(sourceFile, rawTarget, root, docsRoot);
       if (target) {
         links.push({ anchor, target, line: lineIdx + 1 });
       }
@@ -121,7 +128,7 @@ export function buildDocsGraph(root: string, docsDir: string): DocsGraph {
     const fullPath = path.join(root, relPath);
     const content = fs.readFileSync(fullPath, "utf-8");
     const sha = sha256(content);
-    const links = parseLinks(content, fullPath, docsRoot);
+    const links = parseLinks(content, fullPath, root, docsRoot);
     rawEntries[relPath] = { sha, links };
   }
 
@@ -201,6 +208,17 @@ export function isGraphStale(root: string, graph: DocsGraph): boolean {
   const storedDigestPayload = storedPaths.map(k => `${k}:${graph.entries[k].sha256}`).join("|");
   const storedDigest = shortHash(storedDigestPayload);
   return currentDigest !== storedDigest;
+}
+
+export function hasLegacyRelativeTargets(root: string, graph: DocsGraph): boolean {
+  for (const entry of Object.values(graph.entries)) {
+    for (const link of entry.links) {
+      if (graph.entries[link.target]) continue;
+      if (link.target.startsWith(`${graph.docsDir}/`)) continue;
+      if (fs.existsSync(path.join(root, graph.docsDir, link.target))) return true;
+    }
+  }
+  return false;
 }
 
 // ── Task-driven BFS traversal ───────────────────────────────
@@ -351,7 +369,7 @@ export function incrementalUpdate(
 
     // Parse links fresh
     const oldLinks = oldEntry?.links ?? [];
-    const newLinks = parseLinks(content, fullPath, docsRoot);
+    const newLinks = parseLinks(content, fullPath, root, docsRoot);
 
     // Update reverse index: remove old links, add new links
     for (const oldLink of oldLinks) {
@@ -369,7 +387,7 @@ export function incrementalUpdate(
           updated.entries[newLink.target] = {
             path: newLink.target,
             sha256: sha256(targetContent),
-            links: parseLinks(targetContent, targetFull, docsRoot),
+            links: parseLinks(targetContent, targetFull, root, docsRoot),
             referencedBy: [cf],
           };
         }
@@ -438,7 +456,7 @@ export function detectBrokenLinks(
 
 export function ensureGraph(root: string, docsDir: string): DocsGraph {
   const existing = loadDocsGraph(root);
-  if (existing && !isGraphStale(root, existing)) {
+  if (existing && existing.docsDir === docsDir && !isGraphStale(root, existing) && !hasLegacyRelativeTargets(root, existing)) {
     return existing;
   }
   return buildDocsGraph(root, docsDir);

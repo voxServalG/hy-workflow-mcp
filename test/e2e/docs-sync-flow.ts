@@ -15,7 +15,7 @@ function run(cmd: string, root: string): void {
 function basePlan(): PlanDoc {
   return {
     task: "sync documentation after implementation edits",
-    scope: { changes: ["src/app.ts", "README.md"], new_files: [], delete: [] },
+    scope: { changes: ["src/app.ts", "README.md", "docs/index.md"], new_files: [], delete: [] },
     boundary: {
       dependency_dag: "src/app.ts is the implementation entry; README.md documents the visible behavior.",
       entry_points: ["node --version"],
@@ -58,11 +58,34 @@ try {
   writeFileSync(join(root, "src", "app.ts"), "export const value = 1;\n");
   writeFileSync(join(root, "README.md"), "# App\n\nValue is 1.\n");
   writeFileSync(join(root, "docs", "workflow.md"), "# Workflow\n\nDocs sync happens before verify.\n");
+  writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nSee [Usage](./usage.md).\n");
+  writeFileSync(join(root, "docs", "usage.md"), "# Usage\n\nUse the app.\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { docsDir: "docs" } }, null, 2) + "\n");
   writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "main" }, null, 2) + "\n");
   run("git add .", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
+
+  mkdirSync(join(root, ".git", "hy-workflow"), { recursive: true });
+  writeFileSync(join(root, ".git", "hy-workflow", "docs-graph.json"), JSON.stringify({
+    digest: "legacy",
+    docsDir: "docs",
+    entryPoints: ["docs/index.md"],
+    entries: {
+      "docs/index.md": {
+        path: "docs/index.md",
+        sha256: "legacy",
+        links: [{ anchor: "Usage", target: "usage.md", line: 3 }],
+        referencedBy: [],
+      },
+      "docs/usage.md": {
+        path: "docs/usage.md",
+        sha256: "legacy",
+        links: [],
+        referencedBy: ["docs/index.md"],
+      },
+    },
+  }, null, 2) + "\n", "utf-8");
 
   chdir(root);
   writeFileSync(join(root, "src", "app.ts"), "export const value = 2;\n");
@@ -100,9 +123,14 @@ try {
   if (!readState().syncDocs?.allowedDocs.includes("README.md")) {
     throw new Error("hy_sync_docs should record README.md as an allowed sync file");
   }
-  // Check graph update info exists (graph only updates for docsDir files, not README.md)
   if (!synced.graphInfo || typeof synced.graphInfo.updated !== "boolean") {
     throw new Error(`hy_sync_docs should report graphInfo with updated status, got ${JSON.stringify(synced.graphInfo)}`);
+  }
+  if (!synced.graphInfo.updated) {
+    throw new Error(`hy_sync_docs should update the docs graph for docs/index.md, got ${JSON.stringify(synced.graphInfo)}`);
+  }
+  if (synced.graphInfo.brokenLinks !== 0) {
+    throw new Error(`valid ./usage.md links should not be reported as broken, got ${JSON.stringify(synced.graphInfo)}`);
   }
 
   const syncedState = readState();

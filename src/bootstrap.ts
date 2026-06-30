@@ -63,11 +63,16 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
 
   return toolResult(phase, {
     error: {
-      type: "setup_update_required",
+      type: "config",
+      subtype: "setup_update_required",
+      code: "SETUP_UPDATE_REQUIRED",
+      message: `hy-workflow setup update required. ${reason}`,
+      hint: "Run setup in the project root, then restart the agent/MCP session before calling hy_* tools again.",
       status: check.status,
       currentVersion: check.currentVersion,
       latestVersion: check.latestVersion,
       stampPath: check.stampPath,
+      retryable: true,
     },
     display: {
       title: "hy-workflow setup update required",

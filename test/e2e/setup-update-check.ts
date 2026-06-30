@@ -63,6 +63,9 @@ try {
   assert(missingResult.phase === "init", "missing setup envelope should include phase");
   assert(missingResult.next === "init", "missing setup envelope should include next");
   assert(missingResult.display?.title === "hy-workflow setup update required", "missing setup envelope should include display title");
+  assert(missingResult.error?.message.includes("hy-workflow setup update required"), "missing setup error should have a human-readable message");
+  assert(!missingResult.error?.message.trim().startsWith("{"), "missing setup error message should not be serialized JSON");
+  assert(missingResult.error?.code === "SETUP_UPDATE_REQUIRED", "missing setup error should expose a stable code");
   assert(Boolean(missingResult.hint), "missing setup envelope should include hint");
   assert(missingResult.requires_user === true, "missing setup envelope should require user");
   assert(missingResult.stop_here === true, "missing setup envelope should stop here");
