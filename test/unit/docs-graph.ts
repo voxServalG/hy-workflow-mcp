@@ -22,6 +22,10 @@ write(root, "docs/index.md", [
   "[Usage](./usage%20guide.md)",
   "[API](./api(v1).md)",
   "[Reference][usage-ref]",
+  "`[Inline Code](./inline-code.md)`",
+  "```",
+  "[Fenced Code](./fenced-code.md)",
+  "```",
   "[External](https://example.com/out.md)",
   "[Outside](../README.md)",
   "",
@@ -40,11 +44,29 @@ const targets = index.links.map(link => link.target).sort();
 assert(targets.includes("docs/usage guide.md"), `URL encoded target should decode into docs path: ${targets.join(", ")}`);
 assert(targets.includes("docs/api(v1).md"), `inline target with parentheses should parse: ${targets.join(", ")}`);
 assert(targets.includes("docs/reference.md"), `reference-style target should parse: ${targets.join(", ")}`);
+assert(!targets.includes("docs/inline-code.md"), "inline code links should not enter DocsGraph");
+assert(!targets.includes("docs/fenced-code.md"), "fenced code links should not enter DocsGraph");
 assert(!targets.includes("https://example.com/out.md"), "external links should not enter DocsGraph");
 assert(!targets.includes("README.md"), "links outside docsDir should not enter DocsGraph");
 assert(graph.entries["docs/reference.md"].referencedBy.includes("docs/index.md"), "reference target should record inbound edge");
 assert(!isGraphStale(root, graph), "freshly built graph should not be stale");
 
+write(root, "doc/index.md", "# Doc\n\n[Outside Prefix](../doc-extra/outside.md)\n");
+write(root, "doc-extra/outside.md", "# Outside prefix\n");
+const prefixGraph = buildDocsGraph(root, "doc");
+assert(!prefixGraph.entries["doc/index.md"].links.some(link => link.target === "doc-extra/outside.md"), "docsDir=doc must not include doc-extra by string prefix");
+
+try {
+  buildDocsGraph(root, "../outside-docs");
+  throw new Error("buildDocsGraph should reject docsDir outside the repository root");
+} catch (error: any) {
+  assert(String(error?.message ?? error).includes("must not contain parent segments"), `unexpected docsDir error: ${String(error?.message ?? error)}`);
+}
+
+const rootDocsGraph = buildDocsGraph(root, ".");
+assert(rootDocsGraph.entries["docs/index.md"] !== undefined, "docsDir=. should be accepted as the project root");
+
+buildDocsGraph(root, "docs");
 const graphFile = path.join(root, ".git", "hy-workflow", "docs-graph.json");
 const cached = JSON.parse(fs.readFileSync(graphFile, "utf-8"));
 cached.sentinel = "cache-hit";

@@ -49,9 +49,9 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 自动读取 `hy-workflow.json` 的 `project.docsDir`，使用文档引用图（DocsGraph）驱动渐进式读取。`before_plan` 在 `hy_plan` 前建立规划事实基线，必须传 `task`；`before_approve` 在用户批准 PlanDoc 后、`hy_approve` 前产出 agent 侧文档审计；`after_edit` 在实现编辑后、`hy_sync_docs` 前审计当前实现 diff 与文档同步需求。三者都是自动 gate，不新增人类审核。
 
-读取行为：从文档入口（`docs/index.md` 或自动检测的首个 `.md` 文件）出发，通过 markdown 内部链接引用图做 BFS 遍历，只读取与 task 关键字匹配的路径上的文档，不再对全量文档做 6000 chars 截断。每个文档的完整内容直接返回。文档引用图持久化在 `.git/hy-workflow/docs-graph.json`。DocsGraph 会解析本地 inline links、URL encoded 路径、文件名包含括号的目标、reference-style links；外部 URL、anchor-only 和 docsDir 外路径不会进入图。缓存 freshness 使用版本化内容 digest，解析器语义升级或文档内容变化会重建，未变化时复用缓存。
+读取行为：先把 `project.docsDir` 解析为项目根内的相对目录；越界、绝对路径或空路径会结构化拒绝，不会读取仓库外文件。从文档入口（配置 docsDir 下的 `index.md`、`README.md` 或自动检测的首个 `.md` 文件）出发，通过 markdown 内部链接引用图做 BFS 遍历，只读取与 task 关键字匹配的路径上的文档，不再对全量文档做 6000 chars 截断。每个文档的完整内容直接返回。文档引用图持久化在 `.git/hy-workflow/docs-graph.json`。DocsGraph 会解析本地 inline links、URL encoded 路径、文件名包含括号的目标、reference-style links；外部 URL、anchor-only、代码块/inline code 内链接和 docsDir 外路径不会进入图。路径归属使用规范化 path-relative 边界判断，不用字符串前缀判断。缓存 freshness 使用版本化内容 digest，解析器语义升级或文档内容变化会重建，未变化时复用缓存。`AGENTS.md` 和配置 docsDir 下的 `README.md` 会作为 supplemental entry points 一致读取。
 
-成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash、实现 digest 不匹配，或 `before_approve` 发现文档 digest 相对 `before_plan` 已变化时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑或重建 PlanDoc 的下游 gate；before_plan task 文案不一致只作为诊断信息。
+成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash、实现 digest 不匹配，或 `before_approve` 发现文档 digest / DocsGraph digest 相对 `before_plan` 已变化时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑或重建 PlanDoc 的下游 gate；before_plan task 文案不一致只作为诊断信息。
 
 ## hy_plan
 
@@ -98,7 +98,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或 setup prompt 文件内同步，再运行 `hy_verify`。
 
-同步时增量维护文档引用图：只 re-parse 实际改动的文档文件来更新 `.git/hy-workflow/docs-graph.json`，并检测引用图中的坏链接（outgoing link 目标文件不存在的场景）。检测结果通过 `graphInfo` 字段返回。
+同步时增量维护文档引用图：re-parse 实际改动、创建或删除的 docsDir 内文档文件来更新 `.git/hy-workflow/docs-graph.json`，并检测引用图中的坏链接（包括删除文档后仍被其他文档引用的入站坏链）。检测结果通过 `graphInfo` 字段返回，坏链明细包含 `source:line -> target`。docsDir membership 使用规范化路径边界判断，避免 `docsDir=doc` 误包含 `docs-extra/`。
 
 - **进入 Phase**: `edit`, `verify`
 - **转换到**: 保持 `edit`，返回 `next: "verify"`
