@@ -58,7 +58,13 @@ export async function handleApprove(args: { approved: string; note?: string }): 
 
   // Any input other than "approve" = rejection, content is the reason
   const next = transition(state, "plan");
-  next.approval = { time: new Date().toISOString(), note: input || args.note || "rejected" };
+  next.approval = null;
+  next.verifyHash = null;
+  next.verifiedImplementationDigest = null;
+  next.verifiedManifestHash = null;
+  next.pendingAmendment = null;
+  next.implementationManifest = null;
+  next.syncDocs = null;
   writeState(next);
   return toolResult("plan", {
     approved: false,

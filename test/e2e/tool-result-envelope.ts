@@ -150,6 +150,13 @@ try {
     throw new Error(`hy_commit without branch should report No active branch, got ${JSON.stringify(noBranchCommit)}`);
   }
 
+  writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/not-current", verifyHash: "abc123" });
+  const branchMismatchCommit = await handleCommit({ title: "test", body: "test" });
+  assertEnvelope("hy_commit:branch-mismatch", branchMismatchCommit);
+  if (branchMismatchCommit.error?.code !== "GIT_BRANCH_MISMATCH") {
+    throw new Error(`hy_commit should reject current branch mismatch, got ${JSON.stringify(branchMismatchCommit)}`);
+  }
+
   writeState(baseState("ci"));
   const ciResult = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
   assertEnvelope("hy_ci", ciResult);

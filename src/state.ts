@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
-import { PHASES, VALID_TRANSITIONS, type Phase } from "./runtime/state-machine.js";
+import { PHASES, VALID_TRANSITIONS, isPhase, type Phase } from "./runtime/state-machine.js";
 import { configuredBaseBranch, currentGitBranch, findProjectRoot, resolveGitPrivatePath } from "./runtime/project.js";
 import { createHash } from "node:crypto";
 
@@ -181,6 +181,8 @@ export interface WorkflowState {
   plan: PlanDoc | null;
   approval: Approval | null;
   verifyHash: string | null;
+  verifiedImplementationDigest?: string | null;
+  verifiedManifestHash?: string | null;
   pendingAmendment?: PendingPlanAmendment | null;
   implementationManifest?: ImplementationManifest | null;
   documentReads?: DocumentReads | null;
@@ -274,13 +276,93 @@ export function cleanupLegacyRuntimeFiles(root = projectRoot()): void {
 
 // ── Read / Write ─────────────────────────────────────────────
 
+function structuredWorkflowStateError(code: string, message: string, detail?: Record<string, unknown>): never {
+  throw {
+    type: "workflow_state",
+    subtype: "invalid_phase",
+    code,
+    message,
+    hint: "Inspect or remove the Git-private hy-workflow runtime state, then retry from hy_status.",
+    detail,
+    retryable: false,
+  };
+}
+
+function initialState(): WorkflowState {
+  return {
+    version: "1",
+    phase: "init",
+    branch: null,
+    prNumber: null,
+    plan: null,
+    approval: null,
+    verifyHash: null,
+    verifiedImplementationDigest: null,
+    verifiedManifestHash: null,
+    pendingAmendment: null,
+    implementationManifest: null,
+    documentReads: null,
+    syncDocs: null,
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizeNullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function normalizeNullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeState(raw: unknown, file: string): WorkflowState {
+  if (!isObject(raw)) {
+    structuredWorkflowStateError("WORKFLOW_STATE_INVALID", `Workflow state is not an object: ${file}.`, { file });
+  }
+
+  const phase = raw.phase;
+  if (typeof phase !== "string" || !isPhase(phase)) {
+    structuredWorkflowStateError("WORKFLOW_STATE_INVALID_PHASE", `Workflow state has an invalid phase in ${file}.`, { file, phase });
+  }
+
+  return {
+    ...initialState(),
+    ...raw,
+    version: "1",
+    phase,
+    branch: normalizeNullableString(raw.branch),
+    prNumber: normalizeNullableNumber(raw.prNumber),
+    plan: (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null,
+    approval: (isObject(raw.approval) ? raw.approval : null) as Approval | null,
+    verifyHash: normalizeNullableString(raw.verifyHash),
+    verifiedImplementationDigest: normalizeNullableString(raw.verifiedImplementationDigest),
+    verifiedManifestHash: normalizeNullableString(raw.verifiedManifestHash),
+    pendingAmendment: (isObject(raw.pendingAmendment) ? raw.pendingAmendment : null) as PendingPlanAmendment | null,
+    implementationManifest: (isObject(raw.implementationManifest) ? raw.implementationManifest : null) as ImplementationManifest | null,
+    documentReads: (isObject(raw.documentReads) ? raw.documentReads : null) as DocumentReads | null,
+    syncDocs: (isObject(raw.syncDocs) ? raw.syncDocs : null) as SyncDocsRecord | null,
+  };
+}
+
+function parseWorkflowStateFile(file: string): WorkflowState {
+  try {
+    return normalizeState(JSON.parse(fs.readFileSync(file, "utf-8")), file);
+  } catch (e: any) {
+    if (e?.type === "workflow_state") throw e;
+    structuredWorkflowStateError("WORKFLOW_STATE_CORRUPT", `Workflow state file is not valid JSON: ${file}.`, { file, cause: e?.message ?? String(e) });
+  }
+}
+
 export function readState(): WorkflowState {
   const root = projectRoot();
   const p = statePath();
   if (!fs.existsSync(p)) {
     const legacy = legacyStatePath(root);
     if (fs.existsSync(legacy)) {
-      const state = JSON.parse(fs.readFileSync(legacy, "utf-8")) as WorkflowState;
+      const state = parseWorkflowStateFile(legacy);
       try {
         writeState(state);
         cleanupLegacyRuntimeFiles(root);
@@ -288,19 +370,10 @@ export function readState(): WorkflowState {
       return state;
     }
     cleanupLegacyRuntimeFiles(root);
-    return {
-      version: "1",
-      phase: "init",
-      branch: null,
-      prNumber: null,
-      plan: null,
-      approval: null,
-      verifyHash: null,
-    };
+    return initialState();
   }
-  const raw = fs.readFileSync(p, "utf-8");
   cleanupLegacyRuntimeFiles(root);
-  return JSON.parse(raw) as WorkflowState;
+  return parseWorkflowStateFile(p);
 }
 
 export function writeState(state: WorkflowState): void {
@@ -347,10 +420,44 @@ export function computeVerifyHash(state: WorkflowState): string {
     scope: state.plan?.scope,
     boundary: state.plan?.boundary,
     rubrics: state.plan?.verify,
+    implementationDigest: state.verifiedImplementationDigest ?? null,
+    manifestHash: state.verifiedManifestHash ?? computeImplementationManifestHash(state.implementationManifest),
   });
   const hash = createHash("sha256");
   hash.update(payload);
   return hash.digest("hex").slice(0, 12);
+}
+
+function shortHash(value: string): string {
+  const hash = createHash("sha256");
+  hash.update(value);
+  return hash.digest("hex").slice(0, 12);
+}
+
+function sorted(values: string[] | undefined): string[] {
+  return [...(values ?? [])].sort();
+}
+
+export function computeImplementationManifestHash(manifest: ImplementationManifest | null | undefined): string | null {
+  if (!manifest) return null;
+  return shortHash(JSON.stringify({
+    modified: sorted(manifest.modified),
+    added: sorted(manifest.added),
+    deleted: sorted(manifest.deleted),
+    untracked: sorted(manifest.untracked),
+    changed: sorted(manifest.changed),
+  }));
+}
+
+export function computeImplementationDigest(root: string, manifest: ImplementationManifest): string {
+  const files = sorted(manifest.changed).map(file => {
+    const fullPath = path.join(root, file);
+    if (!fs.existsSync(fullPath)) return { file, sha256: "deleted" };
+    const hash = createHash("sha256");
+    hash.update(fs.readFileSync(fullPath));
+    return { file, sha256: hash.digest("hex") };
+  });
+  return shortHash(JSON.stringify(files));
 }
 
 export function computePlanHash(plan: PlanDoc | null): string | null {

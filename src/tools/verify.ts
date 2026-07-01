@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot, computeVerifyHash, documentReadHealth } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash, documentReadHealth } from "../state.js";
 import { buildImplementationManifest, runAllChecks } from "../checks.js";
 import { implementationDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
@@ -34,6 +34,8 @@ export async function handleVerify(): Promise<ToolResult> {
       next.pendingAmendment = report.suggestedAmendment;
       next.implementationManifest = report.implementationManifest;
       next.verifyHash = null;
+      next.verifiedImplementationDigest = null;
+      next.verifiedManifestHash = null;
       writeState(next);
 
       return toolResult("verify", {
@@ -68,6 +70,8 @@ export async function handleVerify(): Promise<ToolResult> {
     next.pendingAmendment = report.suggestedAmendment;
     next.implementationManifest = report.implementationManifest;
     next.verifyHash = null;
+    next.verifiedImplementationDigest = null;
+    next.verifiedManifestHash = null;
     writeState(next);
     const failedChecks = report.checks.filter(c => c.hard && !c.passed).map(c => `${c.layer}/${c.name}`);
     return toolResult("edit", {
@@ -102,9 +106,11 @@ export async function handleVerify(): Promise<ToolResult> {
 
   // All passed
   const next = transition(state, "commit");
-  next.verifyHash = computeVerifyHash(next);
   next.pendingAmendment = null;
   next.implementationManifest = report.implementationManifest;
+  next.verifiedImplementationDigest = computeImplementationDigest(root, report.implementationManifest);
+  next.verifiedManifestHash = computeImplementationManifestHash(report.implementationManifest);
+  next.verifyHash = computeVerifyHash(next);
   writeState(next);
 
   return toolResult("commit", {
