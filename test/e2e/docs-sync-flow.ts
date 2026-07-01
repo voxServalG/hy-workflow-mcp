@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -153,6 +153,24 @@ try {
   const stale = await handleVerify();
   if (!(stale.error?.message ?? String(stale.error)).includes("after_edit implementation digest does not match")) {
     throw new Error(`hy_verify should detect implementation drift after sync docs, got ${JSON.stringify(stale)}`);
+  }
+
+  const deletePlan: PlanDoc = {
+    ...plan,
+    scope: { changes: ["src/app.ts", "docs/index.md"], new_files: [], delete: ["docs/usage.md"] },
+  };
+  writeState(editState(deletePlan));
+  unlinkSync(join(root, "docs", "usage.md"));
+  const deleteAfterEdit = await handleReadDocs({ stage: "after_edit" });
+  if (deleteAfterEdit.phase !== "edit" || deleteAfterEdit.stage !== "after_edit") {
+    throw new Error(`after_edit should run for deleted docs, got ${JSON.stringify(deleteAfterEdit)}`);
+  }
+  const deleteSynced = await handleSyncDocs();
+  if (!deleteSynced.graphInfo || deleteSynced.graphInfo.brokenLinks < 1) {
+    throw new Error(`hy_sync_docs should detect inbound broken links after doc deletion, got ${JSON.stringify(deleteSynced.graphInfo)}`);
+  }
+  if (!deleteSynced.graphInfo.brokenLinkDetails.some((detail: string) => detail.includes("docs/index.md") && detail.includes("docs/usage.md"))) {
+    throw new Error(`broken link details should identify source and deleted target, got ${JSON.stringify(deleteSynced.graphInfo)}`);
   }
 } finally {
   chdir(originalCwd);

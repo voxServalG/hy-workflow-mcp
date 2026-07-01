@@ -49,10 +49,10 @@ init → plan → approve → branch → edit → hy_read_docs(after_edit) → h
 `hy_read_docs` 不新增状态机 phase，而是在 `plan`、`approve` 和 `edit` phase 内作为自动 gate 运行。
 
 - `before_plan`: 运行于 `plan` phase，记录用户 task 并写入 `documentReads.beforePlan`。`hy_plan` 缺少 baseline 时拒绝执行；baseline task 与 PlanDoc task 文案不一致时只给 warning，不阻断同一任务的自然改写。
-- `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。如果本次读取的文档 digest 相对 `before_plan` 发生变化，snapshot 会记录 `changedSinceBaseline: true`，`documentReadHealth` 会将其标记为 stale，`hy_approve` 拒绝批准并要求重新生成 PlanDoc。
+- `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。如果本次读取的文档 digest 或全量 DocsGraph digest 相对 `before_plan` 发生变化，snapshot 会记录 `changedSinceBaseline: true`，`documentReadHealth` 会将其标记为 stale，`hy_approve` 拒绝批准并要求重新生成 PlanDoc。
 - `after_edit`: 运行于 `edit` / `verify` phase，绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。`hy_verify` 缺少 current 审计时拒绝执行。
 
-`documentReadHealth` 从现有状态派生每个 gate 的 `missing` / `current` / `stale` 状态。PlanDoc hash、实现 digest 不匹配，或 before_approve 文档 digest 相对 before_plan 已变化时，旧的下游 `documentReads` 不会被复用；before_plan task 文案不一致仅作为诊断信息；`hy_status` 会显示 `blockedBy`、`staleDocumentReads` 和下一步工具。`hy_plan` 写入新 PlanDoc 时会清空 downstream gate（`beforeApprove`、`afterEdit`、`syncDocs`），避免新 plan 继承旧审计。
+`documentReadHealth` 从现有状态派生每个 gate 的 `missing` / `current` / `stale` 状态。PlanDoc hash、实现 digest 不匹配，或 before_approve 文档 digest / DocsGraph digest 相对 before_plan 已变化时，旧的下游 `documentReads` 不会被复用；before_plan task 文案不一致仅作为诊断信息；`hy_status` 会显示 `blockedBy`、`staleDocumentReads` 和下一步工具。`hy_plan` 写入新 PlanDoc 时会清空 downstream gate（`beforeApprove`、`afterEdit`、`syncDocs`），避免新 plan 继承旧审计。
 
 这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。`hy_plan` 进入 approve 前会拒绝 malformed PlanDoc、空 scope、越出项目根目录的任何 scope 路径，以及不存在的 `scope.changes` / `scope.delete` 路径；计划创建的文件必须放在 `scope.new_files`，可以在审批时尚不存在，但路径仍必须位于项目根内。`hy_amend_plan` 应用 pending amendment 时复用同一套路径与非空 scope 规则。
 
