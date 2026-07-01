@@ -6,7 +6,9 @@
 
 ```
 Layer 2: compile
-└── npx tsc --noEmit (.ts/.tsx/.js/.jsx/.mjs/.cjs) / py_compile (.py/.pyw/.pyi) / soft skip (.tksp and custom extensions without built-in compiler)
+├── TypeScript compile: project.codeExt 含 .ts/.tsx 时执行 npx tsc --noEmit
+├── JavaScript-only compile: project.codeExt 仅含 .js/.jsx/.mjs/.cjs 且无 tsconfig 时 soft skip
+└── Python compile: 按 project.codeDirs 枚举 .py/.pyw/.pyi 后执行 py_compile
 
 Layer 3: scope
 ├── git diff origin/${baseBranch} --name-status 文件 ⊆ plan.scope 声明
@@ -43,7 +45,10 @@ hardFailed = 失败的 hard 检查数量
 
 | 检查 | hard/soft |
 |------|-----------|
-| compile | hard (无可识别 codeExt 时为 soft) |
+| compile: TypeScript | hard |
+| compile: JavaScript-only without tsconfig | soft |
+| compile: Python files found in configured codeDirs | hard |
+| compile: Python extension configured but no files found | soft |
 | scope: extra files | hard / amend_required when all extra files are safely amendable |
 | scope: missing files | hard |
 | boundary: entry_points | hard |
@@ -52,6 +57,19 @@ hardFailed = 失败的 hard 检查数量
 | platform: setup commands | hard |
 | smoke | hard |
 | tests | hard |
+
+## Compile Behavior
+
+Compile checks are built per language from `hy-workflow.json: project.codeExt` and `project.codeDirs`.
+
+- `.ts` / `.tsx` projects run `npx tsc --noEmit`.
+- JavaScript-only projects (`.js`, `.jsx`, `.mjs`, `.cjs`) do not automatically require TypeScript. If a `tsconfig.json` exists, `npx tsc --noEmit` still runs because the project has an explicit TS compile configuration.
+- Python projects enumerate configured `project.codeDirs`, include top-level files such as `src/app.py`, include nested files, and do not hard-code `src/**/*.py`.
+- Mixed-language projects run every relevant compile check, so a `.ts + .py` project gets both TypeScript and Python compile evidence.
+
+## Lint JSON Parsing
+
+`runDocLint` and `runCodeLint` parse numeric values emitted as either numbers or numeric strings. They accept top-level fields and nested `data`, `counts`, and `summary` shapes, including `errors`, `warnings`, `files`, `total`, and `failed`. Details must report concrete counts and must not contain `undefined`.
 
 ## Dependency Manifest Boundary
 
@@ -95,7 +113,8 @@ interface VerifyReport {
 
 | 配置 | 影响 |
 |------|------|
-| `hy-workflow.json: project.codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；任一 JS/TS 扩展触发 `npx tsc --noEmit`，任一 Python 扩展触发 `py_compile`，`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层；boundary entry_points 始终按 shell 执行 |
+| `hy-workflow.json: project.codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；决定 TypeScript、JavaScript-only soft skip、Python compile 等 compile checks；`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层 |
+| `hy-workflow.json: project.codeDirs` | Python compile 的文件枚举根目录；同时支持顶层和嵌套 Python 文件 |
 | `hy-workflow.json: project.baseBranch` | scope check 和 dependency manifest boundary 的 Git diff 基线分支 |
 | runtime `doclint.json` | 由 `hy-workflow.json` 临时生成给 doclint 使用，验证文档质量 |
 
