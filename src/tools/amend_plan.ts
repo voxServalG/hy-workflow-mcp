@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
-import { assertPhase, readState, scopePath, transition, writeState, type PendingPlanAmendment, type PlanDoc } from "../state.js";
+import * as path from "node:path";
+import { assertPhase, projectRoot, readState, scopePath, transition, writeState, type PendingPlanAmendment, type PlanDoc } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { normalizePlanScopeAmendment, validateAmendmentPaths, validatePlanScopePaths } from "../plan_validation.js";
 
 type AmendPlanArgs = {
   approved: string;
@@ -28,13 +30,18 @@ function applyAmendment(plan: PlanDoc, amendment: PendingPlanAmendment): PlanDoc
   };
 }
 
-function writeScopeLock(plan: PlanDoc): void {
-  const target = scopePath();
-  fs.writeFileSync(target, JSON.stringify({
-    lockedAt: new Date().toISOString(),
+function writeScopeLock(plan: PlanDoc, branch: string | null): void {
+  const scopeJson = {
+    task: plan.task,
     scope: plan.scope,
     boundary: plan.boundary,
-  }, null, 2) + "\n", "utf-8");
+    rubrics: plan.verify,
+    branch,
+  };
+  const target = scopePath();
+  const dir = path.dirname(target);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(target, JSON.stringify(scopeJson, null, 2) + "\n", "utf-8");
 }
 
 export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> {
@@ -62,18 +69,58 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
     });
   }
 
-  const amendedPlan = applyAmendment(state.plan, state.pendingAmendment);
+  const normalizedAmendment = normalizePlanScopeAmendment(state.pendingAmendment.scope);
+  if (!normalizedAmendment.ok) {
+    return toolResult(state.phase, {
+      error: `Pending plan amendment has invalid shape: ${normalizedAmendment.errors.join("; ")}`,
+      requires_user: true,
+      stop_here: true,
+      hint: "Run hy_verify again to regenerate a valid pending amendment, or return to hy_plan for a larger scope change.",
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const amendment: PendingPlanAmendment = {
+    ...state.pendingAmendment,
+    scope: normalizedAmendment.scope,
+  };
+  const amendmentPathErrors = validateAmendmentPaths(projectRoot(), amendment.scope);
+  if (amendmentPathErrors.length) {
+    return toolResult(state.phase, {
+      error: `Pending plan amendment contains invalid paths: ${amendmentPathErrors.join("; ")}`,
+      requires_user: true,
+      stop_here: true,
+      hint: "Reject this automatic amendment and create a new PlanDoc if the change needs paths outside the approved project scope.",
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const amendedPlan = applyAmendment(state.plan, amendment);
+  const amendedScopeErrors = validatePlanScopePaths(projectRoot(), amendedPlan, "amendment");
+  if (amendedScopeErrors.length) {
+    return toolResult(state.phase, {
+      error: `Amended PlanDoc scope is invalid: ${amendedScopeErrors.join("; ")}`,
+      requires_user: true,
+      stop_here: true,
+      hint: "Reject this automatic amendment and create a new PlanDoc if the approved scope would become empty or invalid.",
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
   const next = transition(state, "edit");
   next.plan = amendedPlan;
   next.pendingAmendment = null;
   next.verifyHash = null;
   writeState(next);
-  writeScopeLock(amendedPlan);
+  writeScopeLock(amendedPlan, state.branch);
 
   return toolResult("edit", {
     amended: true,
     plan: amendedPlan,
-    appliedAmendment: state.pendingAmendment,
+    appliedAmendment: amendment,
     display: {
       title: "Plan amended",
       body: "Pending plan amendment was applied. Rerun hy_verify before committing.",

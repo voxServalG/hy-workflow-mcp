@@ -1,8 +1,7 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
+import { normalizePlanDoc, validatePlanScopePaths } from "../plan_validation.js";
 
 type CheckItem = PlanDoc["verify"]["smoke"][number];
 type TestCategory = {
@@ -93,43 +92,6 @@ function allScopePaths(p: PlanDoc): string[] {
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.filter(Boolean)));
-}
-
-function hasProjectPathMarkers(root: string): boolean {
-  return ["hy-workflow.json", "package.json", "src", "docs"].some(file => fs.existsSync(path.join(root, file)));
-}
-
-function existingScopePathErrors(p: PlanDoc): string[] {
-  const root = projectRoot();
-  const errors: string[] = [];
-  if (!hasProjectPathMarkers(root)) return errors;
-  const check = (field: "scope.changes" | "scope.delete", file: string) => {
-    const trimmed = file.trim();
-    if (!trimmed) {
-      errors.push(`${field}: <empty> is not a valid project path`);
-      return;
-    }
-
-    const normalized = trimmed.replace(/\\/g, "/");
-    if (path.isAbsolute(trimmed) || normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) {
-      errors.push(`${field}: ${file} is outside the project root`);
-      return;
-    }
-
-    const resolved = path.resolve(root, trimmed);
-    const rel = path.relative(root, resolved);
-    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
-      errors.push(`${field}: ${file} is outside the project root`);
-      return;
-    }
-    if (!fs.existsSync(resolved)) {
-      errors.push(`${field}: ${file} does not exist`);
-    }
-  };
-
-  for (const file of p.scope.changes ?? []) check("scope.changes", file);
-  for (const file of p.scope.delete ?? []) check("scope.delete", file);
-  return errors;
 }
 
 function inlineCodeList(items: string[], max = 4): string {
@@ -253,7 +215,7 @@ function buildSummary(p: PlanDoc): string {
   return lines.join("\n").trimEnd();
 }
 
-export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promise<ToolResult> {
+export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown }): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "plan");
 
@@ -277,8 +239,8 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   }
   const beforePlanTaskMismatch = beforePlan.task !== task;
 
-  const p = args.plan;
-  if (!p) {
+  const rawPlan = args.plan;
+  if (!rawPlan) {
     return toolResult("plan", {
       error: "PlanDoc not provided. You must construct the PlanDoc JSON yourself using your workspace knowledge, then call hy_plan with {task, plan}.",
       hint: "Read project files, build a complete PlanDoc, and retry hy_plan.",
@@ -357,6 +319,17 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
     });
   }
 
+  const normalizedPlan = normalizePlanDoc(rawPlan);
+  if (!normalizedPlan.ok) {
+    return toolResult("plan", {
+      error: `PlanDoc has invalid shape: ${normalizedPlan.errors.join("; ")}`,
+      hint: "Construct a complete PlanDoc object with string fields and array fields that match the schema, then call hy_plan again.",
+      allowedTools: ["hy_plan", "hy_status"],
+    });
+  }
+
+  const p = normalizedPlan.plan;
+
   // Gate 1: required top-level fields
   if (!p.task || !p.scope || !p.boundary || !p.verify || !p.risks || p.discussion === undefined) {
     return toolResult("plan", { error: "PlanDoc missing required fields: task, scope, boundary, verify, risks, discussion.", allowedTools: ["hy_plan", "hy_status"] });
@@ -370,11 +343,11 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
     return toolResult("plan", { error: "PlanDoc scope is empty. At least one of changes, new_files, or delete must be non-empty.", allowedTools: ["hy_plan", "hy_status"] });
   }
 
-  const scopePathErrors = existingScopePathErrors(p);
+  const scopePathErrors = validatePlanScopePaths(projectRoot(), p);
   if (scopePathErrors.length) {
     return toolResult("plan", {
-      error: `PlanDoc scope.changes and scope.delete paths must already exist before approval: ${scopePathErrors.join("; ")}. Put planned creations in scope.new_files.`,
-      hint: "Confirm each existing-file path with Read/Glob before hy_plan. Keep files that will be created in scope.new_files.",
+      error: `PlanDoc scope paths must stay inside the project root, and scope.changes/scope.delete paths must already exist before approval: ${scopePathErrors.join("; ")}. Put planned creations in scope.new_files.`,
+      hint: "Confirm each existing-file path with Read/Glob before hy_plan. Keep files that will be created in scope.new_files, but still use project-relative paths under the repository root.",
       allowedTools: ["hy_plan", "hy_status"],
     });
   }

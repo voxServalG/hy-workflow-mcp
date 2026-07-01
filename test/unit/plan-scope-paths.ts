@@ -80,6 +80,23 @@ async function expectRejected(label: string, scope: PlanDoc["scope"], expectedTe
   }
 }
 
+
+async function expectMalformedRejected(): Promise<void> {
+  const plan = {
+    ...basePlan({ changes: ["src/tools/plan.ts"], new_files: [], delete: [] }),
+    scope: { changes: "src/tools/plan.ts", new_files: [], delete: [] },
+  } as unknown as PlanDoc;
+  resetPlanState(plan.task);
+  const result = await handlePlan({ task: plan.task, plan });
+  const message = result.error?.message ?? JSON.stringify(result.error);
+  if (result.next !== "plan" || !message.includes("PlanDoc has invalid shape") || !message.includes("scope.changes")) {
+    throw new Error(`malformed nested PlanDoc should be rejected structurally, got ${message}`);
+  }
+  if (readState().phase !== "plan") {
+    throw new Error("malformed nested PlanDoc should keep workflow in plan phase");
+  }
+}
+
 async function expectAccepted(): Promise<void> {
   const plan = basePlan({
     changes: ["src/tools/plan.ts"],
@@ -106,12 +123,19 @@ try {
     delete: ["docs/does-not-exist-for-delete.md"],
   }, "scope.delete");
 
-  await expectRejected("outside path", {
+  await expectRejected("outside change path", {
     changes: ["../outside.ts"],
     new_files: [],
     delete: [],
   }, "outside the project root");
 
+  await expectRejected("outside new file path", {
+    changes: [],
+    new_files: ["../outside-new.ts"],
+    delete: [],
+  }, "scope.new_files");
+
+  await expectMalformedRejected();
   await expectAccepted();
 } finally {
   restoreState();

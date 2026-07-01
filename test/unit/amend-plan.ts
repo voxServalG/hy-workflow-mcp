@@ -1,11 +1,11 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest, runScopeCheck, suggestPlanAmendment } from "../../src/checks.js";
 import { handleAmendPlan } from "../../src/tools/amend_plan.js";
-import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { readState, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -65,6 +65,33 @@ try {
   writeFileSync(join(root, "tests", "test_000_path.py"), "# path bootstrap\n");
 
   const plan = basePlan();
+
+  writeState({
+    ...baseState(plan),
+    pendingAmendment: {
+      reason: "malicious external path",
+      scope: { changes: { add: [], remove: [] }, new_files: { add: ["../outside.ts"], remove: [] }, delete: { add: [], remove: [] } },
+      warnings: [],
+    },
+  });
+  const externalResult = await handleAmendPlan({ approved: "approve", note: "reject external" });
+  if (!String(externalResult.error?.message).includes("outside the project root")) {
+    throw new Error(`hy_amend_plan should reject external amendment paths, got ${JSON.stringify(externalResult)}`);
+  }
+
+  writeState({
+    ...baseState(plan),
+    pendingAmendment: {
+      reason: "empty approved scope",
+      scope: { changes: { add: [], remove: ["src/app.ts"] }, new_files: { add: [], remove: [] }, delete: { add: [], remove: [] } },
+      warnings: [],
+    },
+  });
+  const emptyResult = await handleAmendPlan({ approved: "approve", note: "reject empty" });
+  if (!String(emptyResult.error?.message).includes("amended PlanDoc scope is empty")) {
+    throw new Error(`hy_amend_plan should reject amendments that empty the PlanDoc scope, got ${JSON.stringify(emptyResult)}`);
+  }
+
   const manifest = buildImplementationManifest(root);
   if (!manifest.modified.includes("src/app.ts")) throw new Error("manifest should include modified src/app.ts");
   if (!manifest.untracked.includes("tests/test_000_path.py")) throw new Error("manifest should include untracked test support file");
@@ -91,6 +118,13 @@ try {
   }
   if (amendedState.pendingAmendment) {
     throw new Error("hy_amend_plan should clear pendingAmendment");
+  }
+  const lockedScope = JSON.parse(readFileSync(scopePath(), "utf-8"));
+  if (lockedScope.lockedAt) {
+    throw new Error("hy_amend_plan scope lock should match hy_edit and not write a separate lockedAt shape");
+  }
+  if (lockedScope.task !== plan.task || lockedScope.branch !== "feat/amend-plan-flow" || !lockedScope.rubrics) {
+    throw new Error(`hy_amend_plan should write the same scope lock shape as hy_edit, got ${JSON.stringify(lockedScope)}`);
   }
 
   mkdirSync(join(root, "docs"), { recursive: true });

@@ -12,6 +12,8 @@ function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
 }
 
+const DOC_BODY = "# Workflow\n\nDocument reads are automatic agent gates, not user review gates.\n";
+
 function basePlan(): PlanDoc {
   return {
     task: "add automatic document read gates before plan and approve",
@@ -57,7 +59,7 @@ try {
   mkdirSync(join(root, "docs"), { recursive: true });
   writeFileSync(join(root, "src", "server.ts"), "export const server = true;\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { docsDir: "docs" } }, null, 2) + "\n");
-  writeFileSync(join(root, "docs", "workflow.md"), "# Workflow\n\nDocument reads are automatic agent gates, not user review gates.\n");
+  writeFileSync(join(root, "docs", "workflow.md"), DOC_BODY);
   run("git add .", root);
   run("git commit -m init", root);
   chdir(root);
@@ -107,9 +109,23 @@ try {
     throw new Error(`hy_approve should require before_approve audit, got ${JSON.stringify(missingAudit)}`);
   }
 
+  writeFileSync(join(root, "docs", "workflow.md"), `${DOC_BODY}\nNew approval-relevant workflow fact.\n`);
+  const driftAudit = await handleReadDocs({ stage: "before_approve" });
+  if (driftAudit.changedSinceBaseline !== true) {
+    throw new Error(`before_approve should report document drift, got ${JSON.stringify(driftAudit)}`);
+  }
+  const driftApproval = await handleApprove({ approved: "approve", note: "user approved" });
+  if (!String(driftApproval.hint).includes("document changes since before_plan")) {
+    throw new Error(`hy_approve should reject before_approve document drift, got ${JSON.stringify(driftApproval)}`);
+  }
+
+  writeFileSync(join(root, "docs", "workflow.md"), DOC_BODY);
   const audit = await handleReadDocs({ stage: "before_approve" });
   if (audit.phase !== "approve" || audit.stage !== "before_approve") {
     throw new Error(`before_approve should keep workflow in approve, got ${JSON.stringify(audit)}`);
+  }
+  if (audit.changedSinceBaseline !== false) {
+    throw new Error(`before_approve should clear drift after docs return to baseline, got ${JSON.stringify(audit)}`);
   }
   const stateWithAudit = readState();
   if (!stateWithAudit.documentReads?.beforeApprove?.planHash) {
