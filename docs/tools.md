@@ -51,11 +51,11 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 读取行为：从文档入口（`docs/index.md` 或自动检测的首个 `.md` 文件）出发，通过 markdown 内部链接引用图做 BFS 遍历，只读取与 task 关键字匹配的路径上的文档，不再对全量文档做 6000 chars 截断。每个文档的完整内容直接返回。文档引用图持久化在 `.git/hy-workflow/docs-graph.json`。DocsGraph 会解析本地 inline links、URL encoded 路径、文件名包含括号的目标、reference-style links；外部 URL、anchor-only 和 docsDir 外路径不会进入图。缓存 freshness 使用版本化内容 digest，解析器语义升级或文档内容变化会重建，未变化时复用缓存。
 
-成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash 或实现 digest 不匹配时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑的下游 gate；before_plan task 文案不一致只作为诊断信息。
+成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash、实现 digest 不匹配，或 `before_approve` 发现文档 digest 相对 `before_plan` 已变化时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑或重建 PlanDoc 的下游 gate；before_plan task 文案不一致只作为诊断信息。
 
 ## hy_plan
 
-要求已存在 `before_plan` 文档事实基线。随后校验必填字段、scope 非空、`scope.changes` / `scope.delete` 指向项目内已存在路径、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；`scope.new_files` 允许声明尚不存在的计划创建文件，task/risks/discussion 过短仅作为 soft warning。成功写入新 PlanDoc 时会清空 `beforeApprove`、`afterEdit` 和 `syncDocs`，避免复用旧 gate。
+要求已存在 `before_plan` 文档事实基线。随后校验 PlanDoc shape、scope 非空、所有 scope 路径必须是项目根内相对路径、`scope.changes` / `scope.delete` 指向项目内已存在路径、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；`scope.new_files` 允许声明尚不存在的计划创建文件，但同样必须留在项目根内。malformed nested PlanDoc 会返回结构化错误并停在 `plan`，不会抛出未捕获异常。task/risks/discussion 过短仅作为 soft warning。成功写入新 PlanDoc 时会清空 `beforeApprove`、`afterEdit` 和 `syncDocs`，避免复用旧 gate。
 
 成功返回的 `summary` 和 `display.body` 是给用户审批的友善摘要，不是 PlanDoc 内部字段直出。摘要保留稳定结构：Plan（现在状态、期望状态）、Scope（将要增加/改动/删除，格式为 path: reason）、Boundary（影响范围、外部依赖、关键检查入口）、Verify（测试平台搭建，以及单元测试、集成测试、系统测试、验收测试四层）、Risks、Discussion。其中“期望状态”描述 PlanDoc 应用后项目应呈现的行为、文档或验证状态，不应是审批摘要本身的固定说明。`plan` 字段仍保留完整 PlanDoc，供 agent 和兼容客户端读取。
 
@@ -66,7 +66,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_approve
 
-用户审视 PlanDoc 的入口。批准前要求已存在匹配当前 PlanDoc hash 的 `before_approve` 文档审计；该审计是 agent 自动步骤，不是新增人类审核。`approved` 必须传字符串 `"approve"` 才放行（严格匹配，同时容错 `"true"`）。其他任何内容视为驳回理由，回到 `plan`。
+用户审视 PlanDoc 的入口。批准前要求已存在匹配当前 PlanDoc hash、且未发现文档 digest 相对 `before_plan` 漂移的 `before_approve` 文档审计；该审计是 agent 自动步骤，不是新增人类审核。`approved` 必须传字符串 `"approve"` 才放行。其他任何内容，包括 `"true"` 或 boolean true，均视为驳回理由，回到 `plan`。
 
 - **进入 Phase**: `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录
@@ -116,7 +116,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_amend_plan
 
-`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，不替代 `hy_plan` 的人类审批。
+`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，不替代 `hy_plan` 的人类审批。应用前会校验 pending amendment shape、所有增删路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的 Git 私有 scope lock。
 
 - **进入 Phase**: `verify`
 - **转换到**: `edit` / `verify`

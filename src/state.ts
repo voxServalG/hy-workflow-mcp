@@ -125,6 +125,7 @@ export interface DocumentReadSnapshot {
   docsGraphDigest: string;
   entryPoints: string[];
   traversalRoots: string[];
+  changedSinceBaseline?: boolean;
   implementationFiles?: string[];
   implementationDigest?: string;
 }
@@ -499,7 +500,9 @@ export function documentReadHealth(state: WorkflowState, currentImplementationDi
       ? gate("missing", "before_approve document audit is missing.")
       : !planHash || beforeApprove.planHash !== planHash
         ? gate("stale", "before_approve plan hash does not match the current PlanDoc.", planHash, beforeApprove.planHash)
-        : gate("current", "before_approve document audit matches the current PlanDoc."),
+        : beforeApprove.changedSinceBaseline
+          ? gate("stale", "before_approve document audit detected document changes since before_plan; regenerate the PlanDoc before approval.", beforePlan?.digest ?? null, beforeApprove.digest)
+          : gate("current", "before_approve document audit matches the current PlanDoc."),
     afterEdit: !afterEdit
       ? gate("missing", "after_edit document audit is missing.")
       : !planHash || afterEdit.planHash !== planHash

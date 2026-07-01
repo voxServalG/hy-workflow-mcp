@@ -97,6 +97,17 @@ try {
   assert(rejected.approved === false, "rejected approve should report approved false");
   assert(readState().approval === null, "rejected approve should not leave approval true in status");
 
+  writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
+  const trueString = await handleApprove({ approved: "true", note: "legacy true should reject" });
+  assert(trueString.approved === false, "approved='true' should be treated as rejection");
+  assert(readState().phase === "plan", "approved='true' should return to plan instead of branch");
+  assert(readState().approval === null, "approved='true' rejection should clear stale approval");
+
+  writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
+  const booleanInput = await handleApprove({ approved: true as any, note: "boolean should reject" });
+  assert(booleanInput.approved === false, "boolean approved input should be rejected without crashing");
+  assert(readState().phase === "plan", "boolean approved input should return to plan instead of branch");
+
   writeFileSync(statePath(), "{not json\n");
   try {
     await handleStatus();

@@ -266,11 +266,11 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
   const snapshot = buildSnapshot(stage, state.plan.task, planHash);
   if ("next" in snapshot) return snapshot;
   const beforePlan = state.documentReads?.beforePlan ?? null;
-  const changedSinceBaseline = beforePlan && beforePlan.digest !== snapshot.digest;
+  const changedSinceBaseline = Boolean(beforePlan && beforePlan.digest !== snapshot.digest);
   const findings = changedSinceBaseline
     ? [...snapshot.findings, "Document digest changed since before_plan; agent must reject and re-plan if the changed documents affect the PlanDoc."]
     : snapshot.findings;
-  const auditedSnapshot: DocumentReadSnapshot = { ...snapshot, findings };
+  const auditedSnapshot: DocumentReadSnapshot = { ...snapshot, changedSinceBaseline, findings };
   writeState({
     ...state,
     documentReads: {

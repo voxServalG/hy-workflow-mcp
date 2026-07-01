@@ -6,9 +6,9 @@ export async function handleApprove(args: { approved: string; note?: string }): 
   const state = readState();
   assertPhase(state, "approve");
 
-  const input = (args.approved ?? "").trim();
+  const input = typeof args.approved === "string" ? args.approved.trim() : "";
 
-  if (input === "approve" || input === "true") {
+  if (input === "approve") {
     const health = documentReadHealth(state);
     if (!health.okForApprove) {
       return toolResult("approve", {
