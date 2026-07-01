@@ -11,6 +11,10 @@ The package exposes one bin entrypoint: hy-workflow. GitHub npx installs build d
 - hy-workflow config --apply-suggested --json
 - hy-workflow lint-contract
 
+## Config Safety
+
+`hy-workflow config --check --json` validates `project.baseBranch`, `project.docsDir`, `project.codeDirs`, and `codelint.lintDirs` before they are used by workflow commands. Suggested terminal commands quote every dynamic value with single quotes, including values containing semicolons, whitespace, or `${IFS}`-style text, so the displayed command is copyable without turning config values into shell syntax.
+
 ## MCP Tools
 
 The MCP tool surface is canonical in src/commands/catalog.ts and registered by src/server.ts. The current tools are:

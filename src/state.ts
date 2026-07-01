@@ -314,8 +314,10 @@ function normalizeNullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function normalizeNullableNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function normalizeNullablePrNumber(value: unknown, file: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (Number.isSafeInteger(value) && (value as number) > 0) return value as number;
+  structuredWorkflowStateError("WORKFLOW_STATE_INVALID_PR_NUMBER", `Workflow state has an invalid prNumber in ${file}.`, { file, prNumber: value });
 }
 
 function normalizeState(raw: unknown, file: string): WorkflowState {
@@ -334,7 +336,7 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
     version: "1",
     phase,
     branch: normalizeNullableString(raw.branch),
-    prNumber: normalizeNullableNumber(raw.prNumber),
+    prNumber: normalizeNullablePrNumber(raw.prNumber, file),
     plan: (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null,
     approval: (isObject(raw.approval) ? raw.approval : null) as Approval | null,
     verifyHash: normalizeNullableString(raw.verifyHash),

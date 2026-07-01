@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -59,6 +59,15 @@ try {
 
   chdir(root);
   writeState(branchState(basePlan()));
+
+  const sentinel = join(root, "branch-injection-sentinel");
+  const dangerous = await handleBranch({ category: "fix", topic: `bad;touch${"${IFS}"}${sentinel}` });
+  if (dangerous.ok !== false || dangerous.error?.code !== "INVALID_BRANCH_TOPIC") {
+    throw new Error(`dangerous branch topic should fail before git execution, got ${JSON.stringify(dangerous)}`);
+  }
+  if (existsSync(sentinel)) {
+    throw new Error("dangerous branch topic should not execute shell payload");
+  }
 
   const result = await handleBranch({ category: "fix", topic: "missing-origin" });
   if (result.ok !== false) throw new Error(`hy_branch should fail without origin/dev, got ${JSON.stringify(result)}`);

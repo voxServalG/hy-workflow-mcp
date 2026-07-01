@@ -1,5 +1,5 @@
 import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
-import { createBranch } from "../git.js";
+import { createBranch, invalidTopicError, isSafeBranchTopic } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
 export async function handleBranch(args: { category: string; topic: string }): Promise<ToolResult> {
@@ -11,6 +11,9 @@ export async function handleBranch(args: { category: string; topic: string }): P
   const validCategories = ["refactor", "feat", "chore", "docs", "ci", "fix", "test"];
   if (!validCategories.includes(args.category)) {
     return toolResult("branch", { error: `Invalid category. Use: ${validCategories.join(", ")}`, allowedTools: ["hy_branch", "hy_status"] });
+  }
+  if (!isSafeBranchTopic(args.topic)) {
+    return toolResult("branch", { error: invalidTopicError(args.topic), allowedTools: ["hy_branch", "hy_status"] });
   }
 
   const root = projectRoot();
