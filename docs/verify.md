@@ -9,20 +9,22 @@ Layer 2: compile
 └── npx tsc --noEmit (.ts/.tsx/.js/.jsx/.mjs/.cjs) / py_compile (.py/.pyw/.pyi) / soft skip (.tksp and custom extensions without built-in compiler)
 
 Layer 3: scope
-├── git diff origin/${baseBranch} --name-only 文件 ⊆ plan.scope 声明
-└── plan.scope 声明的文件都实际变更了 (软)
+├── git diff origin/${baseBranch} --name-status 文件 ⊆ plan.scope 声明
+├── git ls-files --others --exclude-standard 未跟踪文件 ⊆ plan.scope 声明
+└── plan.scope 声明的文件都必须实际变更 (hard)
 
 Layer 4: boundary
-├── entry_points 逐条按 shell 命令执行
-└── no_new_external → pyproject.toml/setup.cfg/setup.py/requirements.txt/policy.md 无变更
+├── entry_points 逐条按 shell 命令执行，必须 exit 0
+└── no_new_external → dependency manifests 无变更；manifest 无法检查时 hard fail
 
 Layer 5: platform
-└── plan.verify.platform.setup 命令逐条执行
+├── 数字型 plan.verify.platform.python_version 按最低 Python 版本校验
+└── plan.verify.platform.setup 命令在项目根目录逐条执行
 
 Layer 6: smoke
-└── plan.verify.smoke 命令逐条执行
+└── plan.verify.smoke 命令逐条执行，actual exit 必须精确等于 expected_exit
 Layer 7: tests
-└── plan.verify.tests 命令逐条执行
+└── plan.verify.tests 命令逐条执行，actual exit 必须精确等于 expected_exit
 ```
 
 ## 判定逻辑
@@ -36,17 +38,31 @@ hardFailed = 失败的 hard 检查数量
 
 - **hard check** (默认): 失败则 `allPassed = false`，退回 `edit`
 - **soft check**: 失败不会阻止通关，仅警告
+- `expected_exit` 是精确退出码契约：actual exit 必须等于 expected_exit；例如 actual `1`、expected `2` 必须失败
+- `verify.platform.python_version` 支持 `N/A`、`none`、`not required` 等无约束值；`3.11` 或 `>=3.11` 这类数字约束会作为最低版本 hard check 执行
 
 | 检查 | hard/soft |
 |------|-----------|
 | compile | hard (无可识别 codeExt 时为 soft) |
-| scope: extra files | hard |
-| scope: missing files | soft |
+| scope: extra files | hard / amend_required when all extra files are safely amendable |
+| scope: missing files | hard |
 | boundary: entry_points | hard |
 | boundary: no_new_external | hard |
-| platform | hard |
+| platform: python_version numeric requirement | hard |
+| platform: setup commands | hard |
 | smoke | hard |
 | tests | hard |
+
+## Dependency Manifest Boundary
+
+`boundary.no_new_external=true` 时，verify 使用当前 implementation manifest 检查工作区、索引、HEAD 相对 `origin/${baseBranch}` 的变更以及未跟踪文件。命中以下依赖或策略文件会 hard fail，除非 PlanDoc 明确声明 `no_new_external=false`：
+
+- Node: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`
+- Python: `pyproject.toml`, `setup.cfg`, `setup.py`, `requirements.txt`, `requirements/*.txt`, `Pipfile`, `Pipfile.lock`, `poetry.lock`, `uv.lock`
+- Other common manifests: `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `composer.json`, `composer.lock`, `Gemfile`, `Gemfile.lock`
+- Policy: `policy.md`
+
+如果 Git 基线缺失或 manifest 无法构造，`no_new_external` 不能静默通过，必须返回 hard failure。
 
 ## CheckResult 结构
 
@@ -55,7 +71,7 @@ interface CheckResult {
   layer: string;    // "lint" | "compile" | "scope" | "boundary" | "platform" | "smoke" | "tests"
   name: string;     // 检查项名称 (如 "doclint", "entry: from foo import bar...")
   passed: boolean;
-  detail: string;   // 输出摘要
+  detail: string;   // 输出摘要，exit mismatch 会包含 expected 与 actual exit
   hard: boolean;    // true = 失败会阻止通关
 }
 ```
@@ -80,7 +96,7 @@ interface VerifyReport {
 | 配置 | 影响 |
 |------|------|
 | `hy-workflow.json: project.codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；任一 JS/TS 扩展触发 `npx tsc --noEmit`，任一 Python 扩展触发 `py_compile`，`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层；boundary entry_points 始终按 shell 执行 |
-| `hy-workflow.json: project.baseBranch` | scope check 的 Git diff 基线分支 |
+| `hy-workflow.json: project.baseBranch` | scope check 和 dependency manifest boundary 的 Git diff 基线分支 |
 | runtime `doclint.json` | 由 `hy-workflow.json` 临时生成给 doclint 使用，验证文档质量 |
 
 ## Related
