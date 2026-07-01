@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { checkConfig, ensureConfigDefaults, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
+import { buildSuggestedCommand, checkConfig, ensureConfigDefaults, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -106,8 +106,20 @@ fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ code
 const mismatch = checkConfig(mismatchRoot);
 assert(!mismatch.ok, "missing unified config should need confirmation");
 assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
-assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include detected Python ext");
+assert(mismatch.suggestedCommand.includes("--code-ext '.py'"), "suggested command should include detected Python ext with shell quoting");
 assert(mismatch.issues.includes("Missing hy-workflow.json"), "missing unified config should be reported");
+
+const unsafeRoot = tempRoot();
+fs.writeFileSync(path.join(unsafeRoot, "hy-workflow.json"), JSON.stringify({
+  project: { baseBranch: "dev;touch${IFS}/tmp/x", codeExt: ".py", codeDirs: ["src"], docsDir: "docs" },
+  codelint: { lintDirs: ["src"] },
+}, null, 2) + "\n", "utf-8");
+const unsafe = checkConfig(unsafeRoot);
+assert(!unsafe.ok, "unsafe baseBranch should fail config check");
+assert(unsafe.issues.some(issue => issue.includes("project.baseBranch is not a safe Git branch name")), "unsafe baseBranch should be reported");
+const quoted = buildSuggestedCommand({ codeExt: ".py", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
+assert(quoted.includes("--code-dirs 'src;touch${IFS}/tmp/x'"), "suggested command should quote unsafe-looking code dirs");
+assert(quoted.includes("--base-branch 'dev;touch${IFS}/tmp/x'"), "suggested command should quote unsafe-looking base branch");
 
 const cliRoot = tempRoot();
 const cli = runConfigCli(["--apply-suggested", "--json", "--code-ext", ".py", "--code-dirs", "src", "--docs-dir", "docs", "--base-branch", "dev"], cliRoot);

@@ -76,7 +76,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_branch
 
-创建 git 分支，格式 `{category}/{topic}`。category 必须在 `["refactor","feat","chore","docs","ci","fix","test"]` 中。分支从 `origin/<baseBranch>` 创建；如果该远程基准 ref 不存在，`hy_branch` 返回结构化 `config/config_invalid` 错误和 `BASE_BRANCH_REMOTE_MISSING` code，提示 fetch/push base branch 或修正 `hy-workflow.json: project.baseBranch`，而不是把 git fatal 暴露为 internal uncaught。
+创建 git 分支，格式 `{category}/{topic}`。category 必须在 `["refactor","feat","chore","docs","ci","fix","test"]` 中，topic 必须是 lowercase kebab-case。分支从 `origin/<baseBranch>` 创建；`baseBranch`、head branch 和 downstream branch 都必须是安全 Git ref，禁止空白、shell metacharacters、leading dash、`..`、`@{` 和 `.lock` suffix。所有 git/gh 调用使用 argv 执行，不通过 shell 拼接参数。若远程基准 ref 不存在，`hy_branch` 返回结构化 `config/config_invalid` 错误和 `BASE_BRANCH_REMOTE_MISSING` code，提示 fetch/push base branch 或修正 `hy-workflow.json: project.baseBranch`，而不是把 git fatal 暴露为 internal uncaught。
 
 - **进入 Phase**: `approve`, `branch`
 - **转换到**: `edit`
@@ -124,7 +124,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_commit
 
-git add -A → commit → push → gh pr create。提交前会执行安全 preflight：当前 Git 分支必须等于 `WorkflowState.branch`，当前 implementation manifest 必须等于 `hy_verify` 时记录的 manifest，当前文件内容 digest 必须等于已验证 digest，重新计算的 verifyHash 必须匹配状态中的 verifyHash。任一不匹配时停在 commit phase 并要求重新执行 after_edit 文档审计、sync_docs 和 verify，避免提交未验证内容或在错误分支上提交。
+git add -A → commit → push → gh pr create。提交前会执行安全 preflight：当前 Git 分支必须等于 `WorkflowState.branch`，当前 implementation manifest 必须等于 `hy_verify` 时记录的 manifest，当前文件内容 digest 必须等于已验证 digest，重新计算的 verifyHash 必须匹配状态中的 verifyHash。任一不匹配时停在 commit phase 并要求重新执行 after_edit 文档审计、sync_docs 和 verify，避免提交未验证内容或在错误分支上提交。`hy_commit` 创建 commit、push 和 PR 时也使用 argv 方式传参，PR title/body/base/head 不会被拼接进 shell 命令。
 
 PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 GitHub PR 创建成功之后，不反向改写 PR body。
 
@@ -134,7 +134,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 ## hy_ci
 
-通过 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
+通过 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
 
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
@@ -145,7 +145,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 ## hy_merge
 
-通过 `gh pr merge --merge --delete-branch` 合并 PR。
+通过 `gh pr merge --merge --delete-branch` 合并 PR。PR number 必须是正整数，并通过 argv 传给 `gh`；损坏运行态不会被当作命令片段执行。
 
 - **进入 Phase**: `merge`
 - **转换到**: `chain`
@@ -163,7 +163,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 ## hy_chain
 
-依次 checkout 每个下游分支 → rebase 到 `hy-workflow.json: project.baseBranch` 对应的最新基准分支 → force push → 切回基准分支。
+依次 checkout 每个下游分支 → rebase 到 `hy-workflow.json: project.baseBranch` 对应的最新基准分支 → force push → 切回基准分支。每个 checkout、pull、rebase 和 pushForce 的失败都会立即返回结构化错误并保留已完成列表；不会忽略失败后报告 workflow complete。分支参数必须是安全 Git ref，并通过 argv 传给 git。
 
 - **进入 Phase**: `chain`
 - **转换到**: `done`

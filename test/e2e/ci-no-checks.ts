@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,20 @@ try {
   }
   if (readState().phase !== "merge") {
     throw new Error("no checks skip should persist merge phase");
+  }
+
+  const sentinel = join(root, "ci-injection-sentinel");
+  writeFileSync(join(root, ".git", "hy-workflow", "workflow.json"), JSON.stringify({ ...baseState(), phase: "ci", prNumber: `123;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
+  try {
+    await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
+    throw new Error("invalid prNumber should fail before gh execution");
+  } catch (e: any) {
+    if (e.code !== "WORKFLOW_STATE_INVALID_PR_NUMBER") {
+      throw new Error(`invalid prNumber should be structured, got ${JSON.stringify(e)}`);
+    }
+  }
+  if (existsSync(sentinel)) {
+    throw new Error("invalid prNumber should not execute shell payload");
   }
 } finally {
   chdir(originalCwd);

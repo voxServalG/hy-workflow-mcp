@@ -400,6 +400,24 @@ function addDrift(drift: ConfigDrift[], file: string, field: string, expected: u
   }
 }
 
+const UNSAFE_CONFIG_CHARS = /[\x00-\x20~^:?*\[\\;$`"'|&<>]/;
+
+function isSafeConfigRefName(value: string): boolean {
+  if (!value || value.length > 200 || value.trim() !== value) return false;
+  if (value.startsWith("-") || value.startsWith("/") || value.endsWith("/") || value.endsWith(".")) return false;
+  if (value.includes("..") || value.includes("//") || value.includes("@{")) return false;
+  if (UNSAFE_CONFIG_CHARS.test(value)) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(value)) return false;
+  return value.split("/").every(part => Boolean(part) && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+function isSafeRelativePath(value: string): boolean {
+  if (!value || value.length > 200 || value.trim() !== value) return false;
+  if (path.isAbsolute(value) || value.startsWith("-") || value.startsWith("../") || value === "..") return false;
+  if (value.includes("..") || value.includes("//") || UNSAFE_CONFIG_CHARS.test(value)) return false;
+  return /^[A-Za-z0-9._/-]+$/.test(value);
+}
+
 function compareCompat(file: string, actual: JsonObject | null, expected: JsonObject, fields: string[]): ConfigDrift[] {
   const drift: ConfigDrift[] = [];
   if (!actual) return drift;
@@ -425,13 +443,17 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
 
   issues.push(...validateCodeExt(projectConfig.codeExt).map(issue => `${UNIFIED_CONFIG_FILE} ${issue}`));
+  if (typeof projectConfig.baseBranch === "string" && !isSafeConfigRefName(projectConfig.baseBranch)) issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch is not a safe Git branch name: ${projectConfig.baseBranch}`);
+  if (typeof projectConfig.docsDir === "string" && !isSafeRelativePath(projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir is not a safe relative path: ${projectConfig.docsDir}`);
   if (projectConfig.docsDir && !exists(root, projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
   if (!valueCodeExtArray(projectConfig.codeExt).length) issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt is empty`);
   for (const dir of valueArray(projectConfig.codeDirs)) {
-    if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
+    if (!isSafeRelativePath(dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry is not a safe relative path: ${dir}`);
+    else if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
   }
   for (const dir of valueArray(asObject(unified.codelint).lintDirs)) {
-    if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry does not exist: ${dir}`);
+    if (!isSafeRelativePath(dir)) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry is not a safe relative path: ${dir}`);
+    else if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry does not exist: ${dir}`);
   }
 
   drift.push(...compareCompat("codelint.json", codelint, expectedCompat["codelint.json"], ["lintDirs", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
@@ -474,7 +496,7 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
 }
 
 function quoteArg(value: string): string {
-  return value.includes(" ") ? `'${value.replace(/'/g, `'\\''`)}'` : value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
