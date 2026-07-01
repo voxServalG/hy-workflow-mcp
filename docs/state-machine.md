@@ -54,7 +54,7 @@ init → plan → approve → branch → edit → hy_read_docs(after_edit) → h
 
 `documentReadHealth` 从现有状态派生每个 gate 的 `missing` / `current` / `stale` 状态。PlanDoc hash 或实现 digest 不匹配时，旧的下游 `documentReads` 不会被复用；before_plan task 文案不一致仅作为诊断信息；`hy_status` 会显示 `blockedBy`、`staleDocumentReads` 和下一步工具。`hy_plan` 写入新 PlanDoc 时会清空 downstream gate（`beforeApprove`、`afterEdit`、`syncDocs`），避免新 plan 继承旧审计。
 
-这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。
+这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。`hy_plan` 进入 approve 前会拒绝不存在或越出项目根目录的 `scope.changes` / `scope.delete` 路径；计划创建的文件必须放在 `scope.new_files`，可以在审批时尚不存在。
 
 ## 状态持久化
 
@@ -136,6 +136,7 @@ interface ToolResult {
 ```typescript
 interface PlanDoc {
   task: string;
+  // changes/delete 必须是项目内已存在路径；new_files 是计划创建路径，可以尚不存在。
   scope: { changes: string[]; new_files: string[]; delete: string[] };
   boundary: { dependency_dag: string; entry_points: string[]; no_new_external: boolean };
   verify: { platform: {...}; smoke: CheckItem[]; tests: CheckItem[] };
