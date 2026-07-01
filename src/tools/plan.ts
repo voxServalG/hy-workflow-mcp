@@ -1,4 +1,6 @@
-import { readState, writeState, transition, assertPhase } from "../state.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
 
@@ -91,6 +93,43 @@ function allScopePaths(p: PlanDoc): string[] {
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.filter(Boolean)));
+}
+
+function hasProjectPathMarkers(root: string): boolean {
+  return ["hy-workflow.json", "package.json", "src", "docs"].some(file => fs.existsSync(path.join(root, file)));
+}
+
+function existingScopePathErrors(p: PlanDoc): string[] {
+  const root = projectRoot();
+  const errors: string[] = [];
+  if (!hasProjectPathMarkers(root)) return errors;
+  const check = (field: "scope.changes" | "scope.delete", file: string) => {
+    const trimmed = file.trim();
+    if (!trimmed) {
+      errors.push(`${field}: <empty> is not a valid project path`);
+      return;
+    }
+
+    const normalized = trimmed.replace(/\\/g, "/");
+    if (path.isAbsolute(trimmed) || normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) {
+      errors.push(`${field}: ${file} is outside the project root`);
+      return;
+    }
+
+    const resolved = path.resolve(root, trimmed);
+    const rel = path.relative(root, resolved);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+      errors.push(`${field}: ${file} is outside the project root`);
+      return;
+    }
+    if (!fs.existsSync(resolved)) {
+      errors.push(`${field}: ${file} does not exist`);
+    }
+  };
+
+  for (const file of p.scope.changes ?? []) check("scope.changes", file);
+  for (const file of p.scope.delete ?? []) check("scope.delete", file);
+  return errors;
 }
 
 function inlineCodeList(items: string[], max = 4): string {
@@ -329,6 +368,15 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc }): Promis
   const hasDelete = (p.scope.delete?.length ?? 0) > 0;
   if (!hasChanges && !hasNew && !hasDelete) {
     return toolResult("plan", { error: "PlanDoc scope is empty. At least one of changes, new_files, or delete must be non-empty.", allowedTools: ["hy_plan", "hy_status"] });
+  }
+
+  const scopePathErrors = existingScopePathErrors(p);
+  if (scopePathErrors.length) {
+    return toolResult("plan", {
+      error: `PlanDoc scope.changes and scope.delete paths must already exist before approval: ${scopePathErrors.join("; ")}. Put planned creations in scope.new_files.`,
+      hint: "Confirm each existing-file path with Read/Glob before hy_plan. Keep files that will be created in scope.new_files.",
+      allowedTools: ["hy_plan", "hy_status"],
+    });
   }
 
   // Gate 3: boundary has substance
