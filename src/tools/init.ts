@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { toolResult, type ToolResult } from "./_base.js";
-import { SETUP_COMMAND, SETUP_STAMP } from "../bootstrap.js";
+import { checkSetupStamp, SETUP_COMMAND, SETUP_STAMP, setupUpdateRequiredResult } from "../bootstrap.js";
 import { checkConfig, UNIFIED_CONFIG_FILE } from "../config.js";
 import { isLocalArtifact, LOCAL_RUNTIME_ARTIFACTS, TRACKED_PROJECT_ARTIFACTS } from "../policy/artifacts.js";
 
@@ -322,6 +322,8 @@ export async function handleInit(): Promise<ToolResult> {
   const root = projectRoot();
   const setupStatus = setupArtifactStatus(root);
   if (!setupStatus.ready) return setupMissingResult(setupStatus.missingArtifacts);
+  const setupStampStatus = checkSetupStamp(root);
+  if (setupStampStatus.status !== "current") return setupUpdateRequiredResult(setupStampStatus);
 
   const configStatus = checkConfig(root);
   if (!configStatus.ok) {
