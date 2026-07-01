@@ -31,7 +31,7 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredSetupArtifacts, gitignoreChanged }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是运行时兼容产物，不提交。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（单一 CI workflow、`hy-workflow.json`、setup stamp）时，agent 必须停下并请用户在终端重新运行 setup。
+`hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是运行时兼容产物，不提交。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（单一 CI workflow、`hy-workflow.json`、setup stamp）或 setup stamp 版本不是当前版本时，agent 必须停下并请用户在终端重新运行 setup。
 
 如果这些 local/runtime artifacts 已经被 Git 跟踪，`hy_init` 成功返回但会额外给出 `trackedLocalArtifacts`，并在 display/hint 中提示把它们放进 setup artifact sync PR 里用 `git rm --cached -- <file...>` 从索引移除。这个提示用于迁移期清理，不会阻止进入 `plan`。
 
@@ -39,11 +39,11 @@ Artifact contract: setup/hy_init 产生的 tracked project artifacts 应通过 P
 
 ## Session setup check
 
-MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.git/hy-workflow/setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。`error.message` 必须是人类可读的 setup refresh 说明，同时保留 `setup_update_required` subtype、版本和 stamp path 字段，不能把结构化对象序列化成 JSON 字符串。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
+MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-workflow/setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。`error.message` 必须是人类可读的 setup refresh 说明，同时保留 `setup_update_required` subtype、版本和 stamp path 字段，不能把结构化对象序列化成 JSON 字符串。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
 
 ## Config CLI
 
-`npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config --check --json` 会只读检查项目语言、目录和 `hy-workflow.json`；不一致时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`。`config --apply-suggested --json` 或显式配置只写入 `hy-workflow.json`，并从既有兼容 JSON preserve-first 合并未知字段与 `catalogs`。运行旧 doclint/codelint CLI 时才会临时生成根目录兼容 JSON，执行后清理。
+`npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config --check --json` 会只读检查项目语言、目录和 `hy-workflow.json`；不一致、malformed JSON、非法字段类型、unsafe branch/path、未知参数或缺失参数值时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`，并以非零状态退出。`config --apply-suggested --json` 或显式配置只写入 `hy-workflow.json`，写入前先验证候选配置；非法值不会写文件。运行旧 doclint/codelint CLI 时才会临时生成或覆盖根目录兼容 JSON，执行后恢复既有文件或清理临时文件。
 
 ## hy_read_docs
 

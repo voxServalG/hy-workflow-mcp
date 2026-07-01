@@ -114,10 +114,7 @@ export function attachSetupCheck<T extends Record<string, any>>(result: T, check
 }
 
 export function createSetupGate(root = projectRoot()): () => ToolResult | null {
-  let checked = false;
   return () => {
-    if (checked) return null;
-    checked = true;
     const check = checkSetupStamp(root);
     return check.status === "current" ? null : setupUpdateRequiredResult(check);
   };

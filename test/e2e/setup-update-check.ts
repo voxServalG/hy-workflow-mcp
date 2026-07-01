@@ -78,7 +78,7 @@ try {
 
   const gate = createSetupGate(missingRoot);
   assert(gate()?.error?.subtype === "setup_update_required", "gate should stop on first missing setup check");
-  assert(gate() === null, "gate should only run once per session");
+  assert(gate()?.error?.subtype === "setup_update_required", "gate should re-check missing setup on later dispatches");
 
   const outdatedRoot = tempRepo();
   writeStamp(outdatedRoot, "0.0.0");
@@ -90,7 +90,10 @@ try {
   writeStamp(currentRoot, SETUP_VERSION);
   const current = checkSetupStamp(currentRoot);
   assert(current.status === "current", `expected current, got ${current.status}`);
-  assert(createSetupGate(currentRoot)() === null, "current setup should not stop tool dispatch");
+  const currentGate = createSetupGate(currentRoot);
+  assert(currentGate() === null, "current setup should not stop tool dispatch");
+  fs.unlinkSync(path.join(currentRoot, SETUP_STAMP));
+  assert(currentGate()?.error?.subtype === "setup_update_required", "gate should detect setup stamp drift after an earlier successful check");
 } finally {
   process.chdir(originalCwd);
 }

@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureLocalArtifactIgnores, harnessArtifactStatus, initArtifactGuidance, trackedLocalArtifactDiagnostics } from "../../src/tools/init.js";
+import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, initArtifactGuidance, trackedLocalArtifactDiagnostics } from "../../src/tools/init.js";
+import { SETUP_STAMP } from "../../src/bootstrap.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -88,3 +89,21 @@ const trackedGuidance = initArtifactGuidance(trackedLocal);
 assert(trackedGuidance.trackedLocalArtifacts.includes("codelint.json"), "guidance should expose tracked local artifacts");
 assert(trackedGuidance.body.includes("Tracked local/runtime artifacts detected"), "guidance should call out tracked local artifacts");
 assert(trackedGuidance.body.includes("git rm --cached"), "guidance should include index cleanup recovery");
+
+
+const outdatedInitRoot = mkdtempSync(join(tmpdir(), "hy-init-outdated-stamp-"));
+run("git init -b main", outdatedInitRoot);
+mkdirSync(join(outdatedInitRoot, ".github", "workflows"), { recursive: true });
+writeFileSync(join(outdatedInitRoot, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\n", "utf-8");
+writeFileSync(join(outdatedInitRoot, "hy-workflow.json"), "{}\n", "utf-8");
+mkdirSync(join(outdatedInitRoot, ".git", "hy-workflow"), { recursive: true });
+writeFileSync(join(outdatedInitRoot, SETUP_STAMP), JSON.stringify({ schemaVersion: "1", setupVersion: "0.0.0" }, null, 2) + "\n", "utf-8");
+const initCwd = process.cwd();
+try {
+  process.chdir(outdatedInitRoot);
+  const outdatedInit = await handleInit();
+  assert(outdatedInit.error?.subtype === "setup_update_required", "hy_init should reject outdated setup stamp even when artifacts exist");
+  assert(outdatedInit.requires_user === true && outdatedInit.stop_here === true, "outdated setup stamp should stop hy_init");
+} finally {
+  process.chdir(initCwd);
+}
