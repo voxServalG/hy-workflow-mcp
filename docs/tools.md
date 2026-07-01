@@ -70,7 +70,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 - **进入 Phase**: `approve`
 - **批准后转换到**: `branch`，写入 Approval 记录
-- **驳回后转换到**: `plan`
+- **驳回后转换到**: `plan`，不写入 Approval 记录，并清空 verify/manifest/sync 等下游派生状态
 - **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_reset", allowedTools }`
 - **驳回返回**: `{ next: "plan", approved: false, note }`
 
@@ -106,7 +106,7 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_verify
 
-执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后计算 verifyHash 并转换到 commit。
+执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后记录当前 implementation manifest、manifest hash、文件内容 digest 和 verifyHash，并转换到 commit。
 
 - **进入 Phase**: `edit`, `verify`
 - **通过后转换到**: `commit`
@@ -124,7 +124,9 @@ MCP runtime 每个进程首次处理任意 `hy_*` tool 前，会只读检查 `.g
 
 ## hy_commit
 
-git add -A → commit → push → gh pr create。PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 GitHub PR 创建成功之后，不反向改写 PR body。
+git add -A → commit → push → gh pr create。提交前会执行安全 preflight：当前 Git 分支必须等于 `WorkflowState.branch`，当前 implementation manifest 必须等于 `hy_verify` 时记录的 manifest，当前文件内容 digest 必须等于已验证 digest，重新计算的 verifyHash 必须匹配状态中的 verifyHash。任一不匹配时停在 commit phase 并要求重新执行 after_edit 文档审计、sync_docs 和 verify，避免提交未验证内容或在错误分支上提交。
+
+PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 GitHub PR 创建成功之后，不反向改写 PR body。
 
 - **进入 Phase**: `commit`
 - **转换到**: `ci`
@@ -169,9 +171,13 @@ git add -A → commit → push → gh pr create。PR body 自动附加 scope/bou
 
 ---
 
+## hy_reset
+
+可任意阶段调用，回到 `plan` 并清空 plan、approval、branch、PR、verifyHash、pending amendment、implementation manifest、document reads 和 syncDocs 等 workflow 派生状态。该工具要求当前目录在真实 Git worktree 内；找不到项目根时返回 `PROJECT_ROOT_NOT_FOUND`，不会创建伪 `.git/hy-workflow`。
+
 ## hy_status
 
-只读工具，可任意阶段调用。返回当前 WorkflowState 快照。
+只读工具，可任意阶段调用。返回当前 WorkflowState 快照。损坏的 workflow.json 会通过结构化 workflow state 错误返回，而不是暴露原始 JSON parse 异常。
 
 - **进入 Phase**: 无限制
 - **转换到**: 无（只读）

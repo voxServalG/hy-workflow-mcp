@@ -69,14 +69,18 @@ interface WorkflowState {
   plan: PlanDoc | null;
   approval: Approval | null;
   verifyHash: string | null;
+  verifiedImplementationDigest?: string | null;
+  verifiedManifestHash?: string | null;
+  pendingAmendment?: PendingPlanAmendment | null;
+  implementationManifest?: ImplementationManifest | null;
   documentReads?: DocumentReads | null;
   syncDocs?: SyncDocsRecord | null;
 }
 ```
 
-- `readState()`: 文件不存在时返回 `phase: init` 默认值，并迁移未跟踪的旧 `.hy/workflow.json`
+- `readState()`: 文件不存在时返回 `phase: init` 默认值，并迁移未跟踪的旧 `.hy/workflow.json`；损坏 JSON、非对象状态或非法 phase 会返回结构化 workflow state 错误，不再暴露原始 parse 异常
 - `writeState()`: 自动创建 Git 私有运行态目录
-- `projectRoot()`: 向上查找 `.git`，找不到则用 `cwd`
+- `projectRoot()`: 向上查找 `.git`，找不到则报 `PROJECT_ROOT_NOT_FOUND`，不会在非 Git 目录创建伪 `.git/hy-workflow` 状态
 
 ## 状态守卫
 
@@ -86,7 +90,9 @@ interface WorkflowState {
 
 ## verifyHash
 
-`computeVerifyHash()` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256 取前 12 位。`hy_verify` 写入顶层 `WorkflowState.verifyHash`；当前 `hy_commit` 检查该值存在，确保 commit 前成功跑过 verify。`hy_commit` 生成 commit/PR body 时，会从当前 `WorkflowState.plan` 直接序列化完整 PlanDoc JSON，并额外写入 `planHash` 与顶层 `verifyHash`。如果 `hy_amend_plan` 修改过 scope，必须重新 `hy_verify` 后才能进入 commit，因此 PR body 记录的是 amended 后重新验证过的当前 PlanDoc 快照。CI、merge、chain 和 reset 阶段不会再改写 PR body。
+`computeVerifyHash()` 对 PlanDoc 的 task + scope + boundary + rubrics 字段，以及 `hy_verify` 记录的实现文件集合摘要和实现内容摘要做 SHA256 取前 12 位。`hy_verify` 通过后写入 `WorkflowState.verifyHash`、`implementationManifest`、`verifiedManifestHash` 和 `verifiedImplementationDigest`。`hy_commit` 不只检查 verifyHash 是否存在，还会确认当前 Git 分支等于 `state.branch`，当前 manifest 等于已验证 manifest，当前文件内容摘要等于已验证摘要，并重新计算 verifyHash。任何一项不匹配都会停在 commit phase，要求重新执行 `hy_read_docs(after_edit)`、`hy_sync_docs` 和 `hy_verify`。
+
+`hy_commit` 生成 commit/PR body 时，会从当前 `WorkflowState.plan` 直接序列化完整 PlanDoc JSON，并额外写入 `planHash` 与顶层 `verifyHash`。如果 `hy_amend_plan` 修改过 scope，必须重新 `hy_verify` 后才能进入 commit，因此 PR body 记录的是 amended 后重新验证过的当前 PlanDoc 快照。CI、merge、chain 和 reset 阶段不会再改写 PR body。`hy_reset` 会清空 plan、approval、branch、PR、verifyHash、pending amendment、manifest、document reads 和 syncDocs 等派生状态，避免新计划继承旧运行态。
 
 ## ToolResult envelope
 
@@ -152,7 +158,7 @@ interface PlanDoc {
 
 状态持久化在 Git 私有目录 `.git/hy-workflow/workflow.json`，通过 `git rev-parse --git-path` 解析真实路径，避免运行态文件进入工作树、PR diff 或 checkout 冲突。`readState()` 在新文件不存在时会读取旧 `.hy/workflow.json` 并迁移；没有任何状态文件时返回 `phase: init` 默认值。
 
-`hy_edit` 额外写入 `.git/hy-workflow/scope.json` 锁定当前 scope 边界，供 LLM 参考。旧 `.hy/scope.json` 只作为 legacy runtime metadata 诊断和清理对象。
+`hy_edit` 额外写入 `.git/hy-workflow/scope.json` 锁定当前 scope 边界，供 LLM 参考。旧 `.hy/scope.json` 只作为 legacy runtime metadata 诊断和清理对象。所有运行态路径都要求真实 Git worktree；非 Git 目录会结构化失败，不会创建本地 `.git` 目录。
 
 ## Related
 

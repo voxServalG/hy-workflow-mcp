@@ -8,7 +8,14 @@ export async function handleReset(): Promise<ToolResult> {
   state.branch = null;
   state.prNumber = null;
   state.plan = null;
+  state.approval = null;
   state.verifyHash = null;
+  state.verifiedImplementationDigest = null;
+  state.verifiedManifestHash = null;
+  state.pendingAmendment = null;
+  state.implementationManifest = null;
+  state.documentReads = null;
+  state.syncDocs = null;
 
   writeState(state);
 

@@ -2,6 +2,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 
+export class ProjectRootError extends Error {
+  type = "config" as const;
+  subtype = "setup_artifacts_missing" as const;
+  code = "PROJECT_ROOT_NOT_FOUND";
+  hint = "Run hy-workflow tools from inside a Git worktree, or initialize Git before starting hy-workflow.";
+  retryable = false;
+
+  constructor(start: string) {
+    super(`Could not find a Git project root from ${start}.`);
+    this.name = "ProjectRootError";
+  }
+}
+
 export function findProjectRoot(start = process.cwd()): string {
   let dir = start;
   while (dir !== "/") {
@@ -10,7 +23,7 @@ export function findProjectRoot(start = process.cwd()): string {
     if (parent === dir) break;
     dir = parent;
   }
-  return start;
+  throw new ProjectRootError(start);
 }
 
 export function resolveGitPrivatePath(root: string, relativePath: string): string {

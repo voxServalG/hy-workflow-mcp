@@ -1,4 +1,5 @@
-import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computePlanHash, type PlanDoc } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computeImplementationManifestHash, computePlanHash, computeVerifyHash, currentBranch, type PlanDoc } from "../state.js";
+import { buildImplementationManifest } from "../checks.js";
 import { commitScope, push, createPr } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
@@ -54,6 +55,97 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   if (!state.branch) return toolResult("commit", { error: "No active branch", allowedTools: ["hy_status"] });
 
   const root = projectRoot();
+  const actualBranch = currentBranch(root);
+  if (actualBranch !== state.branch) {
+    return toolResult("commit", {
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "GIT_BRANCH_MISMATCH",
+        message: `Current git branch is ${actualBranch || "unknown"}, but workflow state expects ${state.branch}.`,
+        hint: "Switch back to the workflow branch or reset the workflow state before committing.",
+        detail: { expected: state.branch, actual: actualBranch },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  let currentManifest;
+  try {
+    currentManifest = buildImplementationManifest(root);
+  } catch (e: any) {
+    return toolResult("commit", {
+      error: {
+        type: "scope",
+        subtype: "scope_drift",
+        code: "IMPLEMENTATION_MANIFEST_UNAVAILABLE",
+        message: e?.message ?? String(e),
+        hint: "Fix the git manifest error, then rerun hy_verify before hy_commit.",
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const currentManifestHash = computeImplementationManifestHash(currentManifest);
+  const expectedManifestHash = state.verifiedManifestHash ?? computeImplementationManifestHash(state.implementationManifest);
+  if (!expectedManifestHash || currentManifestHash !== expectedManifestHash) {
+    return toolResult("commit", {
+      error: {
+        type: "scope",
+        subtype: "scope_drift",
+        code: "IMPLEMENTATION_MANIFEST_MISMATCH",
+        message: "Implementation file set changed after hy_verify.",
+        hint: "Run hy_read_docs(after_edit), hy_sync_docs, and hy_verify again before hy_commit.",
+        detail: { expected: expectedManifestHash, actual: currentManifestHash },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_read_docs", "hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const currentDigest = computeImplementationDigest(root, currentManifest);
+  if (!state.verifiedImplementationDigest || currentDigest !== state.verifiedImplementationDigest) {
+    return toolResult("commit", {
+      error: {
+        type: "verification",
+        subtype: "check_failed",
+        code: "IMPLEMENTATION_DIGEST_MISMATCH",
+        message: "Implementation content changed after hy_verify.",
+        hint: "Run hy_read_docs(after_edit), hy_sync_docs, and hy_verify again before hy_commit.",
+        detail: { expected: state.verifiedImplementationDigest, actual: currentDigest },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_read_docs", "hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const expectedVerifyHash = computeVerifyHash(state);
+  if (state.verifyHash !== expectedVerifyHash) {
+    return toolResult("commit", {
+      error: {
+        type: "verification",
+        subtype: "check_failed",
+        code: "VERIFY_HASH_STALE",
+        message: "verifyHash no longer matches the verified plan and implementation snapshot.",
+        hint: "Rerun hy_verify before hy_commit.",
+        detail: { expected: expectedVerifyHash, actual: state.verifyHash },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
 
   const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: state.verifyHash });
 
