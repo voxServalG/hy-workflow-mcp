@@ -20,12 +20,20 @@ export interface CheckResult {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function execOr(cmd: string, cwd?: string): { ok: boolean; stdout: string; stderr: string } {
+interface ExecResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  status: number | null;
+}
+
+function execOr(cmd: string, cwd?: string): ExecResult {
   try {
     const stdout = execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe","pipe","pipe"], timeout: 120_000 });
-    return { ok: true, stdout: stdout.trim(), stderr: "" };
+    return { ok: true, stdout: stdout.trim(), stderr: "", status: 0 };
   } catch (e: any) {
-    return { ok: false, stdout: e.stdout?.trim() ?? "", stderr: e.stderr?.trim() ?? e.message ?? "" };
+    const status = typeof e.status === "number" ? e.status : null;
+    return { ok: false, stdout: e.stdout?.trim() ?? "", stderr: e.stderr?.trim() ?? e.message ?? "", status };
   }
 }
 
@@ -38,6 +46,10 @@ function fail(title: string, layer: string, detail = "", hard = true): CheckResu
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort();
+}
+
+function formatExit(r: ExecResult): string {
+  return r.status === null ? "unknown exit" : `exit ${r.status}`;
 }
 
 function findPython(): string {
@@ -307,8 +319,8 @@ export function runScopeCheck(root: string, plan: PlanDoc, manifest?: Implementa
   const missing = declared.filter(f => !actual.includes(f));
   if (missing.length) {
     res.push({
-      ...fail("scope", "scope", `Declared but not changed: ${missing.join(", ")}`, false),
-      classification: "warning",
+      ...fail("scope", "scope", `Declared but not changed: ${missing.join(", ")}`, true),
+      classification: "hard_fail",
     });
   }
   return res;
@@ -316,21 +328,67 @@ export function runScopeCheck(root: string, plan: PlanDoc, manifest?: Implementa
 
 // ── 4. Boundary ──────────────────────────────────────────────
 
-export function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[] {
+const DEPENDENCY_MANIFEST_FILES = new Set([
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lock",
+  "bun.lockb",
+  "pyproject.toml",
+  "setup.cfg",
+  "setup.py",
+  "requirements.txt",
+  "Pipfile",
+  "Pipfile.lock",
+  "poetry.lock",
+  "uv.lock",
+  "Cargo.toml",
+  "Cargo.lock",
+  "go.mod",
+  "go.sum",
+  "composer.json",
+  "composer.lock",
+  "Gemfile",
+  "Gemfile.lock",
+  "policy.md",
+]);
+
+function isDependencyManifest(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  return DEPENDENCY_MANIFEST_FILES.has(normalized) || (normalized.startsWith("requirements/") && normalized.endsWith(".txt"));
+}
+
+export function runBoundaryCheck(root: string, plan: PlanDoc, manifest?: ImplementationManifest, manifestError?: string): CheckResult[] {
   const res: CheckResult[] = [];
 
   for (const ep of plan.boundary.entry_points) {
     const r = execOr(ep, root);
     res.push(r.ok
       ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
-      : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", r.stderr || r.stdout));
+      : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", `${formatExit(r)}: ${r.stderr || r.stdout || "command failed"}`));
   }
 
   if (plan.boundary.no_new_external) {
-    const r = execOr(`git diff origin/${getBaseBranch(root)}.. -- pyproject.toml setup.cfg setup.py requirements.txt policy.md`, root);
-    res.push(r.stdout.trim()
-      ? fail("no_new_external", "boundary", "Dependency file changed")
-      : ok("no_new_external", "boundary", "No dep changes"));
+    let boundaryManifest = manifest ?? null;
+    let boundaryManifestError = manifestError ?? null;
+    if (!boundaryManifest && !boundaryManifestError) {
+      try {
+        boundaryManifest = buildImplementationManifest(root);
+      } catch (e: any) {
+        boundaryManifestError = e.message ?? String(e);
+      }
+    }
+
+    if (boundaryManifestError) {
+      res.push(fail("no_new_external", "boundary", `Cannot verify dependency manifests: ${boundaryManifestError}`));
+    } else {
+      const changedDeps = (boundaryManifest?.changed ?? []).filter(isDependencyManifest);
+      res.push(changedDeps.length
+        ? fail("no_new_external", "boundary", `Dependency manifest changed: ${changedDeps.join(", ")}`)
+        : ok("no_new_external", "boundary", "No dependency manifest changes"));
+    }
   }
 
   return res;
@@ -338,13 +396,54 @@ export function runBoundaryCheck(root: string, plan: PlanDoc): CheckResult[] {
 
 // ── 5. Platform ──────────────────────────────────────────────
 
-export function runPlatform(plan: PlanDoc): CheckResult[] {
-  return plan.verify.platform.setup.map(cmd => {
-    const r = execOr(cmd);
-    return r.ok
+type VersionTuple = [number, number, number];
+
+function parsePythonVersionRequirement(value: string): VersionTuple | null {
+  const trimmed = value.trim();
+  if (!trimmed || /^(n\/?a|none|no|false|not required|not-required)$/i.test(trimmed)) return null;
+  const match = /^(?:>=\s*)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(trimmed);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)];
+}
+
+function compareVersions(actual: VersionTuple, required: VersionTuple): number {
+  for (let i = 0; i < 3; i++) {
+    if (actual[i] > required[i]) return 1;
+    if (actual[i] < required[i]) return -1;
+  }
+  return 0;
+}
+
+function formatVersion(version: VersionTuple): string {
+  return version.join(".").replace(/(?:\.0)+$/, "");
+}
+
+function runPythonVersionCheck(root: string, required: VersionTuple): CheckResult {
+  const python = findPython();
+  const r = execOr(`${python} --version`, root);
+  const output = r.stdout || r.stderr;
+  const match = /Python\s+(\d+)\.(\d+)\.(\d+)/.exec(output);
+  if (!r.ok || !match) {
+    return fail("python_version", "platform", `${formatExit(r)}: ${output || "could not read Python version"}`);
+  }
+  const actual: VersionTuple = [Number(match[1]), Number(match[2]), Number(match[3])];
+  return compareVersions(actual, required) >= 0
+    ? ok("python_version", "platform", `Python ${formatVersion(actual)} satisfies >=${formatVersion(required)}`)
+    : fail("python_version", "platform", `Python ${formatVersion(actual)} is below required >=${formatVersion(required)}`);
+}
+
+export function runPlatform(plan: PlanDoc, root: string): CheckResult[] {
+  const res: CheckResult[] = [];
+  const requiredPython = parsePythonVersionRequirement(plan.verify.platform.python_version);
+  if (requiredPython) res.push(runPythonVersionCheck(root, requiredPython));
+
+  for (const cmd of plan.verify.platform.setup) {
+    const r = execOr(cmd, root);
+    res.push(r.ok
       ? ok(`setup: ${cmd.slice(0, 50)}`, "platform", r.stdout || "OK")
-      : fail(`setup: ${cmd.slice(0, 50)}`, "platform", r.stderr || r.stdout);
-  });
+      : fail(`setup: ${cmd.slice(0, 50)}`, "platform", `${formatExit(r)}: ${r.stderr || r.stdout || "setup command failed"}`));
+  }
+  return res;
 }
 
 // ── 6. Smoke & 7. Tests ──────────────────────────────────────
@@ -359,10 +458,11 @@ export function runTests(plan: PlanDoc, root: string): CheckResult[] {
 function runItems(items: CheckItem[], layer: string, root: string): CheckResult[] {
   return items.map(item => {
     const r = execOr(item.command, root);
-    const exitOk = r.ok === (item.expected_exit === 0);
+    const exitOk = r.status === item.expected_exit;
+    const output = r.stdout || r.stderr;
     return exitOk
-      ? ok(item.description, layer, r.stdout || "OK")
-      : fail(item.description, layer, r.stderr || r.stdout || "exit mismatch");
+      ? ok(item.description, layer, output || `${formatExit(r)} as expected`)
+      : fail(item.description, layer, `expected exit ${item.expected_exit}, got ${formatExit(r)}${output ? `: ${output}` : ""}`);
   });
 }
 
@@ -402,8 +502,8 @@ export function runAllChecks(root: string, state: WorkflowState): VerifyReport {
   const all: CheckResult[] = [
     ...runCompile(root),
     ...(manifestError ? [manifestError] : runScopeCheck(root, p, implementationManifest)),
-    ...runBoundaryCheck(root, p),
-    ...runPlatform(p),
+    ...runBoundaryCheck(root, p, manifestError ? undefined : implementationManifest, manifestError?.detail),
+    ...runPlatform(p, root),
     ...runSmoke(p, root),
     ...runTests(p, root),
   ];
