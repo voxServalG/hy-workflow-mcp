@@ -12,11 +12,17 @@ export function checkArtifactContracts(context: ContractRuleContext): ContractFi
     if (!fs.existsSync(path.join(context.root, file))) continue;
     findings.push({ rule: "artifacts", severity: "hard_fail", message: "Local or runtime artifact is tracked: " + file + ".", file });
   }
+  if (tracked.some(f => f.startsWith("dist/"))) {
+    findings.push({ rule: "artifacts", severity: "hard_fail", message: "Generated build output must not be tracked: dist/", file: ".gitignore" });
+  }
   const ignore = readText(context.root, ".gitignore");
   for (const artifact of LOCAL_RUNTIME_ARTIFACTS) {
     if (!ignore.includes(artifact)) {
       findings.push({ rule: "artifacts", severity: "hard_fail", message: ".gitignore does not ignore " + artifact + ".", file: ".gitignore" });
     }
+  }
+  if (!ignore.includes("dist/") && !ignore.includes("dist")) {
+    findings.push({ rule: "artifacts", severity: "hard_fail", message: ".gitignore does not ignore generated dist/ output.", file: ".gitignore" });
   }
   const readme = readText(context.root, "README.md");
   for (const artifact of TRACKED_PROJECT_ARTIFACTS) {
@@ -26,4 +32,3 @@ export function checkArtifactContracts(context: ContractRuleContext): ContractFi
   }
   return findings;
 }
-

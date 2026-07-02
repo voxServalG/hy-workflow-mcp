@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { checkCi } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
@@ -28,17 +28,18 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
 
   if (!state.prNumber) return toolResult("ci", { phase: state.phase, error: "No active PR", allowedTools: ["hy_status"] });
 
+  const root = projectRoot();
   const timeoutSeconds = clampSeconds(args.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS, 0, MAX_TIMEOUT_SECONDS);
   const intervalSeconds = clampSeconds(args.intervalSeconds, DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS, timeoutSeconds || DEFAULT_INTERVAL_SECONDS);
   const deadline = Date.now() + timeoutSeconds * 1000;
 
-  let result = checkCi(state.prNumber);
+  let result = checkCi(root, state.prNumber);
   while (result.ok && !result.allGreen && !result.noChecks) {
     const checks = result.checks || [];
     const failedNames = checks.filter((c: any) => FAILURE_CONCLUSIONS.has(c.conclusion)).map((c: any) => c.name);
     if (failedNames.length || Date.now() >= deadline) break;
     await sleep(Math.min(intervalSeconds * 1000, Math.max(deadline - Date.now(), 0)));
-    result = checkCi(state.prNumber);
+    result = checkCi(root, state.prNumber);
   }
 
   if (!result.ok) return toolResult("ci", { error: result.error, checks: result.checks, requires_user: true, stop_here: true, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });

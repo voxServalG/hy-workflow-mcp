@@ -1,10 +1,11 @@
 import { legacyRuntimeDiagnostics, readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 import { toolResult, type ToolResult } from "./_base.js";
-import { SETUP_COMMAND, SETUP_STAMP } from "../bootstrap.js";
+import { checkSetupStamp, SETUP_COMMAND, SETUP_STAMP, setupUpdateRequiredResult } from "../bootstrap.js";
 import { checkConfig, UNIFIED_CONFIG_FILE } from "../config.js";
-import { LOCAL_RUNTIME_ARTIFACTS, TRACKED_PROJECT_ARTIFACTS } from "../policy/artifacts.js";
+import { isLocalArtifact, LOCAL_RUNTIME_ARTIFACTS, TRACKED_PROJECT_ARTIFACTS } from "../policy/artifacts.js";
 
 const MARKER_START = "<!-- hy-workflow-rules -->";
 const MARKER_END = "<!-- /hy-workflow-rules -->";
@@ -226,16 +227,39 @@ export function ensureLocalArtifactIgnores(root: string): boolean {
   return true;
 }
 
-export function initArtifactGuidance(): { commitArtifacts: string[]; localArtifacts: string[]; body: string } {
+export function trackedLocalArtifactDiagnostics(root: string): string[] {
+  try {
+    const tracked = execSync("git ls-files", { cwd: root, encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] })
+      .split(/\r?\n/)
+      .filter(Boolean);
+    return tracked.filter(isLocalArtifact).sort();
+  } catch {
+    return [];
+  }
+}
+
+export function initArtifactGuidance(trackedLocalArtifacts: string[] = []): { commitArtifacts: string[]; localArtifacts: string[]; trackedLocalArtifacts: string[]; body: string } {
+  const trackedSection = trackedLocalArtifacts.length
+    ? [
+        "",
+        "Tracked local/runtime artifacts detected:",
+        ...trackedLocalArtifacts.map(item => `- ${item}`),
+        "",
+        "Remove them from the Git index in a setup artifact sync PR, for example: git rm --cached -- <file...>",
+      ]
+    : [];
+
   return {
     commitArtifacts: [...INIT_COMMIT_ARTIFACTS],
     localArtifacts: [...INIT_LOCAL_ARTIFACTS],
+    trackedLocalArtifacts: [...trackedLocalArtifacts],
     body: [
       "Commit project artifacts:",
       ...INIT_COMMIT_ARTIFACTS.map(item => `- ${item}`),
       "",
       "Do not commit local/runtime artifacts:",
       ...INIT_LOCAL_ARTIFACTS.map(item => `- ${item}`),
+      ...trackedSection,
     ].join("\n"),
   };
 }
@@ -298,6 +322,8 @@ export async function handleInit(): Promise<ToolResult> {
   const root = projectRoot();
   const setupStatus = setupArtifactStatus(root);
   if (!setupStatus.ready) return setupMissingResult(setupStatus.missingArtifacts);
+  const setupStampStatus = checkSetupStamp(root);
+  if (setupStampStatus.status !== "current") return setupUpdateRequiredResult(setupStampStatus);
 
   const configStatus = checkConfig(root);
   if (!configStatus.ok) {
@@ -328,19 +354,24 @@ export async function handleInit(): Promise<ToolResult> {
 
   const verb = instructionsChanged ? "created/updated" : "up to date";
   const legacyDiagnostics = legacyRuntimeDiagnostics(root);
-  const artifactGuidance = initArtifactGuidance();
+  const trackedLocalArtifacts = trackedLocalArtifactDiagnostics(root);
+  const artifactGuidance = initArtifactGuidance(trackedLocalArtifacts);
   const legacyHint = legacyDiagnostics.length
     ? ` Legacy runtime files need manual cleanup: ${legacyDiagnostics.map(d => d.remediation ?? d.message).join(" ")}`
+    : "";
+  const trackedHint = trackedLocalArtifacts.length
+    ? ` Tracked local/runtime artifacts need cleanup in a setup artifact sync PR: ${trackedLocalArtifacts.join(", ")}.`
     : "";
   return toolResult("plan", {
     display: {
       title: "Setup ready",
       body: `Setup/bootstrap artifacts verified. AGENTS.md ${verb}. .gitignore ${gitignoreChanged ? "updated" : "up to date"}.\n\n${artifactGuidance.body}${legacyHint}`,
     },
-    hint: `Commit only commitArtifacts unless the user explicitly requests local config. Do not commit localArtifacts. Call hy_plan next only when the user has a concrete repository change task.${legacyHint}`,
+    hint: `Commit only commitArtifacts unless the user explicitly requests local config. Do not commit localArtifacts. Call hy_plan next only when the user has a concrete repository change task.${legacyHint}${trackedHint}`,
     allowedTools: ["hy_plan", "hy_status"],
     commitArtifacts: artifactGuidance.commitArtifacts,
     localArtifacts: artifactGuidance.localArtifacts,
+    trackedLocalArtifacts: trackedLocalArtifacts.length ? trackedLocalArtifacts : undefined,
     requiredSetupArtifacts: setupStatus.requiredArtifacts,
     gitignoreChanged,
     legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,

@@ -1,6 +1,8 @@
 # Setup Artifact Contract
 
-`setup` is the one-command bootstrap for hy-workflow projects. It is a standalone bash script that deploys tracked project artifacts and writes a setup stamp.
+`setup` is the one-command bootstrap for hy-workflow projects. It is a standalone bash script that deploys tracked project artifacts and writes a setup stamp. Windows PowerShell users run the same script through `curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash`; macOS, Linux, Git Bash, and WSL shell users run `curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash`.
+
+PowerShell must use `curl.exe`, not `curl`, because Windows PowerShell 5.1 aliases `curl` to `Invoke-WebRequest` and does not understand `-fsSL`. The PowerShell command requires a Git for Windows `bash` on `PATH`; WSL users should run the bash command from inside the WSL shell.
 
 ## Tracked artifacts deployed by setup
 
@@ -24,5 +26,6 @@ Downstream projects that run `setup` get this complete CI pipeline.
 
 ## Version
 
-`SETUP_VERSION` in `setup` and `src/bootstrap.ts` must match.
-When setup content changes, the version must be bumped so downstream projects are prompted to refresh.
+`SETUP_VERSION` in `setup` and `src/bootstrap.ts` must match. When setup content changes, the version must be bumped so downstream projects are prompted to refresh.
+
+The MCP runtime checks the setup stamp before every `hy_*` tool dispatch, not only once per process. `hy_init` also verifies the setup stamp version after confirming required artifacts exist; a missing, unreadable, or outdated stamp returns the structured setup refresh envelope and does not proceed to config validation.

@@ -129,6 +129,21 @@ try {
   if (!status.includes("?? UNDECLARED.md")) {
     throw new Error(`commitScope should leave undeclared files untracked, got status: ${status}`);
   }
+
+  const noGit = mkdtempSync(join(tmpdir(), "hy-state-no-git-"));
+  chdir(noGit);
+  try {
+    readState();
+    throw new Error("readState outside a git worktree should fail");
+  } catch (e: any) {
+    if (e.code !== "PROJECT_ROOT_NOT_FOUND") {
+      throw new Error(`readState should report PROJECT_ROOT_NOT_FOUND outside git, got ${JSON.stringify(e)}`);
+    }
+  }
+  if (existsSync(join(noGit, ".git", "hy-workflow", "workflow.json"))) {
+    throw new Error("readState outside git should not create fake .git workflow state");
+  }
+  chdir(root);
 } finally {
   chdir(originalCwd);
 }

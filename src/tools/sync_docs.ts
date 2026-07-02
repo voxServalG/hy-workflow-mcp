@@ -12,16 +12,15 @@ import {
 } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { ensureGraph, incrementalUpdate, detectBrokenLinks } from "../docs_graph.js";
+import { isDocumentPath, pathInsideDocs, resolveDocsDir } from "../docs_paths.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
-const DOC_EXTENSIONS = [".md", ".mdx", ".txt", ".rst"];
-
 export function isSyncDocumentPath(file: string): boolean {
-  return file === "setup" || file === "README.md" || file === "AGENTS.md" || file.startsWith("docs/") || DOC_EXTENSIONS.some(ext => file.endsWith(ext));
+  return file === "setup" || file === "README.md" || file === "AGENTS.md" || file.startsWith("docs/") || isDocumentPath(file);
 }
 
 export function allowedSyncDocumentPaths(plan: PlanDoc): string[] {
-  const declared = [...plan.scope.changes, ...plan.scope.new_files];
+  const declared = [...plan.scope.changes, ...plan.scope.new_files, ...plan.scope.delete];
   return declared.filter(isSyncDocumentPath).sort();
 }
 
@@ -90,13 +89,22 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   }
 
   const root = projectRoot();
-  const docsDir = readDocsDir(root);
+  const configuredDocsDir = readDocsDir(root);
+  const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
+  if (!resolvedDocsDir.ok) {
+    return toolResult("edit", {
+      phase: state.phase,
+      error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
+      hint: "Update hy-workflow.json project.docsDir to a project-relative directory inside the repository.",
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+  const { docsDir } = resolvedDocsDir;
   const allowedDocs = allowedSyncDocumentPaths(state.plan);
 
   // ── Incremental graph update ──────────────────────────────
-  const graphChangedDocs = allowedDocs.filter(
-    doc => fs.existsSync(path.join(root, doc)) && doc.startsWith(docsDir)
-  );
+  const graphChangedDocs = allowedDocs.filter(doc => pathInsideDocs(root, docsDir, doc));
   let graphInfo = { updated: false, brokenLinks: 0, brokenLinkDetails: [] as string[] };
 
   if (graphChangedDocs.length > 0) {

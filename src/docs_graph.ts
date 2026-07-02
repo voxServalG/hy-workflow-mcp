@@ -3,8 +3,9 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
 import { projectRoot, type DocsGraph, type DocsGraphEntry, type DocsGraphLink } from "./state.js";
+import { DOC_EXTENSIONS, isDocumentPath, pathInsideDocs, relativeInside, relativeToDocs, resolveDocsDir } from "./docs_paths.js";
 
-const DOC_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".rst"]);
+const GRAPH_DIGEST_VERSION = "docs-graph-v2";
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -14,6 +15,10 @@ function sha256(data: string): string {
 
 function shortHash(data: string): string {
   return sha256(data).slice(0, 12);
+}
+
+function graphDigestFromFileShas(items: string[]): string {
+  return shortHash(`${GRAPH_DIGEST_VERSION}|${items.join("|")}`);
 }
 
 function gitPrivatePath(root: string, relativePath: string): string {
@@ -33,17 +38,26 @@ function graphPath(root: string): string {
 function normalizeLink(
   fromFile: string,
   linkTarget: string,
+  root: string,
   docsRoot: string
 ): string | null {
+  const rawTargetPath = extractTargetPath(linkTarget);
+  if (!rawTargetPath) return null;
+
   // Skip anchor-only links, external URLs
-  if (linkTarget.startsWith("#")) return null;
-  if (linkTarget.startsWith("http://") || linkTarget.startsWith("https://")) return null;
-  if (linkTarget.startsWith("mailto:")) return null;
+  if (rawTargetPath.startsWith("#")) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(rawTargetPath)) return null;
+
+  const targetPath = safeDecodeUri(rawTargetPath.split(/[?#]/, 1)[0]);
+  if (!targetPath) return null;
 
   // Resolve relative to the source file's directory
-  const resolved = path.resolve(path.dirname(fromFile), linkTarget);
-  const rel = path.relative(docsRoot, resolved).split(path.sep).join("/");
-  if (rel.startsWith("..")) return null; // outside docsDir, skip
+  const resolved = path.resolve(path.dirname(fromFile), targetPath);
+  const docsRel = relativeToDocs(docsRoot, resolved);
+  if (!docsRel) return null; // outside docsDir, skip
+
+  const rel = relativeInside(root, resolved);
+  if (!rel) return null;
 
   const ext = path.extname(rel).toLowerCase();
   if (!DOC_EXTENSIONS.has(ext)) return null;
@@ -51,17 +65,49 @@ function normalizeLink(
   return rel;
 }
 
+function safeDecodeUri(targetPath: string): string | null {
+  try {
+    return decodeURI(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+function extractTargetPath(rawTarget: string): string {
+  const trimmed = rawTarget.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("<")) {
+    const close = trimmed.indexOf(">");
+    return close === -1 ? "" : trimmed.slice(1, close).trim();
+  }
+
+  let depth = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (ch === "(") depth++;
+    else if (ch === ")" && depth > 0) depth--;
+    else if (/\s/.test(ch) && depth === 0) return trimmed.slice(0, i);
+  }
+  return trimmed;
+}
+
 // ── Graph files ─────────────────────────────────────────────
 
 function listDocFiles(root: string, docsDir: string): string[] {
-  const docsRoot = path.join(root, docsDir);
+  const resolvedDocsDir = resolveDocsDir(root, docsDir);
+  if (!resolvedDocsDir.ok) throw new Error(resolvedDocsDir.error);
+  const { docsRoot } = resolvedDocsDir;
   const files: string[] = [];
   const walk = (current: string) => {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       if (entry.name.startsWith(".")) continue;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
-      if (!DOC_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      if (!isDocumentPath(entry.name)) continue;
       files.push(path.relative(root, full).split(path.sep).join("/"));
     }
   };
@@ -69,42 +115,177 @@ function listDocFiles(root: string, docsDir: string): string[] {
   return files.sort();
 }
 
-function currentFileListDigest(root: string, docsDir: string): string {
+function currentGraphDigest(root: string, docsDir: string): string {
   const files = listDocFiles(root, docsDir);
-  // Digest based on filenames and sizes (no content read)
   const meta = files.map(f => {
-    const stat = fs.statSync(path.join(root, f));
-    return `${f}:${stat.size}`;
+    const content = fs.readFileSync(path.join(root, f), "utf-8");
+    return `${f}:${sha256(content)}`;
   });
-  return shortHash(meta.join("|"));
+  return graphDigestFromFileShas(meta);
 }
 
 // ── Link parsing ────────────────────────────────────────────
 
-const LINK_RE = /\[([^\]]*)\]\(([^)]*)\)/g;
+const REFERENCE_DEFINITION_RE = /^\s{0,3}\[([^\]]+)\]:\s*(.+)$/;
+const REFERENCE_LINK_RE = /\[((?:\\.|[^\]\\])*)\]\[([^\]]*)\]/g;
+
+function fenceMarker(line: string): "`" | "~" | null {
+  const match = /^(?: {0,3})(`{3,}|~{3,})/.exec(line);
+  if (!match) return null;
+  return match[1][0] === "`" ? "`" : "~";
+}
+
+function stripInlineCodeSpans(line: string): string {
+  let result = "";
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== "`") {
+      result += line[i];
+      continue;
+    }
+
+    let tickCount = 1;
+    while (line[i + tickCount] === "`") tickCount++;
+    const marker = "`".repeat(tickCount);
+    const end = line.indexOf(marker, i + tickCount);
+    if (end === -1) {
+      result += line.slice(i);
+      break;
+    }
+    result += " ".repeat(end + tickCount - i);
+    i = end + tickCount - 1;
+  }
+  return result;
+}
+
+function linkScannableLines(content: string): Array<{ line: string; number: number }> {
+  const result: Array<{ line: string; number: number }> = [];
+  const lines = content.split("\n");
+  let activeFence: "`" | "~" | null = null;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const raw = lines[lineIdx];
+    const marker = fenceMarker(raw);
+    if (marker && (!activeFence || activeFence === marker)) {
+      activeFence = activeFence ? null : marker;
+      continue;
+    }
+    if (activeFence) continue;
+    result.push({ line: stripInlineCodeSpans(raw), number: lineIdx + 1 });
+  }
+
+  return result;
+}
+
+function referenceLabel(label: string): string {
+  return label.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function collectReferenceDefinitions(lines: string[]): Map<string, string> {
+  const definitions = new Map<string, string>();
+  for (const line of lines) {
+    const match = REFERENCE_DEFINITION_RE.exec(line);
+    if (!match) continue;
+    const label = referenceLabel(match[1]);
+    const target = extractTargetPath(match[2]);
+    if (label && target) definitions.set(label, target);
+  }
+  return definitions;
+}
+
+function parseInlineLinks(
+  line: string,
+  lineNumber: number,
+  sourceFile: string,
+  root: string,
+  docsRoot: string
+): DocsGraphLink[] {
+  const links: DocsGraphLink[] = [];
+  let searchFrom = 0;
+
+  while (searchFrom < line.length) {
+    const open = line.indexOf("[", searchFrom);
+    if (open === -1) break;
+    if (open > 0 && line[open - 1] === "!") {
+      searchFrom = open + 1;
+      continue;
+    }
+
+    const close = line.indexOf("]", open + 1);
+    if (close === -1) break;
+    if (line[close + 1] !== "(") {
+      searchFrom = close + 1;
+      continue;
+    }
+
+    const targetStart = close + 2;
+    let depth = 0;
+    let targetEnd = -1;
+    for (let i = targetStart; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === "(") {
+        depth++;
+        continue;
+      }
+      if (ch === ")") {
+        if (depth === 0) {
+          targetEnd = i;
+          break;
+        }
+        depth--;
+      }
+    }
+
+    if (targetEnd === -1) break;
+    const anchor = line.slice(open + 1, close).trim();
+    const rawTarget = line.slice(targetStart, targetEnd).trim();
+    const target = normalizeLink(sourceFile, rawTarget, root, docsRoot);
+    if (target) links.push({ anchor, target, line: lineNumber });
+    searchFrom = targetEnd + 1;
+  }
+
+  return links;
+}
+
+function parseReferenceLinks(
+  line: string,
+  lineNumber: number,
+  definitions: Map<string, string>,
+  sourceFile: string,
+  root: string,
+  docsRoot: string
+): DocsGraphLink[] {
+  if (REFERENCE_DEFINITION_RE.test(line)) return [];
+
+  const links: DocsGraphLink[] = [];
+  REFERENCE_LINK_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = REFERENCE_LINK_RE.exec(line)) !== null) {
+    const anchor = match[1].trim();
+    const label = referenceLabel(match[2] || anchor);
+    const rawTarget = definitions.get(label);
+    if (!rawTarget) continue;
+    const target = normalizeLink(sourceFile, rawTarget, root, docsRoot);
+    if (target) links.push({ anchor, target, line: lineNumber });
+  }
+  return links;
+}
 
 function parseLinks(
   content: string,
   sourceFile: string,
+  root: string,
   docsRoot: string
 ): DocsGraphLink[] {
   const links: DocsGraphLink[] = [];
-  const lines = content.split("\n");
-  let cumulativeCharCount = 0;
-  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-    const line = lines[lineIdx];
-    // Reset regex per line for consistent global matching
-    LINK_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = LINK_RE.exec(line)) !== null) {
-      const anchor = m[1].trim();
-      const rawTarget = m[2].trim();
-      const target = normalizeLink(sourceFile, rawTarget, docsRoot);
-      if (target) {
-        links.push({ anchor, target, line: lineIdx + 1 });
-      }
-    }
-    cumulativeCharCount += line.length + 1; // +1 for newline
+  const lines = linkScannableLines(content);
+  const definitions = collectReferenceDefinitions(lines.map(item => item.line));
+  for (const item of lines) {
+    links.push(...parseInlineLinks(item.line, item.number, sourceFile, root, docsRoot));
+    links.push(...parseReferenceLinks(item.line, item.number, definitions, sourceFile, root, docsRoot));
   }
   return links;
 }
@@ -112,7 +293,9 @@ function parseLinks(
 // ── Build full graph ────────────────────────────────────────
 
 export function buildDocsGraph(root: string, docsDir: string): DocsGraph {
-  const docsRoot = path.join(root, docsDir);
+  const resolvedDocsDir = resolveDocsDir(root, docsDir);
+  if (!resolvedDocsDir.ok) throw new Error(resolvedDocsDir.error);
+  const { docsRoot } = resolvedDocsDir;
   const files = listDocFiles(root, docsDir);
 
   // First pass: read content and extract links
@@ -121,7 +304,7 @@ export function buildDocsGraph(root: string, docsDir: string): DocsGraph {
     const fullPath = path.join(root, relPath);
     const content = fs.readFileSync(fullPath, "utf-8");
     const sha = sha256(content);
-    const links = parseLinks(content, fullPath, docsRoot);
+    const links = parseLinks(content, fullPath, root, docsRoot);
     rawEntries[relPath] = { sha, links };
   }
 
@@ -151,8 +334,8 @@ export function buildDocsGraph(root: string, docsDir: string): DocsGraph {
   const entryPoints = detectEntryPoints(files);
 
   // Graph digest
-  const digestPayload = Object.keys(entries).sort().map(k => `${k}:${entries[k].sha256}`).join("|");
-  const digest = shortHash(digestPayload);
+  const digestPayload = Object.keys(entries).sort().map(k => `${k}:${entries[k].sha256}`);
+  const digest = graphDigestFromFileShas(digestPayload);
 
   const graph: DocsGraph = { digest, docsDir, entryPoints, entries };
   saveDocsGraph(root, graph);
@@ -195,12 +378,22 @@ export function loadDocsGraph(root: string): DocsGraph | null {
 // ── Stale check ─────────────────────────────────────────────
 
 export function isGraphStale(root: string, graph: DocsGraph): boolean {
-  const currentDigest = currentFileListDigest(root, graph.docsDir);
-  // Recompute quick digest from stored entries
-  const storedPaths = Object.keys(graph.entries).sort();
-  const storedDigestPayload = storedPaths.map(k => `${k}:${graph.entries[k].sha256}`).join("|");
-  const storedDigest = shortHash(storedDigestPayload);
-  return currentDigest !== storedDigest;
+  try {
+    return currentGraphDigest(root, graph.docsDir) !== graph.digest;
+  } catch {
+    return true;
+  }
+}
+
+export function hasLegacyRelativeTargets(root: string, graph: DocsGraph): boolean {
+  for (const entry of Object.values(graph.entries)) {
+    for (const link of entry.links) {
+      if (graph.entries[link.target]) continue;
+      if (pathInsideDocs(root, graph.docsDir, link.target)) continue;
+      if (fs.existsSync(path.join(root, graph.docsDir, link.target))) return true;
+    }
+  }
+  return false;
 }
 
 // ── Task-driven BFS traversal ───────────────────────────────
@@ -277,7 +470,14 @@ export function traverseByTask(
     visited.add(item.path);
 
     const entry = graph.entries[item.path];
-    if (!entry) continue; // file not in graph (deleted?)
+    if (!entry) {
+      const fullPath = path.join(root, item.path);
+      if (fs.existsSync(fullPath) && isDocumentPath(item.path)) {
+        read.push(item.path);
+        sourcePaths.push(item.sources);
+      }
+      continue; // file not in graph (deleted or supplemental outside docsDir)
+    }
 
     // Read the file
     const fullPath = path.join(root, item.path);
@@ -324,10 +524,13 @@ export function incrementalUpdate(
   graph: DocsGraph,
   changedFiles: string[]
 ): DocsGraph {
-  const docsRoot = path.join(root, graph.docsDir);
+  const resolvedDocsDir = resolveDocsDir(root, graph.docsDir);
+  if (!resolvedDocsDir.ok) throw new Error(resolvedDocsDir.error);
+  const { docsRoot } = resolvedDocsDir;
   const updated = { ...graph, entries: { ...graph.entries } };
 
   for (const cf of changedFiles) {
+    if (!pathInsideDocs(root, graph.docsDir, cf)) continue;
     const fullPath = path.join(root, cf);
     if (!fs.existsSync(fullPath)) {
       // File deleted
@@ -351,7 +554,7 @@ export function incrementalUpdate(
 
     // Parse links fresh
     const oldLinks = oldEntry?.links ?? [];
-    const newLinks = parseLinks(content, fullPath, docsRoot);
+    const newLinks = parseLinks(content, fullPath, root, docsRoot);
 
     // Update reverse index: remove old links, add new links
     for (const oldLink of oldLinks) {
@@ -369,7 +572,7 @@ export function incrementalUpdate(
           updated.entries[newLink.target] = {
             path: newLink.target,
             sha256: sha256(targetContent),
-            links: parseLinks(targetContent, targetFull, docsRoot),
+            links: parseLinks(targetContent, targetFull, root, docsRoot),
             referencedBy: [cf],
           };
         }
@@ -399,8 +602,8 @@ export function incrementalUpdate(
 
   // Recompute digest
   const paths = Object.keys(updated.entries).sort();
-  const digestPayload = paths.map(k => `${k}:${updated.entries[k].sha256}`).join("|");
-  updated.digest = shortHash(digestPayload);
+  const digestPayload = paths.map(k => `${k}:${updated.entries[k].sha256}`);
+  updated.digest = graphDigestFromFileShas(digestPayload);
 
   // Re-detect entry points (docs might have been deleted)
   updated.entryPoints = detectEntryPoints(paths);
@@ -438,7 +641,7 @@ export function detectBrokenLinks(
 
 export function ensureGraph(root: string, docsDir: string): DocsGraph {
   const existing = loadDocsGraph(root);
-  if (existing && !isGraphStale(root, existing)) {
+  if (existing && existing.docsDir === docsDir && !isGraphStale(root, existing) && !hasLegacyRelativeTargets(root, existing)) {
     return existing;
   }
   return buildDocsGraph(root, docsDir);

@@ -1,9 +1,11 @@
 import { exists } from "../files.js";
 import { npmPackDryRun, readPackageJson } from "../../npm/package.js";
+import { trackedFiles } from "../../adapters/git.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
-const REQUIRED_SCRIPTS = ["build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "verify"];
+const REQUIRED_SCRIPTS = ["build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "verify", "prepare"];
 const FORBIDDEN_PACK_PREFIXES = [".hy/", ".opencode/", ".codex/", "test/", "src/", "node_modules/", "codelint.json", "doclint.json", "docs-gardener.json"];
+const REQUIRED_PACK_FILES = ["dist", "docs", "setup", "setup.ps1", "README.md"];
 
 export function checkNpmContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
@@ -13,8 +15,13 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
   for (const script of REQUIRED_SCRIPTS) {
     if (!pkg.scripts?.[script]) findings.push({ rule: "npm", severity: "hard_fail", message: "Missing npm script " + script + ".", file: "package.json" });
   }
-  if (!pkg.files?.includes("dist") || !pkg.files?.includes("docs") || !pkg.files?.includes("README.md")) {
-    findings.push({ rule: "npm", severity: "hard_fail", message: "package.json files must keep the npm package minimal and runtime-oriented.", file: "package.json" });
+  const missingFiles = REQUIRED_PACK_FILES.filter(f => !pkg.files?.includes(f));
+  if (missingFiles.length) {
+    findings.push({ rule: "npm", severity: "hard_fail", message: "package.json files missing: " + missingFiles.join(", "), file: "package.json" });
+  }
+  const tracked = trackedFiles(context.root);
+  if (tracked.some(f => f.startsWith("dist/"))) {
+    findings.push({ rule: "npm", severity: "hard_fail", message: "dist files must not be tracked by git.", file: ".gitignore" });
   }
   if (exists(context.root, "dist/server.js")) {
     for (const file of npmPackDryRun(context.root)) {
@@ -25,4 +32,3 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
   }
   return findings;
 }
-

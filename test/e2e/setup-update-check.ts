@@ -63,17 +63,22 @@ try {
   assert(missingResult.phase === "init", "missing setup envelope should include phase");
   assert(missingResult.next === "init", "missing setup envelope should include next");
   assert(missingResult.display?.title === "hy-workflow setup update required", "missing setup envelope should include display title");
+  assert(missingResult.error?.message.includes("hy-workflow setup update required"), "missing setup error should have a human-readable message");
+  assert(!missingResult.error?.message.trim().startsWith("{"), "missing setup error message should not be serialized JSON");
+  assert(missingResult.error?.code === "SETUP_UPDATE_REQUIRED", "missing setup error should expose a stable code");
   assert(Boolean(missingResult.hint), "missing setup envelope should include hint");
   assert(missingResult.requires_user === true, "missing setup envelope should require user");
   assert(missingResult.stop_here === true, "missing setup envelope should stop here");
   assert(missingResult.allowedTools?.includes("hy_status"), "missing setup envelope should allow hy_status");
   assert(missingResult.blockedTools?.includes("hy_plan"), "missing setup envelope should block hy_plan");
-  assert(missingResult.recovery?.instruction?.includes("curl -fsSL"), "missing setup envelope should include recovery command");
+  assert(missingResult.recovery?.instruction?.includes("curl -fsSL"), "missing setup envelope should include bash recovery command");
+  assert(missingResult.recovery?.instruction?.includes("curl.exe -fsSL"), "missing setup envelope should include Windows PowerShell recovery command");
+  assert(missingResult.display?.body?.includes("Windows PowerShell"), "missing setup display should mention Windows PowerShell");
   assert(JSON.stringify(before) === JSON.stringify(listFiles(missingRoot)), "setup check must not write files");
 
   const gate = createSetupGate(missingRoot);
   assert(gate()?.error?.subtype === "setup_update_required", "gate should stop on first missing setup check");
-  assert(gate() === null, "gate should only run once per session");
+  assert(gate()?.error?.subtype === "setup_update_required", "gate should re-check missing setup on later dispatches");
 
   const outdatedRoot = tempRepo();
   writeStamp(outdatedRoot, "0.0.0");
@@ -85,7 +90,10 @@ try {
   writeStamp(currentRoot, SETUP_VERSION);
   const current = checkSetupStamp(currentRoot);
   assert(current.status === "current", `expected current, got ${current.status}`);
-  assert(createSetupGate(currentRoot)() === null, "current setup should not stop tool dispatch");
+  const currentGate = createSetupGate(currentRoot);
+  assert(currentGate() === null, "current setup should not stop tool dispatch");
+  fs.unlinkSync(path.join(currentRoot, SETUP_STAMP));
+  assert(currentGate()?.error?.subtype === "setup_update_required", "gate should detect setup stamp drift after an earlier successful check");
 } finally {
   process.chdir(originalCwd);
 }

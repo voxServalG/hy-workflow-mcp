@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { checkConfig, ensureConfigDefaults, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
+import { buildSuggestedCommand, checkConfig, ensureConfigDefaults, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -106,8 +106,57 @@ fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ code
 const mismatch = checkConfig(mismatchRoot);
 assert(!mismatch.ok, "missing unified config should need confirmation");
 assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
-assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include detected Python ext");
+assert(mismatch.suggestedCommand.includes("--code-ext '.py'"), "suggested command should include detected Python ext with shell quoting");
 assert(mismatch.issues.includes("Missing hy-workflow.json"), "missing unified config should be reported");
+const mismatchCli = runConfigCli(["--check", "--json"], mismatchRoot);
+assert(mismatchCli.exitCode === 1, "config CLI should exit nonzero when --check emits ok false");
+assert(JSON.parse(mismatchCli.stdout).ok === false, "config CLI should preserve the ok false envelope");
+
+const unsafeRoot = tempRoot();
+fs.writeFileSync(path.join(unsafeRoot, "hy-workflow.json"), JSON.stringify({
+  project: { baseBranch: "dev;touch${IFS}/tmp/x", codeExt: ".py", codeDirs: ["src"], docsDir: "docs" },
+  codelint: { lintDirs: ["src"] },
+}, null, 2) + "\n", "utf-8");
+const unsafe = checkConfig(unsafeRoot);
+assert(!unsafe.ok, "unsafe baseBranch should fail config check");
+assert(unsafe.issues.some(issue => issue.includes("project.baseBranch is not a safe Git branch name")), "unsafe baseBranch should be reported");
+const quoted = buildSuggestedCommand({ codeExt: ".py", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
+assert(quoted.includes("--code-dirs 'src;touch${IFS}/tmp/x'"), "suggested command should quote unsafe-looking code dirs");
+assert(quoted.includes("--base-branch 'dev;touch${IFS}/tmp/x'"), "suggested command should quote unsafe-looking base branch");
+
+const malformedRoot = tempRoot();
+fs.writeFileSync(path.join(malformedRoot, "hy-workflow.json"), "{ bad json\n", "utf-8");
+const malformed = checkConfig(malformedRoot);
+assert(!malformed.ok, "malformed unified config should fail config check");
+assert(malformed.issues.some(issue => issue.includes("hy-workflow.json is not valid config JSON")), "malformed unified config should be a structured issue");
+const malformedCli = runConfigCli(["--check", "--json"], malformedRoot);
+assert(malformedCli.exitCode === 1, "malformed config CLI check should exit nonzero");
+
+const invalidTypesRoot = tempRoot();
+fs.writeFileSync(path.join(invalidTypesRoot, "hy-workflow.json"), JSON.stringify({
+  project: { baseBranch: 123, codeExt: ".py", codeDirs: "src", docsDir: ["docs"] },
+  codelint: { lintDirs: "src", maxLines: "500" },
+  doclint: { maxLines: "200" },
+}, null, 2) + "\n", "utf-8");
+const invalidTypes = checkConfig(invalidTypesRoot);
+assert(!invalidTypes.ok, "invalid unified config field types should fail config check");
+assert(invalidTypes.issues.some(issue => issue.includes("project.baseBranch must be a string")), "numeric baseBranch should be reported");
+assert(invalidTypes.issues.some(issue => issue.includes("project.codeDirs must be an array of strings")), "string codeDirs should be reported");
+assert(invalidTypes.issues.some(issue => issue.includes("project.docsDir must be a string")), "array docsDir should be reported");
+assert(invalidTypes.issues.some(issue => issue.includes("codelint.maxLines must be a finite number")), "string codelint maxLines should be reported");
+assert(invalidTypes.issues.some(issue => issue.includes("doclint.maxLines must be a finite number")), "string doclint maxLines should be reported");
+
+const invalidApplyRoot = tempRoot();
+const invalidApply = runConfigCli(["--apply-suggested", "--json", "--base-branch", "dev;touch"], invalidApplyRoot);
+assert(invalidApply.exitCode === 1, "invalid apply should exit nonzero");
+assert(!exists(invalidApplyRoot, "hy-workflow.json"), "invalid apply should not write hy-workflow.json");
+
+const unknownArg = runConfigCli(["--json", "--unknown"], tempRoot());
+assert(unknownArg.exitCode === 1, "unknown config flags should exit nonzero");
+assert(JSON.parse(unknownArg.stdout).issues.some((issue: string) => issue.includes("Unknown config option: --unknown")), "unknown config flag should be reported");
+const missingValue = runConfigCli(["--json", "--code-ext"], tempRoot());
+assert(missingValue.exitCode === 1, "missing config flag value should exit nonzero");
+assert(JSON.parse(missingValue.stdout).issues.some((issue: string) => issue.includes("Missing value for --code-ext")), "missing config flag value should be reported");
 
 const cliRoot = tempRoot();
 const cli = runConfigCli(["--apply-suggested", "--json", "--code-ext", ".py", "--code-dirs", "src", "--docs-dir", "docs", "--base-branch", "dev"], cliRoot);
@@ -125,6 +174,25 @@ withRuntimeCompatConfigs(cliRoot, () => {
 });
 assert(!exists(cliRoot, "codelint.json"), "runtime compat should clean up generated codelint file");
 assert(!exists(cliRoot, "doclint.json"), "runtime compat should clean up generated doclint file");
+
+const staleCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+fs.writeFileSync(path.join(staleCompatRoot, "codelint.json"), JSON.stringify({ codeExt: ".ts", codeDirs: ["old-src"], keep: true }, null, 2) + "\n", "utf-8");
+const staleCompatBefore = fs.readFileSync(path.join(staleCompatRoot, "codelint.json"), "utf-8");
+withRuntimeCompatConfigs(staleCompatRoot, () => {
+  const runtime = readJson(staleCompatRoot, "codelint.json");
+  assert(runtime.codeExt === ".py", "runtime compat should overwrite stale codeExt from unified config while running");
+  assert(runtime.codeDirs[0] === "src", "runtime compat should overwrite stale codeDirs from unified config while running");
+  assert(runtime.keep === true, "runtime compat should preserve unrelated existing compatibility fields while running");
+});
+assert(fs.readFileSync(path.join(staleCompatRoot, "codelint.json"), "utf-8") === staleCompatBefore, "runtime compat should restore stale existing codelint after run");
+
+const invalidCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+fs.writeFileSync(path.join(invalidCompatRoot, "codelint.json"), "{ invalid compatibility json\n", "utf-8");
+const invalidCompatBefore = fs.readFileSync(path.join(invalidCompatRoot, "codelint.json"), "utf-8");
+withRuntimeCompatConfigs(invalidCompatRoot, () => {
+  assert(readJson(invalidCompatRoot, "codelint.json").codeExt === ".py", "runtime compat should replace invalid existing codelint while running");
+});
+assert(fs.readFileSync(path.join(invalidCompatRoot, "codelint.json"), "utf-8") === invalidCompatBefore, "runtime compat should restore invalid existing codelint after run");
 
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");

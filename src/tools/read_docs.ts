@@ -21,6 +21,7 @@ import {
 import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { resolveDocsDir } from "../docs_paths.js";
 
 function sha256(value: string): string {
   const hash = createHash("sha256");
@@ -88,8 +89,16 @@ function buildSnapshot(
   planHash: string | null
 ): DocumentReadSnapshot | ToolResult {
   const root = projectRoot();
-  const docsDir = readDocsDir(root);
-  const docsRoot = path.join(root, docsDir);
+  const configuredDocsDir = readDocsDir(root);
+  const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
+  if (!resolvedDocsDir.ok) {
+    return toolResult(stage === "before_plan" ? "plan" : "approve", {
+      error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
+      hint: "Update hy-workflow.json project.docsDir to a project-relative directory inside the repository.",
+      allowedTools: ["hy_status"],
+    });
+  }
+  const { docsDir, docsRoot } = resolvedDocsDir;
 
   if (!fs.existsSync(docsRoot) || !fs.statSync(docsRoot).isDirectory()) {
     return toolResult(stage === "before_plan" ? "plan" : "approve", {
@@ -106,7 +115,7 @@ function buildSnapshot(
   // Run task-driven traversal
   const extraEntryPoints: string[] = [];
   // Always include README.md and AGENTS.md as supplemental entry points
-  const readmePath = path.join("docs", "README.md");
+  const readmePath = path.join(docsDir, "README.md").split(path.sep).join("/");
   const agentsPath = "AGENTS.md";
   if (fs.existsSync(path.join(root, readmePath))) extraEntryPoints.push(readmePath);
   if (fs.existsSync(path.join(root, agentsPath))) extraEntryPoints.push(agentsPath);
@@ -266,11 +275,11 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
   const snapshot = buildSnapshot(stage, state.plan.task, planHash);
   if ("next" in snapshot) return snapshot;
   const beforePlan = state.documentReads?.beforePlan ?? null;
-  const changedSinceBaseline = beforePlan && beforePlan.digest !== snapshot.digest;
+  const changedSinceBaseline = Boolean(beforePlan && (beforePlan.digest !== snapshot.digest || beforePlan.docsGraphDigest !== snapshot.docsGraphDigest));
   const findings = changedSinceBaseline
-    ? [...snapshot.findings, "Document digest changed since before_plan; agent must reject and re-plan if the changed documents affect the PlanDoc."]
+    ? [...snapshot.findings, "Document digest or DocsGraph digest changed since before_plan; agent must reject and re-plan if the changed documents affect the PlanDoc."]
     : snapshot.findings;
-  const auditedSnapshot: DocumentReadSnapshot = { ...snapshot, findings };
+  const auditedSnapshot: DocumentReadSnapshot = { ...snapshot, changedSinceBaseline, findings };
   writeState({
     ...state,
     documentReads: {

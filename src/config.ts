@@ -52,6 +52,7 @@ type ConfigArgs = {
   dryRun: boolean;
   applySuggested: boolean;
   explicit: Partial<ConfigSuggestion>;
+  errors: string[];
 };
 
 export const UNIFIED_CONFIG_FILE = "hy-workflow.json";
@@ -61,10 +62,31 @@ function exists(root: string, rel: string): boolean {
   return fs.existsSync(path.join(root, rel));
 }
 
-function readJson(root: string, rel: string): JsonObject | null {
+type JsonRead = {
+  value: JsonObject | null;
+  issue: string | null;
+};
+
+function jsonIssue(rel: string, message: string): string {
+  return `${rel} is not valid config JSON: ${message}`;
+}
+
+function readJsonFile(root: string, rel: string): JsonRead {
   const filePath = path.join(root, rel);
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  if (!fs.existsSync(filePath)) return { value: null, issue: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { value: null, issue: jsonIssue(rel, "top-level value must be an object") };
+    }
+    return { value: parsed as JsonObject, issue: null };
+  } catch (error: any) {
+    return { value: null, issue: jsonIssue(rel, error?.message ?? String(error)) };
+  }
+}
+
+function readJson(root: string, rel: string): JsonObject | null {
+  return readJsonFile(root, rel).value;
 }
 
 function writeJson(root: string, rel: string, value: JsonObject): boolean {
@@ -315,30 +337,49 @@ export function ensureConfigDefaults(root: string, options: { dryRun?: boolean }
 }
 
 export function readUnifiedConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject | null {
-  const unifiedRaw = readJson(root, UNIFIED_CONFIG_FILE);
-  if (!unifiedRaw) return null;
-  return normalizedUnified(unifiedRaw, suggestion);
+  const unifiedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
+  if (!unifiedRead.value) return null;
+  const unified = normalizedUnified(unifiedRead.value, suggestion);
+  if (validateUnifiedConfig(root, unifiedRead.value, unified, { checkExists: false }).length) return null;
+  return unified;
 }
+
+type CompatSnapshot = {
+  filePath: string;
+  existed: boolean;
+  text: string | null;
+  value: JsonObject | null;
+};
 
 export function withRuntimeCompatConfigs<T>(root: string, run: () => T): T {
   const suggestion = defaultSuggestion(root);
   const unified = readUnifiedConfig(root, suggestion);
-  const created: string[] = [];
+  const snapshots: CompatSnapshot[] = [];
   if (unified) {
-    const existing = Object.fromEntries(COMPAT_CONFIG_FILES.map(file => [file, readJson(root, file)]));
+    for (const file of COMPAT_CONFIG_FILES) {
+      const filePath = path.join(root, file);
+      const existed = fs.existsSync(filePath);
+      snapshots.push({
+        filePath,
+        existed,
+        text: existed ? fs.readFileSync(filePath, "utf-8") : null,
+        value: readJsonFile(root, file).value,
+      });
+    }
+    const existing = Object.fromEntries(COMPAT_CONFIG_FILES.map((file, index) => [file, snapshots[index].value]));
     const configs = compatConfigs(existing, unified);
     for (const [file, value] of Object.entries(configs)) {
-      const filePath = path.join(root, file);
-      if (fs.existsSync(filePath)) continue;
-      fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf-8");
-      created.push(filePath);
+      fs.writeFileSync(path.join(root, file), JSON.stringify(value, null, 2) + "\n", "utf-8");
     }
   }
   try {
     return run();
   } finally {
-    for (const filePath of created) {
-      try { fs.unlinkSync(filePath); } catch {}
+    for (const snapshot of snapshots) {
+      try {
+        if (snapshot.existed && snapshot.text !== null) fs.writeFileSync(snapshot.filePath, snapshot.text, "utf-8");
+        else fs.unlinkSync(snapshot.filePath);
+      } catch {}
     }
   }
 }
@@ -349,16 +390,32 @@ function preservedKeys(before: JsonObject | null, after: JsonObject): string[] {
 }
 
 export function applyConfig(root: string, suggestion: ConfigSuggestion, options: { preserveExisting: boolean; dryRun: boolean; mode?: string }): ConfigCheckResult {
+  const reads = {
+    [UNIFIED_CONFIG_FILE]: readJsonFile(root, UNIFIED_CONFIG_FILE),
+    "codelint.json": readJsonFile(root, "codelint.json"),
+    "doclint.json": readJsonFile(root, "doclint.json"),
+    "docs-gardener.json": readJsonFile(root, "docs-gardener.json"),
+  };
+  const readIssues = [reads[UNIFIED_CONFIG_FILE].issue];
+  if (options.preserveExisting) {
+    readIssues.push(reads["codelint.json"].issue, reads["doclint.json"].issue, reads["docs-gardener.json"].issue);
+  }
+  const blockingReadIssues = readIssues.filter((issue): issue is string => Boolean(issue));
+  if (blockingReadIssues.length) return configResult(root, suggestion, blockingReadIssues, [], false);
+
   const before = {
-    [UNIFIED_CONFIG_FILE]: readJson(root, UNIFIED_CONFIG_FILE),
-    "codelint.json": readJson(root, "codelint.json"),
-    "doclint.json": readJson(root, "doclint.json"),
-    "docs-gardener.json": readJson(root, "docs-gardener.json"),
+    [UNIFIED_CONFIG_FILE]: reads[UNIFIED_CONFIG_FILE].value,
+    "codelint.json": reads["codelint.json"].value,
+    "doclint.json": reads["doclint.json"].value,
+    "docs-gardener.json": reads["docs-gardener.json"].value,
   };
   const unified = normalizedUnified(
     unifiedFromInputs(before[UNIFIED_CONFIG_FILE], before, suggestion, options.preserveExisting),
     suggestion,
   );
+  const validationIssues = validateUnifiedConfig(root, unified, unified);
+  if (validationIssues.length) return configResult(root, suggestion, validationIssues, [], false);
+
   const after = { [UNIFIED_CONFIG_FILE]: unified };
   const changed: string[] = [];
   const preserved: Record<string, string[]> = {};
@@ -369,20 +426,17 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
     preserved[file] = preservedKeys(prev, next);
     if (!options.dryRun) writeJson(root, file, next);
   }
-  const result = checkConfig(root, suggestion);
+  const result = options.dryRun ? configResult(root, suggestion, [], [], false) : checkConfig(root, suggestion);
   return {
     ...result,
-    ok: true,
-    issues: options.dryRun ? result.issues : [],
-    drift: options.dryRun ? result.drift : [],
     changed,
     preserved,
     dryRun: options.dryRun,
     display: {
-      title: options.dryRun ? "Config dry run complete" : "Config updated",
+      title: options.dryRun ? "Config dry run complete" : result.ok ? "Config updated" : "Config update needs attention",
       body: `${options.dryRun ? "Would update" : "Updated"} ${changed.length ? changed.join(", ") : "no config files"} while preserving unknown fields in ${UNIFIED_CONFIG_FILE}.`,
     },
-    hint: "Rerun hy_init after applying config changes so setup artifacts and workflow state can be validated.",
+    hint: result.ok ? "Rerun hy_init after applying config changes so setup artifacts and workflow state can be validated." : result.hint,
   };
 }
 
@@ -400,6 +454,24 @@ function addDrift(drift: ConfigDrift[], file: string, field: string, expected: u
   }
 }
 
+const UNSAFE_CONFIG_CHARS = /[\x00-\x20~^:?*\[\\;$`"'|&<>]/;
+
+function isSafeConfigRefName(value: string): boolean {
+  if (!value || value.length > 200 || value.trim() !== value) return false;
+  if (value.startsWith("-") || value.startsWith("/") || value.endsWith("/") || value.endsWith(".")) return false;
+  if (value.includes("..") || value.includes("//") || value.includes("@{")) return false;
+  if (UNSAFE_CONFIG_CHARS.test(value)) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(value)) return false;
+  return value.split("/").every(part => Boolean(part) && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+function isSafeRelativePath(value: string): boolean {
+  if (!value || value.length > 200 || value.trim() !== value) return false;
+  if (path.isAbsolute(value) || value.startsWith("-") || value.startsWith("../") || value === "..") return false;
+  if (value.includes("..") || value.includes("//") || UNSAFE_CONFIG_CHARS.test(value)) return false;
+  return /^[A-Za-z0-9._/-]+$/.test(value);
+}
+
 function compareCompat(file: string, actual: JsonObject | null, expected: JsonObject, fields: string[]): ConfigDrift[] {
   const drift: ConfigDrift[] = [];
   if (!actual) return drift;
@@ -407,47 +479,106 @@ function compareCompat(file: string, actual: JsonObject | null, expected: JsonOb
   return drift;
 }
 
-export function checkConfig(root: string, suggestion = defaultSuggestion(root)): ConfigCheckResult {
-  const project = detectProject(root);
-  const issues: string[] = [];
-  const drift: ConfigDrift[] = [];
-  const unifiedRaw = readJson(root, UNIFIED_CONFIG_FILE);
-  const codelint = readJson(root, "codelint.json");
-  const doclint = readJson(root, "doclint.json");
-  const gardener = readJson(root, "docs-gardener.json");
-  if (!unifiedRaw) issues.push(`Missing ${UNIFIED_CONFIG_FILE}`);
+function hasOwn(value: JsonObject, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
 
-  const unified = normalizedUnified(
-    unifiedRaw ?? unifiedFromInputs(null, { "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, suggestion, true),
-    suggestion,
-  );
+function typeName(value: unknown): string {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  return typeof value;
+}
+
+function objectField(raw: JsonObject, key: string, issues: string[]): JsonObject {
+  if (!hasOwn(raw, key)) return {};
+  const value = raw[key];
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonObject;
+  issues.push(`${UNIFIED_CONFIG_FILE} ${key} must be an object; got ${typeName(value)}`);
+  return {};
+}
+
+function validateStringField(raw: JsonObject, key: string, field: string, issues: string[]): void {
+  if (hasOwn(raw, key) && typeof raw[key] !== "string") {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field} must be a string; got ${typeName(raw[key])}`);
+  }
+}
+
+function validateStringArrayField(raw: JsonObject, key: string, field: string, issues: string[]): void {
+  if (!hasOwn(raw, key)) return;
+  const value = raw[key];
+  if (!Array.isArray(value) || !value.every(item => typeof item === "string")) {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field} must be an array of strings; got ${typeName(value)}`);
+  }
+}
+
+function validateCodeExtField(raw: JsonObject, issues: string[]): void {
+  if (!hasOwn(raw, "codeExt")) return;
+  const value = raw.codeExt;
+  if (typeof value === "string") return;
+  if (Array.isArray(value) && value.every(item => typeof item === "string")) return;
+  issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt must be a string or an array of strings; got ${typeName(value)}`);
+}
+
+function validateNumberField(raw: JsonObject, key: string, field: string, issues: string[]): void {
+  if (!hasOwn(raw, key)) return;
+  const value = raw[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field} must be a finite number; got ${typeName(value)}`);
+  }
+}
+
+function validateObjectField(raw: JsonObject, key: string, field: string, issues: string[]): void {
+  if (!hasOwn(raw, key)) return;
+  const value = raw[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field} must be an object; got ${typeName(value)}`);
+  }
+}
+
+function validateUnifiedConfig(root: string, raw: JsonObject, unified: JsonObject, options: { checkExists?: boolean } = {}): string[] {
+  const issues: string[] = [];
+  const projectRaw = objectField(raw, "project", issues);
+  const codelintRaw = objectField(raw, "codelint", issues);
+  const doclintRaw = objectField(raw, "doclint", issues);
+  const docsGardenerRaw = objectField(raw, "docsGardener", issues);
   const projectConfig = asObject(unified.project);
-  const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
+  const codelintConfig = asObject(unified.codelint);
+  const checkExists = options.checkExists ?? true;
+
+  validateStringField(projectRaw, "baseBranch", "project.baseBranch", issues);
+  validateCodeExtField(projectRaw, issues);
+  validateStringArrayField(projectRaw, "codeDirs", "project.codeDirs", issues);
+  validateStringField(projectRaw, "docsDir", "project.docsDir", issues);
+  validateStringArrayField(codelintRaw, "lintDirs", "codelint.lintDirs", issues);
+  validateNumberField(codelintRaw, "maxLines", "codelint.maxLines", issues);
+  validateNumberField(doclintRaw, "maxLines", "doclint.maxLines", issues);
+  validateObjectField(docsGardenerRaw, "catalogs", "docsGardener.catalogs", issues);
 
   issues.push(...validateCodeExt(projectConfig.codeExt).map(issue => `${UNIFIED_CONFIG_FILE} ${issue}`));
-  if (projectConfig.docsDir && !exists(root, projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
+  if (typeof projectConfig.baseBranch !== "string") issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch must be a string; got ${typeName(projectConfig.baseBranch)}`);
+  else if (!isSafeConfigRefName(projectConfig.baseBranch)) issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch is not a safe Git branch name: ${projectConfig.baseBranch}`);
+  if (typeof projectConfig.docsDir !== "string") issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir must be a string; got ${typeName(projectConfig.docsDir)}`);
+  else if (!isSafeRelativePath(projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir is not a safe relative path: ${projectConfig.docsDir}`);
+  else if (checkExists && !exists(root, projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
+
   if (!valueCodeExtArray(projectConfig.codeExt).length) issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt is empty`);
   for (const dir of valueArray(projectConfig.codeDirs)) {
-    if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
+    if (!isSafeRelativePath(dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry is not a safe relative path: ${dir}`);
+    else if (checkExists && !exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs entry does not exist: ${dir}`);
   }
-  for (const dir of valueArray(asObject(unified.codelint).lintDirs)) {
-    if (!exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry does not exist: ${dir}`);
+  for (const dir of valueArray(codelintConfig.lintDirs)) {
+    if (!isSafeRelativePath(dir)) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry is not a safe relative path: ${dir}`);
+    else if (checkExists && !exists(root, dir)) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs entry does not exist: ${dir}`);
   }
 
-  drift.push(...compareCompat("codelint.json", codelint, expectedCompat["codelint.json"], ["lintDirs", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
-  drift.push(...compareCompat("doclint.json", doclint, expectedCompat["doclint.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
-  drift.push(...compareCompat("docs-gardener.json", gardener, expectedCompat["docs-gardener.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "catalogs"]));
-  const explicitConfigReady = Boolean(
-    unifiedRaw &&
-    valueCodeExtArray(projectConfig.codeExt).length &&
-    valueArray(projectConfig.codeDirs).length &&
-    valueArray(asObject(unified.codelint).lintDirs).length &&
-    projectConfig.docsDir,
-  );
-  const ambiguous = (project.kind === "mixed" || project.kind === "unknown") && !explicitConfigReady;
+  return [...new Set(issues)];
+}
+
+function configResult(root: string, suggestion: ConfigSuggestion, issues: string[], drift: ConfigDrift[], ambiguous: boolean): ConfigCheckResult {
+  const project = detectProject(root);
   const suggestedCommand = buildSuggestedCommand(suggestion, ambiguous);
   const ok = issues.length === 0 && !ambiguous;
-  const driftBody = drift.length
+  const driftBody = !ok && drift.length
     ? ["", "Config drift:", ...drift.map(item => `- ${item.file}.${item.field}: expected ${JSON.stringify(item.expected)}, actual ${JSON.stringify(item.actual)}`)].join("\n")
     : "";
   return {
@@ -458,7 +589,10 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
       title: ok ? "Config looks consistent" : "Project config needs confirmation",
       body: ok
         ? `${UNIFIED_CONFIG_FILE} is the source of truth; compatibility JSON is materialized only at runtime when legacy CLIs need it.`
-        : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}\n\nSuggested command:\n${suggestedCommand}`,
+        : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}
+
+Suggested command:
+${suggestedCommand}`,
     },
     hint: ok ? "Continue with hy_init or the requested workflow task." : "Show display.body and run the suggested config command only after user approval.",
     requires_user: ok ? false : true,
@@ -473,14 +607,58 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   };
 }
 
+export function checkConfig(root: string, suggestion = defaultSuggestion(root)): ConfigCheckResult {
+  const project = detectProject(root);
+  const issues: string[] = [];
+  const drift: ConfigDrift[] = [];
+  const unifiedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
+  const codelintRead = readJsonFile(root, "codelint.json");
+  const doclintRead = readJsonFile(root, "doclint.json");
+  const gardenerRead = readJsonFile(root, "docs-gardener.json");
+  const unifiedRaw = unifiedRead.value;
+  const codelint = codelintRead.value;
+  const doclint = doclintRead.value;
+  const gardener = gardenerRead.value;
+
+  if (unifiedRead.issue) issues.push(unifiedRead.issue);
+  if (!unifiedRaw && !unifiedRead.issue) issues.push(`Missing ${UNIFIED_CONFIG_FILE}`);
+  if (!unifiedRaw) {
+    for (const issue of [codelintRead.issue, doclintRead.issue, gardenerRead.issue]) {
+      if (issue) issues.push(issue);
+    }
+  }
+
+  const unified = normalizedUnified(
+    unifiedRaw ?? unifiedFromInputs(null, { "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, suggestion, true),
+    suggestion,
+  );
+  const projectConfig = asObject(unified.project);
+  const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
+
+  if (unifiedRaw) issues.push(...validateUnifiedConfig(root, unifiedRaw, unified));
+
+  drift.push(...compareCompat("codelint.json", codelint, expectedCompat["codelint.json"], ["lintDirs", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
+  drift.push(...compareCompat("doclint.json", doclint, expectedCompat["doclint.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
+  drift.push(...compareCompat("docs-gardener.json", gardener, expectedCompat["docs-gardener.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "catalogs"]));
+  const explicitConfigReady = Boolean(
+    unifiedRaw &&
+    valueCodeExtArray(projectConfig.codeExt).length &&
+    valueArray(projectConfig.codeDirs).length &&
+    valueArray(asObject(unified.codelint).lintDirs).length &&
+    projectConfig.docsDir,
+  );
+  const ambiguous = (project.kind === "mixed" || project.kind === "unknown") && !explicitConfigReady;
+  return configResult(root, suggestion, [...new Set(issues)], drift, ambiguous);
+}
+
 function quoteArg(value: string): string {
-  return value.includes(" ") ? `'${value.replace(/'/g, `'\\''`)}'` : value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
   const mode = needsExplicit ? " --dry-run" : " --apply-suggested";
   return [
-    "npx -y --prefer-online github:voxServalG/hy-workflow-mcp config",
+    "npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config",
     mode.trim(),
     "--json",
     "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
@@ -496,10 +674,18 @@ function parseList(value: string | undefined): string[] | undefined {
 }
 
 function parseArgs(argv: string[]): ConfigArgs {
-  const args: ConfigArgs = { mode: "check", json: false, dryRun: false, applySuggested: false, explicit: {} };
+  const args: ConfigArgs = { mode: "check", json: false, dryRun: false, applySuggested: false, explicit: {}, errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    const next = () => argv[++i];
+    const next = (flag: string): string | undefined => {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("--")) {
+        args.errors.push(`Missing value for ${flag}`);
+        return undefined;
+      }
+      i += 1;
+      return value;
+    };
     if (arg === "--help" || arg === "-h") args.mode = "help";
     else if (arg === "--json") args.json = true;
     else if (arg === "--check") args.mode = "check";
@@ -507,11 +693,28 @@ function parseArgs(argv: string[]): ConfigArgs {
     else if (arg === "--apply" || arg === "--apply-suggested") { args.mode = "apply"; args.applySuggested = true; }
     else if (arg === "--python") args.explicit.codeExt = ".py";
     else if (arg === "--typescript") args.explicit.codeExt = ".ts";
-    else if (arg === "--code-ext") args.explicit.codeExt = next();
-    else if (arg === "--code-dirs") args.explicit.codeDirs = parseList(next());
-    else if (arg === "--lint-dirs") args.explicit.lintDirs = parseList(next());
-    else if (arg === "--docs-dir") args.explicit.docsDir = next();
-    else if (arg === "--base-branch") args.explicit.baseBranch = next();
+    else if (arg === "--code-ext") {
+      const value = next(arg);
+      if (value !== undefined) args.explicit.codeExt = value;
+    }
+    else if (arg === "--code-dirs") {
+      const value = next(arg);
+      if (value !== undefined) args.explicit.codeDirs = parseList(value);
+    }
+    else if (arg === "--lint-dirs") {
+      const value = next(arg);
+      if (value !== undefined) args.explicit.lintDirs = parseList(value);
+    }
+    else if (arg === "--docs-dir") {
+      const value = next(arg);
+      if (value !== undefined) args.explicit.docsDir = value;
+    }
+    else if (arg === "--base-branch") {
+      const value = next(arg);
+      if (value !== undefined) args.explicit.baseBranch = value;
+    }
+    else if (arg.startsWith("-")) args.errors.push(`Unknown config option: ${arg}`);
+    else args.errors.push(`Unexpected config argument: ${arg}`);
   }
   if (args.dryRun) args.mode = "apply";
   return args;
@@ -538,8 +741,12 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
   if (args.mode === "help") return { exitCode: 0, stdout: configHelp() + "\n" };
   const suggestion = mergeSuggestion(root, args.explicit);
   if (!args.explicit.lintDirs && args.explicit.codeDirs) suggestion.lintDirs = args.explicit.codeDirs;
-  const result = args.mode === "apply"
-    ? applyConfig(root, suggestion, { preserveExisting: !args.applySuggested && Object.keys(args.explicit).length === 0, dryRun: args.dryRun })
-    : checkConfig(root, suggestion);
-  return { exitCode: 0, stdout: args.json ? JSON.stringify(result, null, 2) + "\n" : `${result.display.title}\n${result.display.body}\n` };
+  const result = args.errors.length
+    ? configResult(root, suggestion, args.errors, [], false)
+    : args.mode === "apply"
+      ? applyConfig(root, suggestion, { preserveExisting: !args.applySuggested && Object.keys(args.explicit).length === 0, dryRun: args.dryRun })
+      : checkConfig(root, suggestion);
+  return { exitCode: result.ok ? 0 : 1, stdout: args.json ? JSON.stringify(result, null, 2) + "\n" : `${result.display.title}
+${result.display.body}
+` };
 }

@@ -129,11 +129,32 @@ try {
     throw new Error("hy_verify error should include envelope guidance");
   }
 
+  writeState(baseState("commit"));
+  const noPlanCommit = await handleCommit({ title: "test", body: "test" });
+  assertEnvelope("hy_commit:no-plan", noPlanCommit);
+  if (!noPlanCommit.error?.message.includes("No plan")) {
+    throw new Error(`hy_commit without plan should report No plan, got ${JSON.stringify(noPlanCommit)}`);
+  }
+
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/envelope" });
   const commitResult = await handleCommit({ title: "test", body: "test" });
-  assertEnvelope("hy_commit", commitResult);
-  if (!commitResult.error || !commitResult.hint) {
-    throw new Error("hy_commit precondition error should include hint");
+  assertEnvelope("hy_commit:missing-verify", commitResult);
+  if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verifyHash")) {
+    throw new Error("hy_commit missing verifyHash precondition should include error and hint");
+  }
+
+  writeState({ ...baseState("commit"), plan: basePlan(), verifyHash: "abc123" });
+  const noBranchCommit = await handleCommit({ title: "test", body: "test" });
+  assertEnvelope("hy_commit:no-branch", noBranchCommit);
+  if (!noBranchCommit.error?.message.includes("No active branch")) {
+    throw new Error(`hy_commit without branch should report No active branch, got ${JSON.stringify(noBranchCommit)}`);
+  }
+
+  writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/not-current", verifyHash: "abc123" });
+  const branchMismatchCommit = await handleCommit({ title: "test", body: "test" });
+  assertEnvelope("hy_commit:branch-mismatch", branchMismatchCommit);
+  if (branchMismatchCommit.error?.code !== "GIT_BRANCH_MISMATCH") {
+    throw new Error(`hy_commit should reject current branch mismatch, got ${JSON.stringify(branchMismatchCommit)}`);
   }
 
   writeState(baseState("ci"));

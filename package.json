@@ -1,7 +1,7 @@
 {
   "name": "hy-workflow-mcp",
   "version": "0.1.0",
-  "description": "MCP server enforcing a 9-phase closed-loop workflow for LLM-assisted development",
+  "description": "MCP server enforcing a closed-loop workflow for LLM-assisted development",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
@@ -18,6 +18,7 @@
     "test:contract": "for f in test/contract/*.ts; do npx tsx \"$f\" || exit 1; done",
     "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
     "verify": "npm run build && npm test",
+    "prepare": "npm run build",
     "prepack": "npm run build",
     "test:dist": "npx tsx test/contract/dist-artifacts.ts",
     "test:doclint-output": "npx tsx test/unit/doclint-output.ts",
@@ -38,6 +39,8 @@
   "files": [
     "dist",
     "docs",
+    "setup",
+    "setup.ps1",
     "README.md"
   ]
 }

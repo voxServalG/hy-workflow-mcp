@@ -1,6 +1,6 @@
 # CLI Contract
 
-The package exposes one bin entrypoint: hy-workflow. Running it without a subcommand starts the MCP stdio server from dist/server.js.
+The package exposes one bin entrypoint: hy-workflow. GitHub npx installs build dist/server.js via the prepare script; running without a subcommand starts the MCP stdio server.
 
 ## Commands
 
@@ -10,6 +10,12 @@ The package exposes one bin entrypoint: hy-workflow. Running it without a subcom
 - hy-workflow config --check --json
 - hy-workflow config --apply-suggested --json
 - hy-workflow lint-contract
+
+## Config Safety
+
+`hy-workflow config --check --json` validates `hy-workflow.json` as the source of truth before workflow commands use `project.baseBranch`, `project.docsDir`, `project.codeDirs`, and `codelint.lintDirs`. Malformed JSON, invalid declared field types, unsafe branch/path characters, unknown flags, and missing flag values return a structured envelope instead of raw parser errors. Any `ok: false` config result exits nonzero.
+
+`hy-workflow config --apply-suggested --json` and explicit apply commands validate the candidate config before writing `hy-workflow.json`; invalid values fail without writing. Suggested terminal commands quote every dynamic value with single quotes, including values containing semicolons, whitespace, or `${IFS}`-style text, so the displayed command is copyable without turning config values into shell syntax. Root compatibility files (`codelint.json`, `doclint.json`, `docs-gardener.json`) remain runtime artifacts: legacy CLI runs temporarily overwrite them from `hy-workflow.json` and restore or remove them afterwards.
 
 ## MCP Tools
 

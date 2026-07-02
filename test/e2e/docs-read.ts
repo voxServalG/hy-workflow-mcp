@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -11,6 +11,8 @@ import { readState, writeState, type PlanDoc, type WorkflowState } from "../../s
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
 }
+
+const DOC_BODY = "# Workflow\n\nDocument reads are automatic agent gates, not user review gates.\n";
 
 function basePlan(): PlanDoc {
   return {
@@ -54,10 +56,12 @@ try {
   run("git config user.email test@example.com", root);
   run("git config user.name Test", root);
   mkdirSync(join(root, "src"), { recursive: true });
-  mkdirSync(join(root, "docs"), { recursive: true });
+  mkdirSync(join(root, "guides"), { recursive: true });
   writeFileSync(join(root, "src", "server.ts"), "export const server = true;\n");
-  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { docsDir: "docs" } }, null, 2) + "\n");
-  writeFileSync(join(root, "docs", "workflow.md"), "# Workflow\n\nDocument reads are automatic agent gates, not user review gates.\n");
+  writeFileSync(join(root, "AGENTS.md"), "# Agent Instructions\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { docsDir: "guides" } }, null, 2) + "\n");
+  writeFileSync(join(root, "guides", "README.md"), "# Guide README\n");
+  writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   run("git add .", root);
   run("git commit -m init", root);
   chdir(root);
@@ -83,6 +87,10 @@ try {
   if (!bsnap.traversalRoots || bsnap.traversalRoots.length === 0) {
     throw new Error(`before_plan snapshot should include traversalRoots, got ${JSON.stringify(bsnap)}`);
   }
+  const baselineFiles = bsnap.files.map((file: any) => file.path);
+  if (!baselineFiles.includes("guides/README.md") || !baselineFiles.includes("AGENTS.md")) {
+    throw new Error(`before_plan should consistently read custom docsDir README and AGENTS.md supplemental entries, got ${baselineFiles.join(", ")}`);
+  }
 
   const stateWithBaseline = readState();
   if (stateWithBaseline.documentReads?.beforePlan?.task !== baselineTask) {
@@ -107,9 +115,23 @@ try {
     throw new Error(`hy_approve should require before_approve audit, got ${JSON.stringify(missingAudit)}`);
   }
 
+  writeFileSync(join(root, "guides", "workflow.md"), `${DOC_BODY}\nNew approval-relevant workflow fact.\n`);
+  const driftAudit = await handleReadDocs({ stage: "before_approve" });
+  if (driftAudit.changedSinceBaseline !== true) {
+    throw new Error(`before_approve should report document drift, got ${JSON.stringify(driftAudit)}`);
+  }
+  const driftApproval = await handleApprove({ approved: "approve", note: "user approved" });
+  if (!String(driftApproval.hint).includes("document changes since before_plan")) {
+    throw new Error(`hy_approve should reject before_approve document drift, got ${JSON.stringify(driftApproval)}`);
+  }
+
+  writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   const audit = await handleReadDocs({ stage: "before_approve" });
   if (audit.phase !== "approve" || audit.stage !== "before_approve") {
     throw new Error(`before_approve should keep workflow in approve, got ${JSON.stringify(audit)}`);
+  }
+  if (audit.changedSinceBaseline !== false) {
+    throw new Error(`before_approve should clear drift after docs return to baseline, got ${JSON.stringify(audit)}`);
   }
   const stateWithAudit = readState();
   if (!stateWithAudit.documentReads?.beforeApprove?.planHash) {
@@ -126,6 +148,14 @@ try {
   if (!String(staleAudit.hint).includes("before_approve plan hash does not match")) {
     throw new Error(`hy_approve should reject stale before_approve audit, got ${JSON.stringify(staleAudit)}`);
   }
+
+  writeState(stateWithAudit);
+  writeFileSync(join(root, "guides", "unread.md"), "# Unread graph-only change\n");
+  const graphOnlyDrift = await handleReadDocs({ stage: "before_approve" });
+  if (graphOnlyDrift.changedSinceBaseline !== true) {
+    throw new Error(`before_approve should report DocsGraph-only drift, got ${JSON.stringify(graphOnlyDrift)}`);
+  }
+  unlinkSync(join(root, "guides", "unread.md"));
 
   writeState(stateWithAudit);
   const approved = await handleApprove({ approved: "approve", note: "user approved" });

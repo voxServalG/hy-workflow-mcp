@@ -6,9 +6,9 @@ export async function handleApprove(args: { approved: string; note?: string }): 
   const state = readState();
   assertPhase(state, "approve");
 
-  const input = (args.approved ?? "").trim();
+  const input = typeof args.approved === "string" ? args.approved.trim() : "";
 
-  if (input === "approve" || input === "true") {
+  if (input === "approve") {
     const health = documentReadHealth(state);
     if (!health.okForApprove) {
       return toolResult("approve", {
@@ -58,7 +58,13 @@ export async function handleApprove(args: { approved: string; note?: string }): 
 
   // Any input other than "approve" = rejection, content is the reason
   const next = transition(state, "plan");
-  next.approval = { time: new Date().toISOString(), note: input || args.note || "rejected" };
+  next.approval = null;
+  next.verifyHash = null;
+  next.verifiedImplementationDigest = null;
+  next.verifiedManifestHash = null;
+  next.pendingAmendment = null;
+  next.implementationManifest = null;
+  next.syncDocs = null;
   writeState(next);
   return toolResult("plan", {
     approved: false,

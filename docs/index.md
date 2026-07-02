@@ -11,6 +11,8 @@ This documentation is the contract source for hy-workflow-mcp. Source code imple
 - [Errors](./errors.md)
 - [Output](./output.md)
 - [Tool Result Envelope](./tool-result-envelope.md)
+- [Product Vision](./product-vision.md)
+- [PR Roadmap](./pr-roadmap.md)
 - [Skills](./skills.md)
 - [Verification](./verification.md)
 - [Verify Pipeline](./verify.md)
@@ -19,7 +21,4 @@ This documentation is the contract source for hy-workflow-mcp. Source code imple
 - [Setup](./setup.md)
 - [Workflow Contract Lint](./lint-contract.md)
 - [Core Skill](./skills/core/SKILL.md)
-- [Log](./log.md)
-- [NPM](./npm.md)
-- [Setup](./setup.md)
 

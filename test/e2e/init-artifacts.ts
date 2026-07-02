@@ -1,10 +1,16 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureLocalArtifactIgnores, harnessArtifactStatus, initArtifactGuidance } from "../../src/tools/init.js";
+import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, initArtifactGuidance, trackedLocalArtifactDiagnostics } from "../../src/tools/init.js";
+import { SETUP_STAMP } from "../../src/bootstrap.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
+}
+
+function run(cmd: string, root: string): void {
+  execSync(cmd, { cwd: root, stdio: "ignore" });
 }
 
 const root = mkdtempSync(join(tmpdir(), "hy-init-artifacts-"));
@@ -61,3 +67,43 @@ writeFileSync(join(readyHarnessRoot, "hy-workflow.json"), "{}\n", "utf-8");
 const readyHarness = harnessArtifactStatus(readyHarnessRoot);
 assert(readyHarness.ready, "complete harness artifacts should be ready");
 assert(readyHarness.missingArtifacts.length === 0, "ready harness should have no missing artifacts");
+
+const trackedRoot = mkdtempSync(join(tmpdir(), "hy-init-tracked-artifacts-"));
+run("git init -b main", trackedRoot);
+run("git config user.email test@example.com", trackedRoot);
+run("git config user.name Test", trackedRoot);
+mkdirSync(join(trackedRoot, ".hy"), { recursive: true });
+writeFileSync(join(trackedRoot, ".hy", "workflow.json"), "{}\n", "utf-8");
+writeFileSync(join(trackedRoot, "codelint.json"), "{}\n", "utf-8");
+writeFileSync(join(trackedRoot, "doclint.json"), "{}\n", "utf-8");
+writeFileSync(join(trackedRoot, "docs-gardener.json"), "{}\n", "utf-8");
+writeFileSync(join(trackedRoot, "README.md"), "# test\n", "utf-8");
+run("git add .", trackedRoot);
+run("git commit -m init", trackedRoot);
+const trackedLocal = trackedLocalArtifactDiagnostics(trackedRoot);
+assert(trackedLocal.includes(".hy/workflow.json"), "tracked diagnostics should include tracked .hy runtime files");
+assert(trackedLocal.includes("codelint.json"), "tracked diagnostics should include tracked codelint compatibility file");
+assert(trackedLocal.includes("doclint.json"), "tracked diagnostics should include tracked doclint compatibility file");
+assert(trackedLocal.includes("docs-gardener.json"), "tracked diagnostics should include tracked docs-gardener compatibility file");
+const trackedGuidance = initArtifactGuidance(trackedLocal);
+assert(trackedGuidance.trackedLocalArtifacts.includes("codelint.json"), "guidance should expose tracked local artifacts");
+assert(trackedGuidance.body.includes("Tracked local/runtime artifacts detected"), "guidance should call out tracked local artifacts");
+assert(trackedGuidance.body.includes("git rm --cached"), "guidance should include index cleanup recovery");
+
+
+const outdatedInitRoot = mkdtempSync(join(tmpdir(), "hy-init-outdated-stamp-"));
+run("git init -b main", outdatedInitRoot);
+mkdirSync(join(outdatedInitRoot, ".github", "workflows"), { recursive: true });
+writeFileSync(join(outdatedInitRoot, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\n", "utf-8");
+writeFileSync(join(outdatedInitRoot, "hy-workflow.json"), "{}\n", "utf-8");
+mkdirSync(join(outdatedInitRoot, ".git", "hy-workflow"), { recursive: true });
+writeFileSync(join(outdatedInitRoot, SETUP_STAMP), JSON.stringify({ schemaVersion: "1", setupVersion: "0.0.0" }, null, 2) + "\n", "utf-8");
+const initCwd = process.cwd();
+try {
+  process.chdir(outdatedInitRoot);
+  const outdatedInit = await handleInit();
+  assert(outdatedInit.error?.subtype === "setup_update_required", "hy_init should reject outdated setup stamp even when artifacts exist");
+  assert(outdatedInit.requires_user === true && outdatedInit.stop_here === true, "outdated setup stamp should stop hy_init");
+} finally {
+  process.chdir(initCwd);
+}

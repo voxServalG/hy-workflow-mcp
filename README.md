@@ -8,24 +8,18 @@ hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在
 
 ## 一键部署
 
-进入你想管理的项目根目录，执行同一条命令：
+进入你想管理的项目根目录，执行对应命令。所有入口最终都执行同一个 `setup`。
 
-**Windows（PowerShell · 原生）**
+**Windows PowerShell（需要 Git for Windows 的 `bash`）**
 
 ```powershell
-iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup.ps1 | iex
+curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
 ```
 
-**macOS、Linux、Windows Git Bash / WSL**
+**macOS、Linux、Windows Git Bash / WSL shell**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
-```
-Windows:
-```bash
-iwr https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup -OutFile setup.sh
-bash setup.sh
-rm setup.sh
 ```
 
 脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
@@ -60,6 +54,12 @@ hy_status
 
 这个流程的重点很简单：
 
+MCP server 通过 GitHub npx 在线运行，不需要本地 clone 仓库：
+
+```bash
+npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main
+```
+
 1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。没有被上下文捉到的东西，与不存在没有区别。
 2. `hy_plan` 产出 scope、dependency DAG、验证命令、风险和取舍，并完整展示给用户。
 3. 用户明确 approve 后，`hy_read_docs(before_approve)` 再审计一次 PlanDoc，确认事实没有偏移。
@@ -75,6 +75,8 @@ hy_status
 `hy-workflow.json` 是人工维护的唯一项目配置源头。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
 
 项目内产物分三类：
+
+`dist/` 是编译生成产物，不提交到仓库。GitHub npx 安装时由 `prepare` 脚本自动构建。
 
 | 类别 | 产物 | 规则 |
 | --- | --- | --- |
@@ -106,19 +108,19 @@ hy_status
 
 ## 验证
 
-`hy_verify` 包含 7 层 gate：
+`hy_verify` 包含本地任务 gate；完整 lint 由 GitHub Actions/setup workflow 执行：
 
 ```text
-1. lint     → doclint + codelint（在 GitHub Actions 中执行，不在 hy_verify 内）
-2. compile  → 项目编译或类型检查
-3. scope    → git diff 文件必须属于说好的范围内
-4. boundary → entry_points 逐条执行
-5. platform → 平台和运行环境检查
-6. smoke    → 快速冒烟
-7. tests    → 完整测试套件
+CI lint  → doclint + codelint + workflow-contract lint
+compile  → 项目编译或类型检查
+scope    → git diff 文件必须属于说好的范围内
+boundary → entry_points 逐条执行
+platform → 平台和运行环境检查
+smoke    → 快速冒烟
+tests    → 完整测试套件
 ```
 
-如果 verify 失败，agent 回到 edit 修复后重新验证。只有 verify 通过，才允许 commit 和进入 CI。
+如果本地 gate 失败，agent 回到 edit 修复后重新验证。只有本地 gate 通过，才允许 commit 并进入 CI；CI 继续执行完整 lint 和测试。
 
 ## 自举
 
