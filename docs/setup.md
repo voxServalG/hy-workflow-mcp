@@ -11,6 +11,15 @@ PowerShell must use `curl.exe`, not `curl`, because Windows PowerShell 5.1 alias
 - `hy_status` reports the startup capability snapshot. Each operation rechecks its required CLI before execution.
 - There is no hidden internal Git or GitHub fallback. Missing capabilities fail closed with installation or login guidance.
 
+## MCP package address contract
+
+The setup prompt must tell agents to configure both MCP servers with explicit HTTPS Git package addresses:
+
+- `npx -y --prefer-online git+https://github.com/voxServalG/hy-workflow-mcp.git#main`
+- `npx -y --prefer-online git+https://github.com/voxServalG/docs-gardener.git mcp`
+
+Do not use the `github:owner/repo` shorthand in the setup prompt. npm can resolve that shorthand to `git+ssh://git@github.com/...`, which makes MCP startup depend on GitHub SSH connectivity. The explicit `git+https` form keeps package retrieval on HTTPS.
+
 ## Tracked artifacts deployed by setup
 
 - `.github/workflows/hy-workflow.yml` — single CI workflow
@@ -33,6 +42,6 @@ Downstream projects that run `setup` get this complete CI pipeline.
 
 ## Version
 
-`SETUP_VERSION` in `setup` and `src/bootstrap.ts` must match. When setup content changes, the version must be bumped so downstream projects are prompted to refresh.
+`SETUP_VERSION` in `setup` and `src/bootstrap.ts` must match. When setup content changes, including either MCP package address, the version must be bumped so downstream projects are prompted to refresh and rerun the canonical HTTPS setup command.
 
 The MCP runtime checks the setup stamp before every `hy_*` tool dispatch, not only once per process. `hy_init` also verifies the setup stamp version after confirming required artifacts exist; a missing, unreadable, or outdated stamp returns the structured setup refresh envelope and does not proceed to config validation.
