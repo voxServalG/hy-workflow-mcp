@@ -31,6 +31,7 @@ import { assertCommandCatalogMatchesTools } from "./commands/catalog.js";
 import { runContractLint } from "./contralint/run.js";
 import { structuredError } from "./errs/structured.js";
 import { toolResult } from "./output/envelope.js";
+import { initializeExecutorCapabilities } from "./executors.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -424,6 +425,7 @@ async function main() {
     return;
   }
 
+  initializeExecutorCapabilities();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`hy-workflow MCP v0.1.0 running`);

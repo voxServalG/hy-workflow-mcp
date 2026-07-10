@@ -104,6 +104,8 @@ Terminal CLI commands follow the same contract when `--json` is passed. For exam
 
 `hy_commit` success returns `next: "ci"` with the PR URL, but does not set `stop_here`. After plan approval, the agent should continue to CI automatically.
 
+`hy_commit`, `hy_ci`, `hy_merge`, and `hy_chain` add `data.executor` without removing legacy fields. A mixed operation such as `hy_commit` reports per-step executors for commit, push, and PR creation; failures include the capability that was actually checked. `hy_status.capabilities` exposes the startup git/gh snapshot for diagnosis.
+
 `hy_ci` performs bounded polling for pending checks. Success returns `next: "merge"` without `requires_user` or `stop_here`. If GitHub reports no checks at all for the PR, `hy_ci` treats that as a workflow no-match and returns `next: "merge"` with `skipped: true`, `skipReason: "no_reported_checks"`, and `noChecks: true`. CI failures, polling timeouts with checks still pending, and GitHub/API status problems return structured `recovery` and stop automatic progress.
 
 ## Compatibility

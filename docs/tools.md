@@ -124,7 +124,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-wor
 
 ## hy_commit
 
-git add -A → commit → push → gh pr create。提交前会执行安全 preflight：当前 Git 分支必须等于 `WorkflowState.branch`，当前 implementation manifest 必须等于 `hy_verify` 时记录的 manifest，当前文件内容 digest 必须等于已验证 digest，重新计算的 verifyHash 必须匹配状态中的 verifyHash。任一不匹配时停在 commit phase 并要求重新执行 after_edit 文档审计、sync_docs 和 verify，避免提交未验证内容或在错误分支上提交。`hy_commit` 创建 commit、push 和 PR 时也使用 argv 方式传参，PR title/body/base/head 不会被拼接进 shell 命令。
+`hy_commit` 先用 `git status --porcelain -z` 在 PlanDoc scope 内筛出当前真实差异，再执行 git add → commit → push → gh pr create。已在前一次提交中删除的 `scope.delete` 路径不会在 CI 修复后的后续提交中重复传给 `git add`；没有真实 scope 差异时返回 `NO_SCOPED_CHANGES`，不创建空提交。提交前仍执行安全 preflight：当前 Git 分支必须等于 `WorkflowState.branch`，当前 implementation manifest、内容 digest 和 verifyHash 必须与 `hy_verify` 记录一致。`hy_commit` 全程使用 argv 传参，并在 `data.executor` 中分别报告 commit、push 和 createPr 使用的执行器。
 
 PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 GitHub PR 创建成功之后，不反向改写 PR body。
 
@@ -134,7 +134,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 ## hy_ci
 
-通过 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
+通过已安装且已认证的 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态，并在 `data.executor` 报告本次 `gh` 能力。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
 
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
@@ -145,7 +145,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 ## hy_merge
 
-通过 `gh pr merge --merge --delete-branch` 合并 PR。PR number 必须是正整数，并通过 argv 传给 `gh`；损坏运行态不会被当作命令片段执行。
+通过已安装且已认证的 `gh pr merge --merge --delete-branch` 合并 PR，并在 `data.executor` 报告执行器。PR number 必须是正整数，并通过 argv 传给 `gh`；损坏运行态不会被当作命令片段执行。
 
 - **进入 Phase**: `merge`
 - **转换到**: `chain`
@@ -163,7 +163,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 ## hy_chain
 
-依次 checkout 每个下游分支 → rebase 到 `hy-workflow.json: project.baseBranch` 对应的最新基准分支 → force push → 切回基准分支。每个 checkout、pull、rebase 和 pushForce 的失败都会立即返回结构化错误并保留已完成列表；不会忽略失败后报告 workflow complete。分支参数必须是安全 Git ref，并通过 argv 传给 git。
+通过本机 `git` 依次 checkout 每个下游分支 → rebase 到 `hy-workflow.json: project.baseBranch` 对应的最新基准分支 → force push → 切回基准分支。每个结果在 `data.executor` 报告实际能力；checkout、pull、rebase 和 pushForce 失败会立即返回结构化错误并保留已完成列表。分支参数必须是安全 Git ref，并通过 argv 传给 git。
 
 - **进入 Phase**: `chain`
 - **转换到**: `done`
@@ -181,7 +181,7 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 
 - **进入 Phase**: 无限制
 - **转换到**: 无（只读）
-- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, action? }`
+- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, capabilities, action? }`；`capabilities` 包含启动时探测到的 git、gh 版本与 gh 认证状态，内部后端明确标为不可用。
 
 ## Related
 [Architecture](./architecture.md) · [State Machine](./state-machine.md) · [Verify Pipeline](./verify.md)

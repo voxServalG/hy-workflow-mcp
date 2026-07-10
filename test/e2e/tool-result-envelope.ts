@@ -169,6 +169,9 @@ try {
 
   const statusResult = await handleStatus();
   assertEnvelope("hy_status", statusResult);
+  if (!statusResult.capabilities?.git || !statusResult.capabilities?.gh) {
+    throw new Error("hy_status should expose startup git/gh capabilities");
+  }
 } finally {
   chdir(originalCwd);
 }

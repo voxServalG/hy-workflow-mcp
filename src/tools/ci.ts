@@ -42,13 +42,14 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
     result = checkCi(root, state.prNumber);
   }
 
-  if (!result.ok) return toolResult("ci", { error: result.error, checks: result.checks, requires_user: true, stop_here: true, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });
+  if (!result.ok) return toolResult("ci", { error: result.error, data: { executor: result.executor }, checks: result.checks, requires_user: true, stop_here: true, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });
 
   if (result.noChecks) {
     const next = transition(state, "merge");
     writeState(next);
 
     return toolResult("merge", {
+      data: { executor: result.executor },
       allGreen: true,
       skipped: true,
       skipReason: "no_reported_checks",
@@ -72,6 +73,7 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
     if (!failedNames.length) {
       return toolResult("ci", {
         allGreen: false,
+        data: { executor: result.executor },
         pending: true,
         checks,
         timeoutSeconds,
@@ -94,6 +96,7 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
 
     return toolResult("edit", {
       allGreen: false,
+      data: { executor: result.executor },
       checks,
       failedChecks: failedNames,
       requires_user: true,
@@ -114,6 +117,7 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
 
   return toolResult("merge", {
     allGreen: true,
+    data: { executor: result.executor },
     checks: result.checks,
     display: {
       title: "CI passed",

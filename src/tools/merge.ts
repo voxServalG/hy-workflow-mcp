@@ -9,13 +9,14 @@ export async function handleMerge(): Promise<ToolResult> {
   if (!state.prNumber) return toolResult("merge", { error: "No active PR", allowedTools: ["hy_status"] });
 
   const result = mergePr(projectRoot(), state.prNumber);
-  if (!result.ok) return toolResult("merge", { error: result.error, requires_user: true, stop_here: true, recovery: { tool: "hy_merge", instruction: "Inspect the merge failure, resolve blockers, then retry hy_merge if the approved workflow is still valid." }, allowedTools: ["hy_merge", "hy_status"] });
+  if (!result.ok) return toolResult("merge", { error: result.error, data: { executor: result.executor }, requires_user: true, stop_here: true, recovery: { tool: "hy_merge", instruction: "Inspect the merge failure, resolve blockers, then retry hy_merge if the approved workflow is still valid." }, allowedTools: ["hy_merge", "hy_status"] });
 
   const next = transition(state, "chain");
   writeState(next);
 
   return toolResult("chain", {
     prNumber: state.prNumber,
+    data: { executor: result.executor },
     display: {
       title: "Pull request merged",
       body: `PR #${state.prNumber} merged.`,
