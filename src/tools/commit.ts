@@ -150,13 +150,13 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: state.verifyHash });
 
   const c = commitScope(root, state.plan.scope, args.title, body);
-  if (!c.ok) return toolResult("commit", { error: c.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!c.ok) return toolResult("commit", { error: c.error, data: { executor: { commit: c.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const p = push(root, state.branch);
-  if (!p.ok) return toolResult("commit", { error: p.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry or manually recover the already-created local commit if needed." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!p.ok) return toolResult("commit", { error: p.error, data: { executor: { commit: c.executor, push: p.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry or manually recover the already-created local commit if needed." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
-  if (!pr.ok) return toolResult("commit", { error: pr.error, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR creation failure. If the branch is already pushed, create the PR without recommitting only with user approval." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!pr.ok) return toolResult("commit", { error: pr.error, data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR creation failure. If the branch is already pushed, create the PR without recommitting only with user approval." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const next = transition(state, "ci");
   next.prNumber = pr.prNumber ?? null;
@@ -166,6 +166,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   return toolResult("ci", {
     prNumber: pr.prNumber,
     url: pr.url,
+    data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths },
     display: {
       title: "Pull request created",
       body: `PR #${pr.prNumber} created.`,

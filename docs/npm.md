@@ -11,6 +11,10 @@
 - `verify` — build + tests
 - `prepare` — build dist for GitHub npx installs (points to `npm run build`)
 
+## Test runner dependency
+
+`tsx` is a declared `devDependency` because every test-layer script executes TypeScript files through `npx tsx`. Declaring it keeps `npm ci` and `hy_verify` deterministic and prevents per-file remote npx resolution.
+
 ## Packaging rules
 
 - `bin["hy-workflow"]` must point at `dist/server.js`

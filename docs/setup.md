@@ -4,6 +4,13 @@
 
 PowerShell must use `curl.exe`, not `curl`, because Windows PowerShell 5.1 aliases `curl` to `Invoke-WebRequest` and does not understand `-fsSL`. The PowerShell command requires a Git for Windows `bash` on `PATH`; WSL users should run the bash command from inside the WSL shell.
 
+## Runtime prerequisites
+
+- `git` must be installed and on `PATH` for branch, commit, push, pull and rebase operations.
+- `gh` must be installed, on `PATH`, and authenticated with `gh auth login` for PR creation, CI status and merge operations.
+- `hy_status` reports the startup capability snapshot. Each operation rechecks its required CLI before execution.
+- There is no hidden internal Git or GitHub fallback. Missing capabilities fail closed with installation or login guidance.
+
 ## Tracked artifacts deployed by setup
 
 - `.github/workflows/hy-workflow.yml` — single CI workflow
