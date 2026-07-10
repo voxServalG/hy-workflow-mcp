@@ -4,6 +4,7 @@ import type { PlanDoc } from "./state.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { requireGhExecutor, requireGitExecutor, type ExecutorCapability } from "./executors.js";
 
 type RunResult = { ok: boolean; stdout: string; stderr: string };
 
@@ -105,6 +106,8 @@ function remoteBaseRefExists(root: string, baseBranch: string): boolean {
 }
 
 export function createBranch(root: string, category: string, topic: string): { ok: boolean; branch: string; error?: GitOperationError } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, branch: `${category}/${String(topic)}`, error: required.error as GitOperationError };
   if (!isSafeBranchTopic(topic)) return { ok: false, branch: `${category}/${String(topic)}`, error: invalidTopicError(topic) };
   const name = `${category}/${topic}`;
   const branchError = validateRef("branch", name);
@@ -151,82 +154,115 @@ export function createBranch(root: string, category: string, topic: string): { o
   return { ok: true, branch: name };
 }
 
-export function commitAll(root: string, title: string, body: string): { ok: boolean; hash?: string; error?: string } {
+export function commitAll(root: string, title: string, body: string): { ok: boolean; hash?: string; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const r1 = run("git", ["add", "-A"], root);
-  if (!r1.ok) return { ok: false, error: r1.stderr };
+  if (!r1.ok) return { ok: false, error: r1.stderr, executor: required.executor };
   const msgFile = writeTempFile(`${title}\n\n${body}`);
   try {
     const r2 = run("git", ["commit", "-F", msgFile], root);
-    if (!r2.ok) return { ok: false, error: r2.stderr };
+    if (!r2.ok) return { ok: false, error: r2.stderr, executor: required.executor };
     const r3 = run("git", ["rev-parse", "HEAD"], root);
-    return { ok: true, hash: r3.stdout };
+    return { ok: true, hash: r3.stdout, executor: required.executor };
   } finally {
     fs.unlinkSync(msgFile);
   }
 }
 
-export function commitScope(root: string, scope: PlanDoc["scope"], title: string, body: string): { ok: boolean; hash?: string; error?: string } {
+export function commitScope(root: string, scope: PlanDoc["scope"], title: string, body: string): { ok: boolean; hash?: string; error?: unknown; executor?: ExecutorCapability; stagedPaths?: string[] } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const files = [...scope.changes, ...scope.new_files, ...scope.delete];
-  if (!files.length) return { ok: false, error: "No files declared in PlanDoc scope" };
+  if (!files.length) return { ok: false, error: "No files declared in PlanDoc scope", executor: required.executor };
 
-  const r1 = run("git", ["add", "-A", "--", ...files], root);
-  if (!r1.ok) return { ok: false, error: r1.stderr };
+  // A PlanDoc persists across CI-fix commit loops. Only stage paths that are
+  // currently dirty; an earlier commit may already have removed delete paths.
+  const changedFiles = files.filter(file => run("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", file], root).stdout.length > 0);
+  if (!changedFiles.length) {
+    return {
+      ok: false,
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "NO_SCOPED_CHANGES",
+        message: "No current worktree changes match the approved PlanDoc scope.",
+        hint: "Inspect git status. If the intended changes are already committed, continue recovery without creating an empty commit; otherwise edit only approved scope files and rerun verification.",
+        detail: { scopeFiles: files },
+      },
+      executor: required.executor,
+      stagedPaths: [],
+    };
+  }
+
+  const r1 = run("git", ["add", "-A", "--", ...changedFiles], root);
+  if (!r1.ok) return { ok: false, error: r1.stderr, executor: required.executor, stagedPaths: changedFiles };
   const msgFile = writeTempFile(`${title}\n\n${body}`);
   try {
     const r2 = run("git", ["commit", "-F", msgFile], root);
-    if (!r2.ok) return { ok: false, error: r2.stderr };
+    if (!r2.ok) return { ok: false, error: r2.stderr, executor: required.executor, stagedPaths: changedFiles };
     const r3 = run("git", ["rev-parse", "HEAD"], root);
-    return { ok: true, hash: r3.stdout };
+    return { ok: true, hash: r3.stdout, executor: required.executor, stagedPaths: changedFiles };
   } finally {
     fs.unlinkSync(msgFile);
   }
 }
 
-export function push(root: string, branch: string): { ok: boolean; error?: string | GitOperationError } {
+export function push(root: string, branch: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const branchError = validateRef("branch", branch);
-  if (branchError) return { ok: false, error: branchError };
+  if (branchError) return { ok: false, error: branchError, executor: required.executor };
   const r = run("git", ["push", "-u", "origin", branch], root);
-  return { ok: r.ok, error: r.stderr };
+  return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function pushForce(root: string, branch: string): { ok: boolean; error?: string | GitOperationError } {
+export function pushForce(root: string, branch: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const branchError = validateRef("branch", branch);
-  if (branchError) return { ok: false, error: branchError };
+  if (branchError) return { ok: false, error: branchError, executor: required.executor };
   const r = run("git", ["push", "--force", "origin", branch], root);
-  return { ok: r.ok, error: r.stderr };
+  return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function createPr(root: string, title: string, body: string, baseBranch: string, headBranch: string): { ok: boolean; prNumber?: number; url?: string; error?: string | GitOperationError } {
+export function createPr(root: string, title: string, body: string, baseBranch: string, headBranch: string): { ok: boolean; prNumber?: number; url?: string; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGhExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const baseError = validateRef("baseBranch", baseBranch);
-  if (baseError) return { ok: false, error: baseError };
+  if (baseError) return { ok: false, error: baseError, executor: required.executor };
   const headError = validateRef("headBranch", headBranch);
-  if (headError) return { ok: false, error: headError };
+  if (headError) return { ok: false, error: headError, executor: required.executor };
 
   const bodyFile = writeTempFile(body);
   try {
     const r = run("gh", ["pr", "create", "--title", title, "--body-file", bodyFile, "--base", baseBranch, "--head", headBranch], root);
-    if (!r.ok) return { ok: false, error: r.stderr };
+    if (!r.ok) return { ok: false, error: r.stderr, executor: required.executor };
     const match = r.stdout.match(/\/(\d+)$/);
     const prNumber = match ? parseInt(match[1], 10) : null;
-    if (!isValidPrNumber(prNumber)) return { ok: false, error: "Could not parse PR number from gh pr create output" };
-    return { ok: true, prNumber, url: r.stdout.trim() };
+    if (!isValidPrNumber(prNumber)) return { ok: false, error: "Could not parse PR number from gh pr create output", executor: required.executor };
+    return { ok: true, prNumber, url: r.stdout.trim(), executor: required.executor };
   } finally {
     fs.unlinkSync(bodyFile);
   }
 }
 
-export function mergePr(root: string, prNumber: unknown): { ok: boolean; error?: string | GitOperationError } {
+export function mergePr(root: string, prNumber: unknown): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
   const valid = validatePrNumber(prNumber);
   if (!valid.ok) return { ok: false, error: valid.error };
+  const required = requireGhExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const r = run("gh", ["pr", "merge", String(valid.value), "--merge", "--delete-branch"], root);
-  return { ok: r.ok, error: r.stderr };
+  return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGreen: boolean; noChecks?: boolean; checks: Array<{ name: string; conclusion: string }>; error?: string | GitOperationError } {
+export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGreen: boolean; noChecks?: boolean; checks: Array<{ name: string; conclusion: string }>; error?: unknown; executor?: ExecutorCapability } {
   const valid = validatePrNumber(prNumber);
   if (!valid.ok) return { ok: false, allGreen: false, checks: [], error: valid.error };
+  const required = requireGhExecutor();
+  if (!required.ok) return { ok: false, allGreen: false, checks: [], error: required.error, executor: required.executor };
   const r = run("gh", ["pr", "view", String(valid.value), "--json", "statusCheckRollup"], root);
-  if (!r.ok) return { ok: false, allGreen: false, checks: [], error: r.stderr };
+  if (!r.ok) return { ok: false, allGreen: false, checks: [], error: r.stderr, executor: required.executor };
   try {
     const data = JSON.parse(r.stdout);
     const rollup = data.statusCheckRollup ?? [];
@@ -235,35 +271,41 @@ export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGree
       conclusion: c.conclusion ?? "UNKNOWN",
     }));
     if (checks.length === 0) {
-      return { ok: true, allGreen: false, noChecks: true, checks };
+      return { ok: true, allGreen: false, noChecks: true, checks, executor: required.executor };
     }
     const relevant = checks.filter((c: any) => c.conclusion !== "SKIPPED" && c.conclusion !== "NEUTRAL");
     const allGreen = relevant.length > 0 && relevant.every((c: any) => c.conclusion === "SUCCESS");
-    return { ok: true, allGreen, checks };
+    return { ok: true, allGreen, checks, executor: required.executor };
   } catch {
-    return { ok: false, allGreen: false, checks: [], error: "Could not parse gh pr view output" };
+    return { ok: false, allGreen: false, checks: [], error: "Could not parse gh pr view output", executor: required.executor };
   }
 }
 
-export function checkout(root: string, branch: string): { ok: boolean; error?: string | GitOperationError } {
+export function checkout(root: string, branch: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const branchError = validateRef("branch", branch);
-  if (branchError) return { ok: false, error: branchError };
+  if (branchError) return { ok: false, error: branchError, executor: required.executor };
   const r = run("git", ["checkout", branch], root);
-  return { ok: r.ok, error: r.stderr };
+  return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function pull(root: string): { ok: boolean; error?: string | GitOperationError } {
+export function pull(root: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const base = getBaseBranch(root);
   const baseError = validateRef("baseBranch", base);
-  if (baseError) return { ok: false, error: baseError };
+  if (baseError) return { ok: false, error: baseError, executor: required.executor };
   const r = run("git", ["pull", "origin", base], root);
-  return { ok: r.ok, error: r.stderr };
+  return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function rebaseDev(root: string): { ok: boolean; error?: string | GitOperationError } {
+export function rebaseDev(root: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
   const base = getBaseBranch(root);
   const baseError = validateRef("baseBranch", base);
-  if (baseError) return { ok: false, error: baseError };
+  if (baseError) return { ok: false, error: baseError, executor: required.executor };
   const r = run("git", ["rebase", `origin/${base}`], root);
-  return { ok: r.ok, error: r.stderr };
+  return { ok: r.ok, error: r.stderr, executor: required.executor };
 }

@@ -2,6 +2,7 @@ import { documentReadHealth, legacyRuntimeDiagnostics, readState } from "../stat
 import { toolResult, type ToolResult } from "./_base.js";
 import { initArtifactGuidance } from "./init.js";
 import { checkSetupStamp } from "../bootstrap.js";
+import { getStartupExecutorCapabilities } from "../executors.js";
 
 export async function handleStatus(): Promise<ToolResult> {
   const state = readState();
@@ -33,6 +34,7 @@ export async function handleStatus(): Promise<ToolResult> {
     commitArtifacts: artifactGuidance.commitArtifacts,
     localArtifacts: artifactGuidance.localArtifacts,
     setupUpdateCheck,
+    capabilities: getStartupExecutorCapabilities(),
     pendingAmendment: state.pendingAmendment ?? undefined,
     implementationManifest: state.implementationManifest ?? undefined,
     documentReads: state.documentReads ?? undefined,
