@@ -9,6 +9,8 @@ const root = process.cwd();
 const setupUrl = "https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup";
 const bashCommand = `curl -fsSL ${setupUrl} | bash`;
 const powershellCommand = `curl.exe -fsSL ${setupUrl} | bash`;
+const workflowMcpCommand = "npx -y --prefer-online git+https://github.com/voxServalG/hy-workflow-mcp.git#main";
+const gardenerMcpCommand = "npx -y --prefer-online git+https://github.com/voxServalG/docs-gardener.git mcp";
 
 function read(file: string): string {
   return fs.readFileSync(path.join(root, file), "utf-8");
@@ -41,6 +43,9 @@ assert(!setupPs1.includes(".github/workflows/hy-workflow.yml"), "setup.ps1 shoul
 assert(setup.includes('"setup.ps1"'), "setup-generated workflow should include setup.ps1 in path filters");
 assert(workflow.includes('"setup.ps1"'), "checked-in workflow should include setup.ps1 in path filters");
 
-console.log("setup-entrypoints: cross-platform setup entrypoints are consistent");
+assert(setup.includes(workflowMcpCommand), "setup prompt should use the explicit HTTPS hy-workflow MCP package address");
+assert(setup.includes(gardenerMcpCommand), "setup prompt should use the explicit HTTPS docs-gardener MCP package address");
+assert(!setup.includes("github:voxServalG/hy-workflow-mcp#main"), "setup prompt should not use GitHub shorthand for hy-workflow");
+assert(!setup.includes("github:voxServalG/docs-gardener"), "setup prompt should not use GitHub shorthand for docs-gardener");
 
-assert(setup.includes("hy-workflow-mcp#main"), "setup prompt should include the preferred GitHub npx #main MCP command");
+console.log("setup-entrypoints: cross-platform setup entrypoints are consistent");
