@@ -3,7 +3,7 @@ set -e
 
 # ── hy-workflow: one-command project setup/update (idempotent) ──
 
-SETUP_VERSION="2026.07.11.1"
+SETUP_VERSION="2026.07.14.1"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -63,6 +63,7 @@ name: hy-workflow
 on:
   push:
     paths:
+      - ".github/workflows/**"
       - "src/**"
       - "test/**"
       - "tests/**"
@@ -77,6 +78,7 @@ on:
       - "tsconfig.json"
   pull_request:
     paths:
+      - ".github/workflows/**"
       - "src/**"
       - "test/**"
       - "tests/**"
@@ -326,13 +328,18 @@ cat <<PROMPT
      - Codex: .codex/config.toml
      - Claude Desktop 或其他客户端: .mcp.json 或其项目级配置规范
 
-  5. 客户端里需要两个 server：
-     - hy-workflow: npx -y --prefer-online git+https://github.com/voxServalG/hy-workflow-mcp.git#main
-     - docs-gardener: npx -y --prefer-online git+https://github.com/voxServalG/docs-gardener.git mcp
+  5. 两个 CLI 必须通过 npm 全局安装或更新。默认 registry：
+     npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest
+     国内网络需要镜像时可改用：
+     npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest --registry=https://registry.npmmirror.com
 
-  6. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。hy_init 不会运行 setup，也不会启动交互式 TUI。
+  6. 客户端里需要两个直接运行的 server，不要使用 npx、GitHub 地址或 SSH：
+     - hy-workflow: command = hy-workflow，无 args
+     - docs-gardener: command = docs-gardener，args = [mcp]
 
-  7. 之后任何代码/文档任务自动走闭环：
+  7. 配置完成后，重启 agent/MCP session，并调用 hy_init 完成工作流状态初始化。hy_init 不会运行 setup，也不会启动交互式 TUI。
+
+  8. 之后任何代码/文档任务自动走闭环：
      hy_status → hy_read_docs(before_plan) → hy_plan
      → hy_read_docs(before_approve) → hy_approve
      → hy_branch → hy_edit → hy_read_docs(after_edit)
@@ -344,7 +351,7 @@ cat <<PROMPT
      hy_edit 后必须先调用 hy_read_docs(after_edit)，再调用 hy_sync_docs，最后才调用 hy_verify。
      hy_verify 若返回 amend_required，先展示 suggestedAmendment；用户明确批准后调用 hy_amend_plan，再重新走 hy_read_docs(after_edit) → hy_sync_docs → hy_verify。
 
-  8. 如果 setup 后出现 diff，由 agent 自行判断如何把工作区调整到上面的理想状态；不要因为仍有本地产物就新增无关提交。
+  9. 如果 setup 后出现 diff，由 agent 自行判断如何把工作区调整到上面的理想状态；不要因为仍有本地产物就新增无关提交。
 
    ────── 复制结束 ──────
 

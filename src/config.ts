@@ -658,7 +658,7 @@ function quoteArg(value: string): string {
 export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
   const mode = needsExplicit ? " --dry-run" : " --apply-suggested";
   return [
-    "npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config",
+    "hy-workflow config",
     mode.trim(),
     "--json",
     "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
@@ -722,10 +722,12 @@ function parseArgs(argv: string[]): ConfigArgs {
 
 export function configHelp(): string {
   return [
-    "hy-workflow-mcp",
+    "hy-workflow",
     "",
     "Usage:",
     "  hy-workflow                 Start MCP stdio server",
+    "  hy-workflow setup           Deploy or refresh project bootstrap artifacts",
+    "  hy-workflow --version       Show the installed package version",
     "  hy-workflow --help          Show this help",
     "  hy-workflow config --check --json",
     "  hy-workflow config --apply-suggested --json",

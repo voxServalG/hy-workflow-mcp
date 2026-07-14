@@ -43,7 +43,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-wor
 
 ## Config CLI
 
-`npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config --check --json` 会只读检查项目语言、目录和 `hy-workflow.json`；不一致、malformed JSON、非法字段类型、unsafe branch/path、未知参数或缺失参数值时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`，并以非零状态退出。`config --apply-suggested --json` 或显式配置只写入 `hy-workflow.json`，写入前先验证候选配置；非法值不会写文件。运行旧 doclint/codelint CLI 时才会临时生成或覆盖根目录兼容 JSON，执行后恢复既有文件或清理临时文件。
+`hy-workflow config --check --json` 会只读检查项目语言、目录和 `hy-workflow.json`；不一致、malformed JSON、非法字段类型、unsafe branch/path、未知参数或缺失参数值时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`，并以非零状态退出。`config --apply-suggested --json` 或显式配置只写入 `hy-workflow.json`，写入前先验证候选配置；非法值不会写文件。运行旧 doclint/codelint CLI 时才会临时生成或覆盖根目录兼容 JSON，执行后恢复既有文件或清理临时文件。
 
 ## hy_read_docs
 

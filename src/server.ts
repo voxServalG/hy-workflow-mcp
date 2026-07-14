@@ -32,6 +32,8 @@ import { runContractLint } from "./contralint/run.js";
 import { structuredError } from "./errs/structured.js";
 import { toolResult } from "./output/envelope.js";
 import { initializeExecutorCapabilities } from "./executors.js";
+import { PACKAGE_VERSION } from "./package-meta.js";
+import { runSetupCli } from "./setup-cli.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -121,7 +123,7 @@ hy_status 随时可查看当前阶段。
 
 // ― Server setup
 const server = new Server(
-  { name: "hy-workflow", version: "0.1.0" },
+  { name: "hy-workflow", version: PACKAGE_VERSION },
   { capabilities: { tools: {} } }
 );
 
@@ -339,7 +341,12 @@ const TOOLS = [
   },
 ];
 
-const setupGate = createSetupGate();
+let setupGate: ReturnType<typeof createSetupGate> | null = null;
+
+function currentSetupGate(): ReturnType<typeof createSetupGate> {
+  setupGate ??= createSetupGate();
+  return setupGate;
+}
 
 // ― System prompt capability
 assertCommandCatalogMatchesTools(TOOLS);
@@ -354,7 +361,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const a = (args ?? {}) as Record<string, any>;
 
   try {
-    const setupGateResult = setupGate();
+    const setupGateResult = currentSetupGate()();
     if (setupGateResult) {
       return { content: [{ type: "text", text: JSON.stringify(setupGateResult, null, 2) }] };
     }
@@ -409,7 +416,11 @@ async function main() {
     return;
   }
   if (argv[0] === "--version" || argv[0] === "-v") {
-    process.stdout.write("0.1.0\n");
+    process.stdout.write(PACKAGE_VERSION + "\n");
+    return;
+  }
+  if (argv[0] === "setup") {
+    process.exitCode = runSetupCli();
     return;
   }
   if (argv[0] === "config") {
@@ -428,7 +439,7 @@ async function main() {
   initializeExecutorCapabilities();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`hy-workflow MCP v0.1.0 running`);
+  console.error(`hy-workflow MCP v${PACKAGE_VERSION} running`);
 }
 
 main().catch(console.error);

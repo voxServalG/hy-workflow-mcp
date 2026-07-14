@@ -93,7 +93,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 构建与 CI
 
-`package.json` 提供 `tsc` 编译入口及 `prepare` 脚本用于 GitHub npx 安装时构建，`tsconfig.json` 配置 ES2022 + NodeNext 模块。`dist/` 是生成产物，不提交到仓库。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、contract lint、tests、doclint 和 codelint。Contract lint 位于 `src/contralint/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
+`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。`dist/` 是生成产物，不提交到仓库；npm release job 只在临时 runner 中构建并直接发布 npm tarball，不上传 GitHub artifact。Registry 安装包已包含 `dist/`，没有 `prepare`、`install` 或 `postinstall` 编译。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、contract lint、tests、doclint 和 codelint。Contract lint 位于 `src/contralint/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
 
 ## Related
 

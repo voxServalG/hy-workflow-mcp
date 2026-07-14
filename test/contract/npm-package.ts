@@ -1,5 +1,8 @@
 import { readPackageJson, npmPackDryRun } from "../../src/npm/package.js";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -7,13 +10,25 @@ function assert(condition: boolean, message: string): void {
 
 const pkg = readPackageJson(process.cwd());
 
+assert(pkg.name === "@voxserval/hy-workflow", "package.json name must be @voxserval/hy-workflow");
+assert(pkg.publishConfig?.access === "public", "scoped package must publish with public access");
+assert(typeof pkg.repository !== "string" && pkg.repository?.url === "git+https://github.com/voxServalG/hy-workflow-mcp.git", "repository URL must match the public GitHub source");
+assert(pkg.engines?.node === ">=18", "package must declare Node.js >=18");
+
 // bin and main point at dist/server.js
 assert(pkg.main === "dist/server.js", "package.json main must be dist/server.js");
 assert(pkg.bin?.["hy-workflow"] === "dist/server.js", "hy-workflow bin must point at dist/server.js");
+const serverPath = join(process.cwd(), "dist", "server.js");
+const nonGitDirectory = mkdtempSync(join(tmpdir(), "hy-version-"));
+assert(execFileSync(process.execPath, [serverPath, "--version"], { cwd: nonGitDirectory, encoding: "utf8" }).trim() === pkg.version, "CLI --version must work outside a Git project and match package.json");
+assert(execSync("node dist/server.js --help", { cwd: process.cwd(), encoding: "utf8" }).includes("hy-workflow setup"), "CLI help must expose the bundled setup command");
 
-// prepare script exists and builds dist
-assert(typeof pkg.scripts?.prepare === "string", "package.json must have a prepare script");
-assert(pkg.scripts.prepare.includes("build"), "prepare script must build dist");
+// publishing builds dist, but installing the registry package never compiles locally
+assert(pkg.scripts?.prepack === "npm run build", "prepack must build the npm-only dist directory");
+assert(pkg.scripts?.prepublishOnly === "npm run verify", "prepublishOnly must run the full verification suite");
+for (const lifecycle of ["prepare", "install", "postinstall"]) {
+  assert(pkg.scripts?.[lifecycle] === undefined, `${lifecycle} must not build during npm install`);
+}
 
 // files must include dist, docs, setup, setup.ps1, README.md
 const requiredFiles = ["dist", "docs", "setup", "setup.ps1", "README.md"];
@@ -35,10 +50,20 @@ assert(trackedDist.length === 0, `dist files must not be tracked by git, found $
 // npm pack dry-run must exclude source, test, and local artifacts
 const forbidden = [".hy/", ".opencode/", ".codex/", "test/", "src/", "codelint.json", "doclint.json", "docs-gardener.json"];
 const packFiles = npmPackDryRun(process.cwd());
+assert(packFiles.includes("dist/server.js"), "npm pack must include the compiled CLI entrypoint");
 for (const file of packFiles) {
   for (const prefix of forbidden) {
     assert(!file.startsWith(prefix), `npm pack must not include ${file}`);
   }
+}
+
+// publishing uses npm trusted publishing; GitHub never stores the compiled output
+const workflow = readFileSync(".github/workflows/npm-publish.yml", "utf8");
+assert(workflow.includes("id-token: write"), "npm publish workflow must request an OIDC id-token");
+assert(workflow.includes("npm publish --access public --tag next"), "prereleases must publish with the next tag");
+assert(workflow.includes("npm publish --access public --tag latest"), "stable releases must publish with the latest tag");
+for (const forbiddenToken of ["NODE_AUTH_TOKEN", "NPM_TOKEN", "upload-artifact", "gh release upload", "actions/attest-build-provenance"]) {
+  assert(!workflow.includes(forbiddenToken), `npm publish workflow must not contain ${forbiddenToken}`);
 }
 
 console.log("npm-package: all packaging contracts pass");
