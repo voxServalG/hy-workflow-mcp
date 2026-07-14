@@ -6,23 +6,33 @@
 
 hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在"先读文档、先计划、等用户批准、锁定 scope、实现、同步文档、验证、提交、CI、合并、整理下游"的闭环里，减少跳步、乱改和把本地产物混进 PR 的机会。
 
-## 一键部署
+## 安装与部署
 
-进入你想管理的项目根目录，执行对应命令。所有入口最终都执行同一个 `setup`。
-
-**Windows PowerShell（需要 Git for Windows 的 `bash`）**
-
-```powershell
-curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
-```
-
-**macOS、Linux、Windows Git Bash / WSL shell**
+像 Codex CLI 一样先全局安装两个 scoped npm 包，再进入项目根目录运行 setup：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash
+npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest
+hy-workflow setup
 ```
 
+国内网络需要镜像时，安装命令可追加 `--registry=https://registry.npmmirror.com`。更新时重跑同一条 `npm install -g` 命令，再运行 `hy-workflow setup`。需要 Node.js >= 18；Windows 运行 setup 还需要 Git for Windows 的 `bash`。
+
 脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
+
+Codex CLI 项目配置的期望态是直接运行已安装命令：
+
+```toml
+[mcp_servers.hy-workflow]
+command = "hy-workflow"
+startup_timeout_sec = 60
+tool_timeout_sec = 300
+
+[mcp_servers.docs-gardener]
+command = "docs-gardener"
+args = ["mcp"]
+startup_timeout_sec = 60
+tool_timeout_sec = 300
+```
 
 ## Workflow
 
@@ -54,10 +64,11 @@ hy_status
 
 这个流程的重点很简单：
 
-MCP server 通过 GitHub npx 在线运行，不需要本地 clone 仓库：
+MCP server 直接运行 npm 全局 bin，不依赖 GitHub、SSH 或每次启动时的在线安装：
 
 ```bash
-npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main
+hy-workflow
+docs-gardener mcp
 ```
 
 1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。没有被上下文捉到的东西，与不存在没有区别。
@@ -76,7 +87,7 @@ npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main
 
 项目内产物分三类：
 
-`dist/` 是编译生成产物，不提交到仓库。GitHub npx 安装时由 `prepare` 脚本自动构建。
+`dist/` 是编译生成产物，不提交到仓库，也不上传为 GitHub Actions artifact 或 GitHub Release 附件。npm 发布 job 在临时 runner 中构建，并把 `dist/` 只放进 npm tarball；用户安装 registry 包时不运行本地编译。
 
 | 类别 | 产物 | 规则 |
 | --- | --- | --- |

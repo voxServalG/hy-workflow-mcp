@@ -1,6 +1,6 @@
 # CLI Contract
 
-The package exposes one bin entrypoint: hy-workflow. GitHub npx installs build dist/server.js via the prepare script; running without a subcommand starts the MCP stdio server.
+The scoped package `@voxserval/hy-workflow` exposes one bin entrypoint: `hy-workflow`. Install or update it with `npm install -g @voxserval/hy-workflow@latest`; running without a subcommand starts the MCP stdio server. `hy-workflow setup` runs the bundled project bootstrap script, and `hy-workflow --version` reads the installed package version. Registry installs use the prebuilt npm tarball and never compile locally.
 
 ## Commands
 
@@ -38,4 +38,3 @@ The MCP tool surface is canonical in src/commands/catalog.ts and registered by s
 - `hy_status`
 
 Contract lint checks that README.md, docs/tools.md, this CLI document, src/server.ts, and tests all agree on this tool surface.
-

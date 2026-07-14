@@ -1,5 +1,5 @@
 {
-  "name": "hy-workflow-mcp",
+  "name": "@voxserval/hy-workflow",
   "version": "0.1.0",
   "description": "MCP server enforcing a closed-loop workflow for LLM-assisted development",
   "type": "module",
@@ -18,8 +18,8 @@
     "test:contract": "for f in test/contract/*.ts; do npx tsx \"$f\" || exit 1; done",
     "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
     "verify": "npm run build && npm test",
-    "prepare": "npm run build",
     "prepack": "npm run build",
+    "prepublishOnly": "npm run verify",
     "test:dist": "npx tsx test/contract/dist-artifacts.ts",
     "test:doclint-output": "npx tsx test/unit/doclint-output.ts",
     "test:setup-update": "npx tsx test/e2e/setup-update-check.ts",
@@ -27,6 +27,20 @@
   },
   "author": "Haiyi",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/voxServalG/hy-workflow-mcp.git"
+  },
+  "homepage": "https://github.com/voxServalG/hy-workflow-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/voxServalG/hy-workflow-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "dotenv": "^16.0.0",
