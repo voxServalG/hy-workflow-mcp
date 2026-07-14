@@ -10,7 +10,7 @@ function assert(condition: boolean, message: string): void {
 
 const pkg = readPackageJson(process.cwd());
 
-assert(pkg.name === "@voxserval/hy-workflow", "package.json name must be @voxserval/hy-workflow");
+assert(pkg.name === "@voxstudio/hy-workflow", "package.json name must be @voxstudio/hy-workflow");
 assert(pkg.publishConfig?.access === "public", "scoped package must publish with public access");
 assert(typeof pkg.repository !== "string" && pkg.repository?.url === "git+https://github.com/voxServalG/hy-workflow-mcp.git", "repository URL must match the public GitHub source");
 assert(pkg.engines?.node === ">=18", "package must declare Node.js >=18");

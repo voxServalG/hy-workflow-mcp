@@ -1,6 +1,6 @@
 # NPM Packaging Contract
 
-`src/npm/package.ts` provides helpers for reading `package.json` and running `npm pack --dry-run`. The public package is `@voxserval/hy-workflow`; its stable bin is `hy-workflow`.
+`src/npm/package.ts` provides helpers for reading `package.json` and running `npm pack --dry-run`. The public package is `@voxstudio/hy-workflow`; its stable bin is `hy-workflow`.
 
 ## Required npm scripts
 
@@ -20,7 +20,7 @@ There is no `prepare`, `install`, or `postinstall` build. Registry users receive
 
 ## Packaging rules
 
-- `name` must be `@voxserval/hy-workflow`, with public scoped-package access
+- `name` must be `@voxstudio/hy-workflow`, with public scoped-package access
 - `bin["hy-workflow"]` and `main` must point at `dist/server.js`
 - `files` must include `dist`, `docs`, `setup`, `setup.ps1`, and `README.md`
 - `dist/` and local `*.tgz` tarballs must not be tracked by Git
@@ -35,7 +35,7 @@ The package must exist before npm can attach a trusted publisher. Bootstrap it o
 
 ```bash
 npm publish --access public --tag next
-npm trust github @voxserval/hy-workflow --file npm-publish.yml --repo voxServalG/hy-workflow-mcp --allow-publish
+npm trust github @voxstudio/hy-workflow --file npm-publish.yml --repo voxServalG/hy-workflow-mcp --allow-publish
 ```
 
 The first command publishes only to npm; it does not create or upload a GitHub build artifact. After the trusted publisher is confirmed, future GitHub Releases use OIDC only. The release tag must equal `v` plus `package.json.version`.

@@ -3,7 +3,7 @@ set -e
 
 # ── hy-workflow: one-command project setup/update (idempotent) ──
 
-SETUP_VERSION="2026.07.14.1"
+SETUP_VERSION="2026.07.14.2"
 
 echo ""
 echo "  ┌──────────────────────────────────────┐"
@@ -329,9 +329,9 @@ cat <<PROMPT
      - Claude Desktop 或其他客户端: .mcp.json 或其项目级配置规范
 
   5. 两个 CLI 必须通过 npm 全局安装或更新。默认 registry：
-     npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest
+     npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
      国内网络需要镜像时可改用：
-     npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest --registry=https://registry.npmmirror.com
+     npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest --registry=https://registry.npmmirror.com
 
   6. 客户端里需要两个直接运行的 server，不要使用 npx、GitHub 地址或 SSH：
      - hy-workflow: command = hy-workflow，无 args

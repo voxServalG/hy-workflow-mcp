@@ -11,7 +11,7 @@ hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在
 像 Codex CLI 一样先全局安装两个 scoped npm 包，再进入项目根目录运行 setup：
 
 ```bash
-npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest
+npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 hy-workflow setup
 ```
 

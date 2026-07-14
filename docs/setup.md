@@ -3,14 +3,14 @@
 Install or update both scoped packages globally, then run the bundled setup command from the target project root:
 
 ```bash
-npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest
+npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 hy-workflow setup
 ```
 
 For mainland network routing, the install command may instead be:
 
 ```bash
-npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest --registry=https://registry.npmmirror.com
+npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest --registry=https://registry.npmmirror.com
 hy-workflow setup
 ```
 
