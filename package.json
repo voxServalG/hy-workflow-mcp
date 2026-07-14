@@ -1,5 +1,5 @@
 {
-  "name": "@voxserval/hy-workflow",
+  "name": "@voxstudio/hy-workflow",
   "version": "0.1.0-next.0",
   "description": "MCP server enforcing a closed-loop workflow for LLM-assisted development",
   "type": "module",

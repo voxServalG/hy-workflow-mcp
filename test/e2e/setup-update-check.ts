@@ -71,7 +71,7 @@ try {
   assert(missingResult.stop_here === true, "missing setup envelope should stop here");
   assert(missingResult.allowedTools?.includes("hy_status"), "missing setup envelope should allow hy_status");
   assert(missingResult.blockedTools?.includes("hy_plan"), "missing setup envelope should block hy_plan");
-  assert(missingResult.recovery?.instruction?.includes("npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest"), "missing setup envelope should include npm update command");
+  assert(missingResult.recovery?.instruction?.includes("npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest"), "missing setup envelope should include npm update command");
   assert(missingResult.recovery?.instruction?.includes("hy-workflow setup"), "missing setup envelope should rerun the installed setup command");
   assert(missingResult.display?.body?.includes("registry.npmmirror.com"), "missing setup display should include the optional mainland mirror");
   assert(JSON.stringify(before) === JSON.stringify(listFiles(missingRoot)), "setup check must not write files");

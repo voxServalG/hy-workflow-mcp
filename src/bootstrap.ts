@@ -3,10 +3,10 @@ import * as path from "node:path";
 import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
 
-export const SETUP_VERSION = "2026.07.14.1";
+export const SETUP_VERSION = "2026.07.14.2";
 export const SETUP_STAMP = path.join(".git", "hy-workflow", "setup.json");
 export const LEGACY_SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
-export const INSTALL_COMMAND = "npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest";
+export const INSTALL_COMMAND = "npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest";
 export const MIRROR_INSTALL_COMMAND = `${INSTALL_COMMAND} --registry=https://registry.npmmirror.com`;
 export const SETUP_COMMAND = `${INSTALL_COMMAND}\nhy-workflow setup`;
 export const WINDOWS_SETUP_COMMAND = SETUP_COMMAND;

@@ -10,7 +10,7 @@ const REQUIRED_PACK_FILES = ["dist", "docs", "setup", "setup.ps1", "README.md"];
 export function checkNpmContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
   const pkg = readPackageJson(context.root);
-  if (pkg.name !== "@voxserval/hy-workflow") findings.push({ rule: "npm", severity: "hard_fail", message: "package.json name must be @voxserval/hy-workflow.", file: "package.json" });
+  if (pkg.name !== "@voxstudio/hy-workflow") findings.push({ rule: "npm", severity: "hard_fail", message: "package.json name must be @voxstudio/hy-workflow.", file: "package.json" });
   if (pkg.publishConfig?.access !== "public") findings.push({ rule: "npm", severity: "hard_fail", message: "Scoped npm package must publish with public access.", file: "package.json" });
   if (typeof pkg.repository === "string" || pkg.repository?.url !== "git+https://github.com/voxServalG/hy-workflow-mcp.git") findings.push({ rule: "npm", severity: "hard_fail", message: "package.json repository must match the public GitHub source.", file: "package.json" });
   if (pkg.main !== "dist/server.js") findings.push({ rule: "npm", severity: "hard_fail", message: "package.json main must be dist/server.js.", file: "package.json" });

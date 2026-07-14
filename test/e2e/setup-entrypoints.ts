@@ -6,7 +6,7 @@ function assert(condition: boolean, message: string): void {
 }
 
 const root = process.cwd();
-const installCommand = "npm install -g @voxserval/hy-workflow@latest @voxserval/docs-gardener@latest";
+const installCommand = "npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest";
 const mirrorInstallCommand = `${installCommand} --registry=https://registry.npmmirror.com`;
 const setupCommand = "hy-workflow setup";
 
@@ -34,7 +34,7 @@ assert(bootstrap.includes(installCommand), "bootstrap should tell outdated downs
 assert(bootstrap.includes(setupCommand), "bootstrap should tell outdated downstreams to rerun setup");
 
 assert(setupPs1.includes(setupCommand), "setup.ps1 should delegate to the installed npm CLI");
-assert(setupPs1.includes("@voxserval/hy-workflow@latest"), "setup.ps1 should explain how to install the npm CLI");
+assert(setupPs1.includes("@voxstudio/hy-workflow@latest"), "setup.ps1 should explain how to install the npm CLI");
 assert(!setupPs1.includes("raw.githubusercontent.com"), "setup.ps1 should not download runtime code from GitHub");
 assert(!setupPs1.includes("hy-harness"), "setup.ps1 should not call hy-harness");
 assert(!setupPs1.includes(".github/workflows/hy-workflow.yml"), "setup.ps1 should not embed bootstrap artifact generation");
