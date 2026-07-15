@@ -32,6 +32,8 @@ import { runContractLint } from "./contralint/run.js";
 import { structuredError } from "./errs/structured.js";
 import { toolResult } from "./output/envelope.js";
 import { initializeExecutorCapabilities } from "./executors.js";
+import { PACKAGE_VERSION } from "./package-meta.js";
+import { runSetupCli } from "./setup-cli.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -44,7 +46,7 @@ const SYSTEM_PROMPT = `
 
 ### 流程规则
 
-**0. hy_init — 项目首次使用时调用。** 验证 setup 已部署 bootstrap 产物（hy-workflow.json + 单一 CI workflow + setup stamp），写入/更新 workflow 规则和本地忽略项，自动进 plan。hy_init 不会在 MCP 内启动 setup，也不会在 MCP 内启动交互式 harness；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。用 hy_status 检查当前 phase，若为 init 则先调 hy_init。plan 阶段也可调 hy_init 补齐 workflow 规则。
+**0. hy_init — 项目首次使用时调用。** 验证 OS 用户目录中的 deployment、配置与运行时状态，默认不写项目或 .git，随后自动进 plan。hy_init 不会在 MCP 内启动 setup TUI；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。
 
 1. hy_read_docs(before_plan) — 在 hy_plan 前由 agent 自动调用，不需要人类审核。读取 hy-workflow.json project.docsDir 指向的文档系统，形成规划事实基线，用于发现约束、术语、相关文件、未知点和验证期望。
 2. hy_plan — 调用时传入 {task, plan}。你需要先基于 before_plan 的文档事实基线构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 gate 校验 PlanDoc 质量，通过后方可进入 approve。
@@ -55,7 +57,7 @@ const SYSTEM_PROMPT = `
 5. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
 6. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
-8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 setup prompt 文件内同步，完成后再 hy_verify。
+8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 shared template 文件内同步，完成后再 hy_verify。
 9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。完整 lint 由 GitHub Actions 和 setup 生成的 workflow 执行；hy_verify 失败回 hy_edit，通过进 hy_commit。
 10. hy_commit — git add + commit + push + gh pr create，PR 正文嵌入 plan 摘要。
 11. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
@@ -121,14 +123,14 @@ hy_status 随时可查看当前阶段。
 
 // ― Server setup
 const server = new Server(
-  { name: "hy-workflow", version: "0.1.0" },
+  { name: "hy-workflow", version: PACKAGE_VERSION },
   { capabilities: { tools: {} } }
 );
 
 const TOOLS = [
   {
     name: "hy_init",
-    description: "初始化工作流：验证 setup 已部署 bootstrap 产物，写入/更新 AGENTS.md 和本地忽略项；不会在 MCP 内启动 setup。返回兼容式 agent-facing envelope，说明下一步是否可 hy_plan。",
+    description: "初始化工作流：验证 OS 用户目录中的 deployment/config 并初始化外置状态；不写项目或 .git，也不会在 MCP 内启动 setup TUI。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -264,12 +266,12 @@ const TOOLS = [
   },
   {
     name: "hy_sync_docs",
-    description: "实现编辑后、hy_verify 前的文档同步 gate。要求已运行 hy_read_docs(after_edit)，确认只在 plan.scope 声明的文档或 setup prompt 文件内同步。",
+    description: "实现编辑后、hy_verify 前的文档同步 gate。要求已运行 hy_read_docs(after_edit)，确认只在 plan.scope 声明的文档或 shared template 文件内同步。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_verify",
-    description: "本地任务校验：compile + scope + boundary + platform + smoke + tests。完整 lint 由 GitHub Actions/setup workflow 执行；要求 after_edit 文档审计和 hy_sync_docs 已完成；失败返回按 layer 的 recovery；全绿方可 commit。",
+    description: "本地任务校验：compile + scope + boundary + platform + smoke + tests。shared 模式可追加 GitHub Actions 完整 lint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -339,7 +341,12 @@ const TOOLS = [
   },
 ];
 
-const setupGate = createSetupGate();
+let setupGate: ReturnType<typeof createSetupGate> | null = null;
+
+function currentSetupGate(): ReturnType<typeof createSetupGate> {
+  setupGate ??= createSetupGate();
+  return setupGate;
+}
 
 // ― System prompt capability
 assertCommandCatalogMatchesTools(TOOLS);
@@ -354,7 +361,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const a = (args ?? {}) as Record<string, any>;
 
   try {
-    const setupGateResult = setupGate();
+    const setupGateResult = currentSetupGate()();
     if (setupGateResult) {
       return { content: [{ type: "text", text: JSON.stringify(setupGateResult, null, 2) }] };
     }
@@ -409,7 +416,11 @@ async function main() {
     return;
   }
   if (argv[0] === "--version" || argv[0] === "-v") {
-    process.stdout.write("0.1.0\n");
+    process.stdout.write(PACKAGE_VERSION + "\n");
+    return;
+  }
+  if (argv[0] === "setup" || argv[0] === "unset") {
+    process.exitCode = await runSetupCli(argv.slice(1), argv[0]);
     return;
   }
   if (argv[0] === "config") {
@@ -428,7 +439,7 @@ async function main() {
   initializeExecutorCapabilities();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`hy-workflow MCP v0.1.0 running`);
+  console.error(`hy-workflow MCP v${PACKAGE_VERSION} running`);
 }
 
 main().catch(console.error);

@@ -2,12 +2,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
+import { projectPaths } from "./runtime/user-paths.js";
 
-export const SETUP_VERSION = "2026.07.11.1";
+export const SETUP_VERSION = "2026.07.14.3";
 export const SETUP_STAMP = path.join(".git", "hy-workflow", "setup.json");
 export const LEGACY_SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
-export const SETUP_COMMAND = "curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
-export const WINDOWS_SETUP_COMMAND = "curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash";
+export const INSTALL_COMMAND = "npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest";
+export const MIRROR_INSTALL_COMMAND = `${INSTALL_COMMAND} --registry=https://registry.npmmirror.com`;
+export const SETUP_COMMAND = `${INSTALL_COMMAND}\nhy-workflow setup`;
+export const WINDOWS_SETUP_COMMAND = SETUP_COMMAND;
 
 export type SetupStamp = {
   schemaVersion?: string;
@@ -26,14 +29,15 @@ export type SetupCheck = {
 const BLOCKED_TOOLS = ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"];
 
 export function setupStampPath(root = projectRoot()): string {
-  return path.join(root, SETUP_STAMP);
+  return projectPaths(root).deployment;
 }
 
 export function readSetupStamp(root = projectRoot()): SetupStamp | null {
   const filePath = setupStampPath(root);
+  const gitLegacyPath = path.join(root, SETUP_STAMP);
   const legacyPath = path.join(root, LEGACY_SETUP_STAMP);
-  const target = fs.existsSync(filePath) ? filePath : legacyPath;
-  if (!fs.existsSync(target)) return null;
+  const target = [filePath, gitLegacyPath, legacyPath].find(candidate => fs.existsSync(candidate));
+  if (!target) return null;
   return JSON.parse(fs.readFileSync(target, "utf-8"));
 }
 
@@ -44,7 +48,8 @@ export function checkSetupStamp(root = projectRoot()): SetupCheck {
     if (!stamp?.setupVersion) {
       return { status: "missing_stamp", currentVersion: null, latestVersion: SETUP_VERSION, stampPath };
     }
-    if (stamp.setupVersion !== SETUP_VERSION) {
+    const legacyCompatible = !fs.existsSync(stampPath) && stamp.setupVersion === "2026.07.14.2";
+    if (stamp.setupVersion !== SETUP_VERSION && !legacyCompatible) {
       return { status: "outdated", currentVersion: stamp.setupVersion, latestVersion: SETUP_VERSION, stampPath };
     }
     return { status: "current", currentVersion: stamp.setupVersion, latestVersion: SETUP_VERSION, stampPath };
@@ -67,7 +72,7 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
       subtype: "setup_update_required",
       code: "SETUP_UPDATE_REQUIRED",
       message: `hy-workflow setup update required. ${reason}`,
-      hint: "Run setup in the project root, then restart the agent/MCP session before calling hy_* tools again.",
+      hint: "Run hy-workflow setup in the project root, then restart the agent/MCP session before calling hy_* tools again.",
       status: check.status,
       currentVersion: check.currentVersion,
       latestVersion: check.latestVersion,
@@ -77,12 +82,14 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
     display: {
       title: "hy-workflow setup update required",
       body: [
-        "hy-workflow project bootstrap artifacts need to be installed or refreshed.",
+        "The user-local hy-workflow deployment needs to be installed or refreshed.",
         reason,
         "",
-        "Run one of these commands in the project root, then restart the agent/MCP session:",
-        `macOS/Linux/Git Bash/WSL: ${SETUP_COMMAND}`,
-        `Windows PowerShell: ${WINDOWS_SETUP_COMMAND}`,
+        "Install or update both npm packages, rerun setup in the project root, then restart the agent/MCP session:",
+        SETUP_COMMAND,
+        "",
+        "Mainland China mirror alternative:",
+        `${MIRROR_INSTALL_COMMAND}\nhy-workflow setup`,
       ].join("\n"),
     },
     hint: "Stop here. Ask the user to run the setup command in a terminal and restart the agent. Do not call other hy_* tools until setup has been refreshed.",
@@ -90,7 +97,7 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
     stop_here: true,
     allowedTools: ["hy_status"],
     blockedTools: BLOCKED_TOOLS,
-    recovery: { tool: "terminal", instruction: `${SETUP_COMMAND}\nWindows PowerShell: ${WINDOWS_SETUP_COMMAND}` },
+    recovery: { tool: "terminal", instruction: SETUP_COMMAND },
     setupUpdateCheck: check,
   });
 }

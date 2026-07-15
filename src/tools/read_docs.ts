@@ -22,6 +22,7 @@ import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { resolveDocsDir } from "../docs_paths.js";
+import { readUnifiedConfig } from "../config.js";
 
 function sha256(value: string): string {
   const hash = createHash("sha256");
@@ -34,15 +35,8 @@ function shortHash(value: string): string {
 }
 
 function readDocsDir(root: string): string {
-  const configPath = path.join(root, "hy-workflow.json");
-  if (!fs.existsSync(configPath)) return "docs";
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    const docsDir = config?.project?.docsDir;
-    return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
-  } catch {
-    return "docs";
-  }
+  const docsDir = readUnifiedConfig(root)?.project?.docsDir;
+  return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
 }
 
 function buildFindings(
@@ -256,7 +250,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
         body: auditedSnapshot.findings.join("\n"),
         files: auditedSnapshot.files.map(f => f.path),
       },
-      hint: "Use this after_edit audit to identify documentation or setup prompt updates, then call hy_sync_docs before hy_verify.",
+      hint: "Use this after_edit audit to identify documentation or shared template updates, then call hy_sync_docs before hy_verify.",
       allowedTools: ["hy_sync_docs", "hy_edit", "hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
     });

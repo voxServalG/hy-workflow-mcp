@@ -1,7 +1,5 @@
 export const TRACKED_PROJECT_ARTIFACTS = [
-  ".github/",
-  "AGENTS.md",
-  ".gitignore",
+  ".github/workflows/hy-workflow.yml",
   "hy-workflow.json",
 ] as const;
 
@@ -28,4 +26,3 @@ export function isLocalArtifact(file: string): boolean {
     return normalized === pattern;
   });
 }
-

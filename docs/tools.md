@@ -24,32 +24,32 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-验证 setup 已部署 bootstrap 产物（hy-workflow.json + 单一 CI workflow + setup stamp），写入/更新 `AGENTS.md` workflow 规则，清理旧 `.opencode/instructions.md` 规则片段，并幂等维护 `.gitignore` 中的本地运行态忽略项。`hy_init` 不会在 MCP 内执行 setup，也不会启动交互式 TUI。
+验证 OS 用户目录中的 deployment 和有效配置，并把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
-- **成功返回**: `{ next: "plan", message, display, commitArtifacts, localArtifacts, requiredSetupArtifacts, gitignoreChanged }`
+- **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [] }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 是配置源头；`codelint.json`、`doclint.json`、`docs-gardener.json` 是运行时兼容产物，不提交。`hy_init` 返回 `commitArtifacts`（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`）和 `localArtifacts`（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json`），并幂等确保 `.gitignore` 忽略本地产物。缺少核心 setup/bootstrap 产物（单一 CI workflow、`hy-workflow.json`、setup stamp）或 setup stamp 版本不是当前版本时，agent 必须停下并请用户在终端重新运行 setup。
+`hy-workflow.json` 仅在 shared 模式下作为仓库配置源；本机模式使用用户 config。缺少 deployment/config 或版本过期时，agent 必须停下并请用户运行 `hy-workflow setup`。
 
-如果这些 local/runtime artifacts 已经被 Git 跟踪，`hy_init` 成功返回但会额外给出 `trackedLocalArtifacts`，并在 display/hint 中提示把它们放进 setup artifact sync PR 里用 `git rm --cached -- <file...>` 从索引移除。这个提示用于迁移期清理，不会阻止进入 `plan`。
+旧 local/runtime artifacts 已被跟踪时仍返回诊断，但不会自动删除或改写。
 
-Artifact contract: setup/hy_init 产生的 tracked project artifacts 应通过 PR 提交，local/runtime artifacts 不提交。若运行 setup 后出现 tracked diff，应先做 setup artifact sync PR，不要混入无关任务。
+Artifact contract: 本机 setup/unset/hy_init 的 project diff 必须为空。shared 模式只允许 `hy-workflow.json` 和 workflow template，其变化单独走 artifact sync PR。
 
 ## Session setup check
 
-MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-workflow/setup.json`。stamp 缺失或版本落后时返回完整 envelope：`ok: false`、当前 `phase`/`next`、`display`、`hint`、`requires_user: true`、`stop_here: true`、`allowedTools`、`blockedTools`、`recovery`。`error.message` 必须是人类可读的 setup refresh 说明，同时保留 `setup_update_required` subtype、版本和 stamp path 字段，不能把结构化对象序列化成 JSON 字符串。runtime 不会运行 setup、不写文件、不启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
+MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state 中该项目的 `deployment.json`。deployment 缺失或版本落后时返回完整 stop envelope 和 setup refresh 指引。runtime 不会自行运行 setup 或启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
 
 ## Config CLI
 
-`npx -y --prefer-online github:voxServalG/hy-workflow-mcp#main config --check --json` 会只读检查项目语言、目录和 `hy-workflow.json`；不一致、malformed JSON、非法字段类型、unsafe branch/path、未知参数或缺失参数值时输出 envelope、`issues`、`project.evidence` 和已填好的 `suggestedCommand`，并以非零状态退出。`config --apply-suggested --json` 或显式配置只写入 `hy-workflow.json`，写入前先验证候选配置；非法值不会写文件。运行旧 doclint/codelint CLI 时才会临时生成或覆盖根目录兼容 JSON，执行后恢复既有文件或清理临时文件。
+`hy-workflow config --check --json` 会只读检查项目语言、目录和有效配置；异常时输出结构化 issues 并非零退出。`config --apply-suggested --json` 默认写用户 config；只有 `--shared` 写 `hy-workflow.json`。运行旧 doclint/codelint CLI 时才临时生成根目录兼容 JSON，执行后恢复项目原状。
 
 ## hy_read_docs
 
 自动读取 `hy-workflow.json` 的 `project.docsDir`，使用文档引用图（DocsGraph）驱动渐进式读取。`before_plan` 在 `hy_plan` 前建立规划事实基线，必须传 `task`；`before_approve` 在用户批准 PlanDoc 后、`hy_approve` 前产出 agent 侧文档审计；`after_edit` 在实现编辑后、`hy_sync_docs` 前审计当前实现 diff 与文档同步需求。三者都是自动 gate，不新增人类审核。
 
-读取行为：先把 `project.docsDir` 解析为项目根内的相对目录；越界、绝对路径或空路径会结构化拒绝，不会读取仓库外文件。从文档入口（配置 docsDir 下的 `index.md`、`README.md` 或自动检测的首个 `.md` 文件）出发，通过 markdown 内部链接引用图做 BFS 遍历，只读取与 task 关键字匹配的路径上的文档，不再对全量文档做 6000 chars 截断。每个文档的完整内容直接返回。文档引用图持久化在 `.git/hy-workflow/docs-graph.json`。DocsGraph 会解析本地 inline links、URL encoded 路径、文件名包含括号的目标、reference-style links；外部 URL、anchor-only、代码块/inline code 内链接和 docsDir 外路径不会进入图。路径归属使用规范化 path-relative 边界判断，不用字符串前缀判断。缓存 freshness 使用版本化内容 digest，解析器语义升级或文档内容变化会重建，未变化时复用缓存。`AGENTS.md` 和配置 docsDir 下的 `README.md` 会作为 supplemental entry points 一致读取。
+读取行为从 docsDir 入口沿 Markdown 引用图做 task-driven BFS。DocsGraph 持久化在 OS 用户 cache 的 identity-scoped `docs-graph.json`；内容或解析语义变化时重建。越界路径、外部 URL、代码块链接和 docsDir 外目标不会进入图，`AGENTS.md` 与 docs README 仍可作为 supplemental entry points。
 
 成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash、实现 digest 不匹配，或 `before_approve` 发现文档 digest / DocsGraph digest 相对 `before_plan` 已变化时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑或重建 PlanDoc 的下游 gate；before_plan task 文案不一致只作为诊断信息。
 
@@ -84,7 +84,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-wor
 
 ## hy_edit
 
-锁定 scope 到 Git 私有状态文件 `.git/hy-workflow/scope.json`，避免 runtime metadata 污染工作区。workflow phase 本身也写入 Git 私有状态文件，不推进 Phase（手动设为 edit），返回 `next: "verify"`、`phase: "edit"` 提示 LLM 开始编写代码。
+锁定 scope 到 OS 用户 state 的 identity-scoped `scope.json`，workflow phase 也写入用户 state；不污染工作区或 `.git`。
 
 - **进入 Phase**: `branch`, `edit`, `verify`
 - **转换到**: `transition(state, "edit")`，返回 `next: "verify"`
@@ -92,13 +92,13 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-wor
 
 ## Legacy runtime metadata
 
-旧版本可能在工作区留下 `.hy/workflow.json` 或 `.hy/scope.json`。当前版本会在迁移到 `.git/hy-workflow/` 后静默删除未被 Git 跟踪的 legacy runtime 文件，避免它们阻挡 `git checkout`。如果这些 legacy 文件已被 Git 跟踪，hy-workflow 不会自动删除；`hy_status` / `hy_init` 会返回 `legacyDiagnostics`，提示运行 `git rm --cached .hy/workflow.json .hy/scope.json` 并忽略 `.hy/`。
+旧版本可能在 `.git/hy-workflow/` 或工作区 `.hy/` 留下 state/scope。当前版本只在外置文件缺失时复制读取，不自动删除任何 legacy 文件；跟踪异常仍通过 `legacyDiagnostics` 报告。
 
 ## hy_sync_docs
 
-实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或 setup prompt 文件内同步，再运行 `hy_verify`。
+实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或 shared template 文件内同步，再运行 `hy_verify`。
 
-同步时增量维护文档引用图：re-parse 实际改动、创建或删除的 docsDir 内文档文件来更新 `.git/hy-workflow/docs-graph.json`，并检测引用图中的坏链接（包括删除文档后仍被其他文档引用的入站坏链）。检测结果通过 `graphInfo` 字段返回，坏链明细包含 `source:line -> target`。docsDir membership 使用规范化路径边界判断，避免 `docsDir=doc` 误包含 `docs-extra/`。
+同步时增量更新用户 cache 中的 DocsGraph 并检测坏链接；结果通过 `graphInfo` 返回。docsDir membership 使用规范化路径边界判断。
 
 - **进入 Phase**: `edit`, `verify`
 - **转换到**: 保持 `edit`，返回 `next: "verify"`
@@ -116,7 +116,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会只读检查 `.git/hy-wor
 
 ## hy_amend_plan
 
-`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，不替代 `hy_plan` 的人类审批。应用前会校验 pending amendment shape、所有增删路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的 Git 私有 scope lock。
+`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，不替代 `hy_plan` 的人类审批。应用前会校验 pending amendment shape、所有增删路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的用户 state scope lock。
 
 - **进入 Phase**: `verify`
 - **转换到**: `edit` / `verify`

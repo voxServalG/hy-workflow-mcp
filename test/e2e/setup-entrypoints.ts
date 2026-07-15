@@ -1,51 +1,38 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setupHelp } from "../../src/setup-cli.js";
+import { MCP_DEFINITIONS } from "../../src/setup/types.js";
 
-function assert(condition: boolean, message: string): void {
+function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
 }
 
 const root = process.cwd();
-const setupUrl = "https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup";
-const bashCommand = `curl -fsSL ${setupUrl} | bash`;
-const powershellCommand = `curl.exe -fsSL ${setupUrl} | bash`;
-const workflowMcpCommand = "npx -y --prefer-online git+https://github.com/voxServalG/hy-workflow-mcp.git#main";
-const gardenerMcpCommand = "npx -y --prefer-online git+https://github.com/voxServalG/docs-gardener.git mcp";
+const read = (file: string) => fs.readFileSync(path.join(root, file), "utf-8");
+const installCommand = "npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest";
+const help = setupHelp();
+const pkg = JSON.parse(read("package.json"));
 
-function read(file: string): string {
-  return fs.readFileSync(path.join(root, file), "utf-8");
+assert(!fs.existsSync(path.join(root, "setup")), "legacy Bash setup entrypoint must be removed");
+assert(!fs.existsSync(path.join(root, "setup.ps1")), "legacy PowerShell setup entrypoint must be removed");
+assert(pkg.files.includes("templates") && !pkg.files.includes("setup") && !pkg.files.includes("setup.ps1"), "npm files must package templates, not platform scripts");
+
+for (const token of ["hy-workflow setup", "hy-workflow unset", "--clients", "--yes", "--json", "--dry-run", "--shared", "--remove-global"]) {
+  assert(help.includes(token), `setup help should include ${token}`);
+}
+assert(MCP_DEFINITIONS["hy-workflow"].command === "hy-workflow" && MCP_DEFINITIONS["hy-workflow"].args.length === 0, "hy-workflow MCP should use the installed binary directly");
+assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener" && MCP_DEFINITIONS["docs-gardener"].args.join(" ") === "mcp", "docs-gardener MCP should use the installed binary directly");
+
+const template = read("templates/hy-workflow.yml");
+const workflow = read(".github/workflows/hy-workflow.yml");
+assert(template === workflow, "checked-in shared workflow must match the packaged template exactly");
+assert(!template.includes('"setup"') && !template.includes('"setup.ps1"'), "shared workflow must not reference removed installers");
+
+for (const file of ["README.md", "docs/setup.md"]) {
+  const content = read(file);
+  assert(content.includes(installCommand), `${file} should document npm installation`);
+  assert(content.includes("hy-workflow setup"), `${file} should document the setup TUI`);
+  assert(content.includes("hy-workflow unset"), `${file} should document reversible project removal`);
 }
 
-const readme = read("README.md");
-const setupDoc = read("docs/setup.md");
-const bootstrap = read("src/bootstrap.ts");
-const setupPs1 = read("setup.ps1");
-const setup = read("setup");
-const workflow = read(".github/workflows/hy-workflow.yml");
-
-assert(readme.includes(powershellCommand), "README should document the Windows PowerShell curl.exe setup command");
-assert(readme.includes(bashCommand), "README should document the macOS/Linux/Git Bash setup command");
-assert(!readme.includes("setup.ps1 | iex"), "README should not recommend setup.ps1 as the primary Windows setup path");
-
-assert(setupDoc.includes(powershellCommand), "docs/setup.md should document the Windows PowerShell curl.exe setup command");
-assert(setupDoc.includes(bashCommand), "docs/setup.md should document the bash setup command");
-assert(setupDoc.includes("PowerShell must use `curl.exe`"), "docs/setup.md should explain why curl.exe is required");
-
-assert(bootstrap.includes(`SETUP_COMMAND = "${bashCommand}"`), "bootstrap should expose the canonical bash setup command");
-assert(bootstrap.includes(`WINDOWS_SETUP_COMMAND = "${powershellCommand}"`), "bootstrap should expose the Windows PowerShell setup command");
-
-assert(setupPs1.includes(setupUrl), "setup.ps1 should download the canonical setup script");
-assert(setupPs1.includes("curl.exe"), "setup.ps1 should use curl.exe, not the PowerShell curl alias");
-assert(setupPs1.includes("bash"), "setup.ps1 should delegate execution to bash");
-assert(!setupPs1.includes("hy-harness"), "setup.ps1 should not call hy-harness");
-assert(!setupPs1.includes(".github/workflows/hy-workflow.yml"), "setup.ps1 should not embed bootstrap artifact generation");
-
-assert(setup.includes('"setup.ps1"'), "setup-generated workflow should include setup.ps1 in path filters");
-assert(workflow.includes('"setup.ps1"'), "checked-in workflow should include setup.ps1 in path filters");
-
-assert(setup.includes(workflowMcpCommand), "setup prompt should use the explicit HTTPS hy-workflow MCP package address");
-assert(setup.includes(gardenerMcpCommand), "setup prompt should use the explicit HTTPS docs-gardener MCP package address");
-assert(!setup.includes("github:voxServalG/hy-workflow-mcp#main"), "setup prompt should not use GitHub shorthand for hy-workflow");
-assert(!setup.includes("github:voxServalG/docs-gardener"), "setup prompt should not use GitHub shorthand for docs-gardener");
-
-console.log("setup-entrypoints: cross-platform setup entrypoints are consistent");
+console.log("setup-entrypoints: one Node CLI, direct MCP commands, and packaged template are consistent");

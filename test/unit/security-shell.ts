@@ -6,7 +6,7 @@ import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
 import { buildSuggestedCommand, checkConfig } from "../../src/config.js";
 import { checkCi, checkout, createBranch, createPr, isSafeGitRefName, mergePr, push } from "../../src/git.js";
-import { readState, writeState, type WorkflowState } from "../../src/state.js";
+import { readState, statePath, writeState, type WorkflowState } from "../../src/state.js";
 import { handleChain } from "../../src/tools/chain.js";
 
 function run(cmd: string, root: string): void {
@@ -53,6 +53,10 @@ assert(!isSafeGitRefName("-main"), "leading dash refs must be rejected");
 
 const originalCwd = cwd();
 const originalPath = process.env.PATH ?? "";
+const runtimeHome = mkdtempSync(join(tmpdir(), "hy-security-runtime-"));
+process.env.HY_WORKFLOW_CONFIG_HOME = join(runtimeHome, "config");
+process.env.HY_WORKFLOW_STATE_HOME = join(runtimeHome, "state");
+process.env.HY_WORKFLOW_CACHE_HOME = join(runtimeHome, "cache");
 const root = makeGitRoot("hy-security-shell-");
 const sentinel = join(root, "sentinel");
 const injectedBranch = `main;touch${"${IFS}"}${sentinel}`;
@@ -103,7 +107,7 @@ try {
   assert(chain.requires_user && chain.stop_here, `dangerous chain branch should stop, got ${JSON.stringify(chain)}`);
   assert(!existsSync(sentinel), "dangerous chain branch must not execute shell payload");
 
-  writeFileSync(join(root, ".git", "hy-workflow", "workflow.json"), JSON.stringify({ ...baseState("ci"), prNumber: `1;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
+  writeFileSync(statePath(), JSON.stringify({ ...baseState("ci"), prNumber: `1;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
   try {
     readState();
     throw new Error("invalid prNumber should fail state read");

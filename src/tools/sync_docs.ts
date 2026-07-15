@@ -14,9 +14,15 @@ import { buildImplementationManifest } from "../checks.js";
 import { ensureGraph, incrementalUpdate, detectBrokenLinks } from "../docs_graph.js";
 import { isDocumentPath, pathInsideDocs, resolveDocsDir } from "../docs_paths.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { readUnifiedConfig } from "../config.js";
 
 export function isSyncDocumentPath(file: string): boolean {
-  return file === "setup" || file === "README.md" || file === "AGENTS.md" || file.startsWith("docs/") || isDocumentPath(file);
+  return file === "README.md"
+    || file === "AGENTS.md"
+    || file === ".github/workflows/hy-workflow.yml"
+    || file.startsWith("templates/")
+    || file.startsWith("docs/")
+    || isDocumentPath(file);
 }
 
 export function allowedSyncDocumentPaths(plan: PlanDoc): string[] {
@@ -47,15 +53,8 @@ export function implementationDigest(root: string, plan: PlanDoc, manifest: Impl
 }
 
 function readDocsDir(root: string): string {
-  const configPath = path.join(root, "hy-workflow.json");
-  if (!fs.existsSync(configPath)) return "docs";
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    const docsDir = config?.project?.docsDir;
-    return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
-  } catch {
-    return "docs";
-  }
+  const docsDir = readUnifiedConfig(root)?.project?.docsDir;
+  return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
 }
 
 export async function handleSyncDocs(): Promise<ToolResult> {
@@ -135,7 +134,7 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   writeState(next);
 
   const displayBody: string[] = [
-    "after_edit audit is current. Synchronize only the declared documentation or setup prompt files, then run hy_verify.",
+    "after_edit audit is current. Synchronize only the declared documentation or shared template files, then run hy_verify.",
     allowedDocs.length ? `Allowed sync files: ${allowedDocs.join(", ")}` : "No documentation sync files were declared in plan.scope.",
   ];
   if (graphInfo.updated) {

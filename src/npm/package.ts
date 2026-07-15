@@ -4,10 +4,14 @@ import { execSync } from "node:child_process";
 
 export type PackageJson = {
   name?: string;
+  version?: string;
   main?: string;
   bin?: Record<string, string>;
   scripts?: Record<string, string>;
   files?: string[];
+  repository?: { type?: string; url?: string } | string;
+  publishConfig?: { access?: string };
+  engines?: { node?: string };
 };
 
 export function readPackageJson(root: string): PackageJson {
@@ -20,4 +24,3 @@ export function npmPackDryRun(root: string): string[] {
   const files = parsed?.[0]?.files ?? [];
   return files.map((file: { path: string }) => file.path).filter(Boolean).sort();
 }
-

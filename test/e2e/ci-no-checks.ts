@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { handleCi } from "../../src/tools/ci.js";
-import { readState, writeState, type WorkflowState } from "../../src/state.js";
+import { readState, statePath, writeState, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -24,6 +24,10 @@ function baseState(): WorkflowState {
 
 const originalCwd = cwd();
 const originalPath = process.env.PATH ?? "";
+const runtimeHome = mkdtempSync(join(tmpdir(), "hy-ci-runtime-"));
+process.env.HY_WORKFLOW_CONFIG_HOME = join(runtimeHome, "config");
+process.env.HY_WORKFLOW_STATE_HOME = join(runtimeHome, "state");
+process.env.HY_WORKFLOW_CACHE_HOME = join(runtimeHome, "cache");
 const root = mkdtempSync(join(tmpdir(), "hy-ci-no-checks-"));
 const bin = join(root, "bin");
 
@@ -56,7 +60,7 @@ try {
   }
 
   const sentinel = join(root, "ci-injection-sentinel");
-  writeFileSync(join(root, ".git", "hy-workflow", "workflow.json"), JSON.stringify({ ...baseState(), phase: "ci", prNumber: `123;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
+  writeFileSync(statePath(), JSON.stringify({ ...baseState(), phase: "ci", prNumber: `123;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
   try {
     await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
     throw new Error("invalid prNumber should fail before gh execution");

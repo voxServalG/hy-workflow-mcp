@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -7,6 +7,8 @@ import { handleApprove } from "../../src/tools/approve.js";
 import { handlePlan } from "../../src/tools/plan.js";
 import { handleReadDocs } from "../../src/tools/read_docs.js";
 import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { projectPaths } from "../../src/runtime/user-paths.js";
+import { useRuntimeHome } from "../helpers/runtime-home.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -49,6 +51,7 @@ function planState(): WorkflowState {
 }
 
 const originalCwd = cwd();
+useRuntimeHome("hy-docs-read-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-docs-read-"));
 
 try {
@@ -86,6 +89,9 @@ try {
   }
   if (!bsnap.traversalRoots || bsnap.traversalRoots.length === 0) {
     throw new Error(`before_plan snapshot should include traversalRoots, got ${JSON.stringify(bsnap)}`);
+  }
+  if (!existsSync(projectPaths(root).docsGraph) || existsSync(join(root, ".git", "hy-workflow", "docs-graph.json"))) {
+    throw new Error("before_plan should create DocsGraph only in the identity-scoped user cache");
   }
   const baselineFiles = bsnap.files.map((file: any) => file.path);
   if (!baselineFiles.includes("guides/README.md") || !baselineFiles.includes("AGENTS.md")) {

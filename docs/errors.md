@@ -58,3 +58,5 @@ Each returned failure has top-level `ok: false`, `phase`, `next`, and `error`. T
 - `trace_id`: distributed trace identifier.
 
 Agents should show `error.message`, add `error.hint` when present, route recovery from `error.type` and `error.subtype`, and include `error.code`, `error.console_url`, `error.request_id`, and `error.trace_id` in troubleshooting output. `permission_violations` and `missing_scopes` require explicit user or operator action; they should not be hidden inside prose.
+
+`setup_update_required` and `setup_artifacts_missing` refer to the user-local deployment selected by the canonical project identity. Recovery is to rerun `hy-workflow setup` from the project; it does not require committing bootstrap files to the repository.

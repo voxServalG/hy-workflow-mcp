@@ -1,6 +1,6 @@
 # Verify Pipeline
 
-`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。完整 lint（doclint, codelint, workflow-contract lint）由 GitHub Actions/setup workflow 承担。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。显式 shared 模式可由 GitHub Actions workflow 承担完整 lint。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 

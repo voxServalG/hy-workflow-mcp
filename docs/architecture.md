@@ -2,11 +2,11 @@
 
 ## Configuration Model
 
-`hy-workflow.json` is the single editable project config. The three older JSON files are runtime compatibility artifacts only: `codelint.json`, `doclint.json`, and `docs-gardener.json`.
+The effective config is identity-scoped in the OS user config directory by default. When a team explicitly enables shared mode, root `hy-workflow.json` becomes the editable shared source and takes precedence. The three older JSON files are runtime compatibility artifacts only: `codelint.json`, `doclint.json`, and `docs-gardener.json`.
 
 `project.baseBranch`, `project.codeExt`, `project.codeDirs`, and `project.docsDir` are shared config. `project.codeExt` accepts one extension string, a comma-separated extension string, or a string array. Known extensions are aligned with doclint comment-syntax coverage, and `.tksp` is supported explicitly. Tool-specific config stays scoped to its tool section, including `codelint.lintDirs`, `codelint.maxLines`, `doclint.maxLines`, and `docsGardener.catalogs`.
 
-Tracked setup artifacts include `.github/`, `AGENTS.md`, `.gitignore`, and `hy-workflow.json`. Local runtime, client, or compatibility artifacts include `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, `codelint.json`, `doclint.json`, `docs-gardener.json`, and runtime doc artifacts under `.git/hy-workflow/`.
+Default setup has no tracked project artifacts. Config, deployment, registry, workflow state, scope, and DocsGraph live under OS user config/state/cache roots. Explicit `--shared` may write only `hy-workflow.json` and `.github/workflows/hy-workflow.yml`. Legacy `.hy/`, client-project config, compatibility JSON, and `.git/hy-workflow/` are migration inputs, not default outputs.
 
 hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走带文档同步 gate 的闭环工作流。通过状态机锁定 Phase 转换、lint 校验、用户 approve gate 三层机制，确保每次代码/文档变更可审计。
 
@@ -18,7 +18,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
     │                              ┌───┬───┼───┬───┐               │
     │                              │   │       │   │               │
     ▼                              ▼   ▼       ▼   ▼               ▼
- MCP Client                  git.ts  checks.ts     ── exec ──►  .git/hy-workflow/workflow.json
+ MCP Client                  git.ts  checks.ts     ── state ─►  OS user state/projects/<id>/workflow.json
  (stdio transport)               │       │
                                  │       ├── compile (tsc)
                                  │       ├── scope check
@@ -44,7 +44,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
    └► tools/branch.ts → git.ts.createBranch() → transition(branch→edit)
 
 4. LLM hy_edit()
-   └► tools/edit.ts 锁定 scope 到 .git/hy-workflow/scope.json → transition(state, "edit")
+   └► tools/edit.ts 锁定 scope 到 OS user state/projects/<id>/scope.json → transition(state, "edit")
 
 5. LLM 编辑代码...
 
@@ -52,7 +52,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
    └► tools/read_docs.ts → 读取 docs 并绑定当前实现 diff digest
 
 7. LLM hy_sync_docs()
-   └► tools/sync_docs.ts → 确认文档同步 gate，限定 plan.scope 内文档或 setup prompt 文件
+   └► tools/sync_docs.ts → 确认文档同步 gate，限定 plan.scope 内文档或 shared template 文件
 
 8. LLM hy_verify()
    └► checks.ts.runAllChecks() → 全绿则 transition(edit→commit)
@@ -72,20 +72,20 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 关键设计决策
 
-- **状态文件**: `.git/hy-workflow/workflow.json` 持久化 Phase、PlanDoc、Approval、verifyHash，`.git/hy-workflow/scope.json` 锁定当前 scope；旧 `.hy/workflow.json` / `.hy/scope.json` 仅作为迁移来源或诊断对象
+- **状态文件**: OS 用户 state 下按 project id 持久化 Phase、PlanDoc、Approval、verifyHash 和 scope；旧 `.git/hy-workflow/`、`.hy/workflow.json`、`.hy/scope.json` 仅作为只读迁移来源，复制后不自动删除
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
-- **幂等 init**: `setup` 直接部署统一 CI workflow、`hy-workflow.json` 并写 setup stamp；MCP runtime 每 session 首次只读检查 stamp；`hy_init` 验证产物、写入 workflow rules 并维护本地忽略项，不在 MCP 内运行 setup 或启动交互式 TUI
+- **幂等 init**: setup TUI 在用户目录登记 deployment；MCP runtime 每次 dispatch 检查版本；`hy_init` 只验证 deployment/config 并推进外置状态，不写项目或 `.git`，也不在 MCP 内启动 TUI
 - **执行器边界**: 服务启动时探测本机 `git`、`gh` 与 gh 认证状态；commit/push/rebase 等仓库操作固定使用 git，PR/checks/merge 等 GitHub API 操作固定使用已认证 gh。项目没有内部 Git/GitHub 后端，能力不足时结构化失败而不是静默降级
-- **配置保护**: `setup` 从既有兼容 JSON preserve-first 合并到 `hy-workflow.json`；`hy_init` 只读检测明显不一致并返回 config 命令，不在 MCP 内改写用户配置
+- **配置保护**: setup 从既有共享或兼容 JSON preserve-first 合并到用户配置；共享模式才写 `hy-workflow.json`；`hy_init` 只读检测不一致
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 - **Promotion 例外**: 状态机闭环服务于普通开发改动合入 `baseBranch`；`baseBranch → releaseBranch`（如 dev → main）属于发布/晋级操作，不伪造 scope，也不硬套 `hy_branch`/`hy_commit`，必须在用户授权后通过 promotion PR 完成
-- **Artifact contract**: setup/hy_init 生成的 tracked project artifacts（`.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json`）应提交；local/runtime/client/compat artifacts（`.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、根目录兼容 JSON、setup stamp）不提交；setup 产生 tracked drift 时先做 artifact sync PR
+- **Artifact contract**: local mode setup/unset/hy_init 的 project diff 必须为空；shared mode 只允许模板 workflow 与 `hy-workflow.json`，其 drift 单独走 artifact sync PR；`dist/` 只进入 npm tarball，不进入 GitHub
 
 ## 配置文件
 
 | 文件 | 用途 |
 |------|------|
-| `hy-workflow.json` | 唯一人工维护配置源，包含 `project.baseBranch`、`project.codeExt`、`project.codeDirs`、`project.docsDir` 和工具私有段落 |
+| user config or shared `hy-workflow.json` | 有效配置源，包含 `project.baseBranch`、`project.codeExt`、`project.codeDirs`、`project.docsDir` 和工具私有段落 |
 | runtime `codelint.json` | 执行旧 codelint CLI 前由 `hy-workflow.json` 临时生成，执行后清理 |
 | runtime `doclint.json` | 执行旧 doclint CLI 前由 `hy-workflow.json` 临时生成，执行后清理 |
 | runtime `docs-gardener.json` | 需要旧 docs-gardener 配置格式时由 `hy-workflow.json` 派生，不作为项目源文件 |
@@ -93,7 +93,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 ## 构建与 CI
 
-`package.json` 提供 `tsc` 编译入口及 `prepare` 脚本用于 GitHub npx 安装时构建，`tsconfig.json` 配置 ES2022 + NodeNext 模块。`dist/` 是生成产物，不提交到仓库。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、contract lint、tests、doclint 和 codelint。Contract lint 位于 `src/contralint/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
+`package.json` 提供 `tsc` 编译入口，`tsconfig.json` 配置 ES2022 + NodeNext 模块。`dist/` 是生成产物，不提交到仓库；npm release job 只在临时 runner 中构建并直接发布 npm tarball，不上传 GitHub artifact。Registry 安装包已包含 `dist/`，没有 `prepare`、`install` 或 `postinstall` 编译。CI 由 `.github/workflows/hy-workflow.yml` 统一执行 build、contract lint、tests、doclint 和 codelint。Contract lint 位于 `src/contralint/`，用于守住 CLI、错误、输出、workflow state、Skill、artifact 和 npm packaging 契约。
 
 ## Related
 

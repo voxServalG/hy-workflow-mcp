@@ -104,7 +104,7 @@ function pathKind(path: string): "runtime" | "test" | "docs" | "config" | "artif
   if (path.startsWith("test/") || path.startsWith("tests/")) return "test";
   if (path.startsWith("docs/") || path === "README.md") return "docs";
   if (path.startsWith("dist/")) return "artifact";
-  if (path.startsWith(".github/") || path === "setup" || path === "setup.ps1" || path === "package.json" || path === "hy-workflow.json" || path === ".gitignore") return "config";
+  if (path.startsWith(".github/") || path.startsWith("templates/") || path.startsWith("src/setup/") || path === "src/setup-cli.ts" || path === "package.json" || path === "hy-workflow.json" || path === ".gitignore") return "config";
   return "other";
 }
 

@@ -1,47 +1,81 @@
-# Setup Artifact Contract
+# Setup and Unset
 
-`setup` is the one-command bootstrap for hy-workflow projects. It is a standalone bash script that deploys tracked project artifacts and writes a setup stamp. Windows PowerShell users run the same script through `curl.exe -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash`; macOS, Linux, Git Bash, and WSL shell users run `curl -fsSL https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/setup | bash`.
+## User flow
 
-PowerShell must use `curl.exe`, not `curl`, because Windows PowerShell 5.1 aliases `curl` to `Invoke-WebRequest` and does not understand `-fsSL`. The PowerShell command requires a Git for Windows `bash` on `PATH`; WSL users should run the bash command from inside the WSL shell.
+Install or update the two public npm packages, enter a Git project, and run the same command on Windows, macOS, or Linux:
+
+```bash
+npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
+hy-workflow setup
+```
+
+For mainland routing:
+
+```bash
+npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest --registry=https://registry.npmmirror.com
+hy-workflow setup
+```
+
+The Node TUI detects Codex, Claude Code, and OpenCode, shows the installed clients as a multiselect, and offers install/update or unset. Restart selected clients after setup, then call `hy_init`.
+
+## Default: local mode
+
+Local mode is the default and guarantees that setup, unset, and hy_init do not modify the project worktree or `.git`. Data is keyed by a stable project identity derived from canonical project root, Git common dir, and origin remote:
+
+| Data | Linux default | macOS default | Windows default |
+| --- | --- | --- | --- |
+| config/registry | `$XDG_CONFIG_HOME/hy-workflow` | `~/Library/Application Support/hy-workflow` | `%APPDATA%\hy-workflow` |
+| state/deployment | `$XDG_STATE_HOME/hy-workflow` | Application Support state subdir | `%LOCALAPPDATA%\hy-workflow\state` |
+| cache/DocsGraph | `$XDG_CACHE_HOME/hy-workflow` | `~/Library/Caches/hy-workflow` | `%LOCALAPPDATA%\hy-workflow\cache` |
+
+When XDG variables are absent, Linux uses `~/.config`, `~/.local/state`, and `~/.cache`. Tests and managed environments may override the roots with `HY_WORKFLOW_CONFIG_HOME`, `HY_WORKFLOW_STATE_HOME`, and `HY_WORKFLOW_CACHE_HOME`.
+
+MCP clients run installed bins directly:
+
+- `hy-workflow`: command `hy-workflow`, no arguments
+- `docs-gardener`: command `docs-gardener`, arguments `["mcp"]`
+
+Do not put `npx`, GitHub URLs, or SSH URLs in client startup configuration. Package download/update is an explicit npm HTTPS operation, never part of MCP startup.
+
+## Shared mode
+
+Choose shared mode in the TUI or pass `--shared` only when the team intentionally wants repository artifacts. It may write exactly:
+
+- `hy-workflow.json`
+- `.github/workflows/hy-workflow.yml`
+
+The workflow is copied from the template packaged in the npm tarball. Review and commit these files in a dedicated setup artifact PR. Default local mode never writes them.
+
+## Reversible unset
+
+```bash
+hy-workflow unset
+```
+
+Unset uses the same TUI and removes only the current project's owned config/state/cache and registry record. Global MCP entries are retained while other registered projects exist. On the final project, the user may explicitly request global removal; ownership snapshots ensure unrelated or subsequently edited client configuration is not deleted.
+
+Shared repository files are never silently removed by unset because they may be team-owned and committed. Remove them through an ordinary reviewed repository change if the team wants to retire shared mode.
+
+## Automation
+
+```bash
+hy-workflow setup --yes --clients codex,claude,opencode --json
+hy-workflow setup --yes --clients codex --dry-run --json
+hy-workflow unset --yes --clients all --remove-global --json
+```
+
+Non-interactive use requires both `--yes` and explicit `--clients`. `--dry-run` reports the candidate changes without writing. JSON mode emits one machine-readable result.
 
 ## Runtime prerequisites
 
-- `git` must be installed and on `PATH` for branch, commit, push, pull and rebase operations.
-- `gh` must be installed, on `PATH`, and authenticated with `gh auth login` for PR creation, CI status and merge operations.
-- `hy_status` reports the startup capability snapshot. Each operation rechecks its required CLI before execution.
-- There is no hidden internal Git or GitHub fallback. Missing capabilities fail closed with installation or login guidance.
+- Node.js 18 or newer and npm
+- `git` on PATH for project identity and repository operations
+- authenticated `gh` for PR creation, CI status, and merge operations
 
-## MCP package address contract
+`hy_status` reports Git/GitHub capability state. Missing capabilities fail closed with recovery guidance; there is no hidden Git or GitHub fallback.
 
-The setup prompt must tell agents to configure both MCP servers with explicit HTTPS Git package addresses:
+## Version migration
 
-- `npx -y --prefer-online git+https://github.com/voxServalG/hy-workflow-mcp.git#main`
-- `npx -y --prefer-online git+https://github.com/voxServalG/docs-gardener.git mcp`
+Every `hy_*` dispatch checks the user-local deployment version. Missing, unreadable, or outdated deployments return a structured refresh envelope with the npm update command and `hy-workflow setup`. Legacy `.git/hy-workflow` state and setup stamps may be read once for compatibility and copied to user storage, but are never automatically deleted.
 
-Do not use the `github:owner/repo` shorthand in the setup prompt. npm can resolve that shorthand to `git+ssh://git@github.com/...`, which makes MCP startup depend on GitHub SSH connectivity. The explicit `git+https` form keeps package retrieval on HTTPS.
-
-## Tracked artifacts deployed by setup
-
-- `.github/workflows/hy-workflow.yml` — single CI workflow
-- `hy-workflow.json` — unified project config
-- `.gitignore` — local artifact ignores
-- `.git/hy-workflow/setup.json` — setup stamp (not tracked)
-
-## CI workflow contract
-
-The generated GitHub Actions workflow runs:
-
-1. `npm ci`
-2. `npm run build` (via package CI runner)
-3. `npm run lint:contract` if defined (via package CI runner)
-4. `npm test` if defined (via package CI runner)
-5. doclint (always)
-6. codelint (always)
-
-Downstream projects that run `setup` get this complete CI pipeline.
-
-## Version
-
-`SETUP_VERSION` in `setup` and `src/bootstrap.ts` must match. When setup content changes, including either MCP package address, the version must be bumped so downstream projects are prompted to refresh and rerun the canonical HTTPS setup command.
-
-The MCP runtime checks the setup stamp before every `hy_*` tool dispatch, not only once per process. `hy_init` also verifies the setup stamp version after confirming required artifacts exist; a missing, unreadable, or outdated stamp returns the structured setup refresh envelope and does not proceed to config validation.
+The npm package contains compiled `dist/`, docs, the shared workflow template, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.

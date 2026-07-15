@@ -10,6 +10,7 @@ import { handleCommit } from "../../src/tools/commit.js";
 import { handleReset } from "../../src/tools/reset.js";
 import { handleStatus } from "../../src/tools/status.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
+import { useRuntimeHome } from "../helpers/runtime-home.js";
 
 function run(cmd: string, root: string): string {
   return execSync(cmd, { cwd: root, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -55,6 +56,7 @@ function assertErrorCode(error: unknown, code: string): void {
 }
 
 const originalCwd = cwd();
+const runtimeHome = useRuntimeHome("hy-state-safety-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-state-safety-"));
 
 try {
@@ -82,6 +84,8 @@ try {
     documentReads: { beforeApprove: null },
     syncDocs: { time: "old", planHash: "old", afterEditDigest: "old", implementationDigest: "old", allowedDocs: ["README.md"] },
   });
+  assert(statePath().startsWith(runtimeHome), `workflow state should live under isolated user state: ${statePath()}`);
+  assert(!existsSync(join(root, ".git", "hy-workflow", "workflow.json")), "writeState must not create project-local git state");
   await handleReset();
   const resetState = readState();
   assert(resetState.phase === "plan", "reset should return to plan");
