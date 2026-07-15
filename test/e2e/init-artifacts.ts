@@ -60,7 +60,10 @@ writeFileSync(legacyConfigPath, JSON.stringify({
 writeDeployment(legacyOnlyRoot, { setupVersion: SETUP_VERSION, mode: "local", clients: [] });
 assert(!harnessArtifactStatus(legacyOnlyRoot).ready, "legacy user config plus deployment must not bypass the required shared project config");
 ensureConfigDefaults(legacyOnlyRoot);
-assert(existsSync(join(legacyOnlyRoot, "hy-workflow.json")) && harnessArtifactStatus(legacyOnlyRoot).ready, "migrating legacy config into the project root should make setup ready");
+assert(existsSync(join(legacyOnlyRoot, "hy-workflow.json")), "legacy config migration should create the canonical root config");
+assert(!harnessArtifactStatus(legacyOnlyRoot).ready, "migrating config must not make a legacy local-mode deployment current");
+writeDeployment(legacyOnlyRoot, { setupVersion: SETUP_VERSION, mode: "shared", clients: [] });
+assert(harnessArtifactStatus(legacyOnlyRoot).ready, "rerunning setup with the single shared deployment should make the migrated project ready");
 
 const readyRoot = project("hy-init-ready-");
 ensureConfigDefaults(readyRoot);
@@ -78,6 +81,21 @@ try {
 }
 const after = git(readyRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
 assert(after === before, `hy_init must preserve exact git status; before=${before} after=${after}`);
+
+const incompleteRoot = project("hy-init-incomplete-");
+writeFileSync(join(incompleteRoot, "hy-workflow.json"), JSON.stringify({
+  project: { baseBranch: "main", docsDir: "docs" },
+}, null, 2) + "\n");
+writeDeployment(incompleteRoot, { setupVersion: SETUP_VERSION, mode: "shared", clients: [] });
+try {
+  process.chdir(incompleteRoot);
+  const result = await handleInit();
+  assert(result.configCheck?.ok === false, `hy_init should reject an incomplete root config: ${JSON.stringify(result)}`);
+  assert(result.configCheck?.issues?.some((issue: string) => issue.includes("project.codeExt is required at runtime")), "hy_init should expose the missing runtime field instead of accepting a normalized default");
+  assert(result.next === "init" && result.requires_user === true && result.stop_here === true, "invalid root config must keep hy_init stopped");
+} finally {
+  process.chdir(oldCwd);
+}
 
 const trackedRoot = project("hy-init-tracked-");
 mkdirSync(join(trackedRoot, ".hy"), { recursive: true });

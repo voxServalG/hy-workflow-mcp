@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
-import { projectPaths } from "./user-paths.js";
+import { requireRuntimeBaseBranch } from "../config.js";
 
 export class ProjectRootError extends Error {
   type = "config" as const;
@@ -46,47 +46,6 @@ export function currentGitBranch(root: string): string {
   }
 }
 
-const UNSAFE_REF_CHARS = /[\x00-\x20~^:?*\[\\;$`"'|&<>]/;
-
-function isSafeConfigRefName(value: string): boolean {
-  if (!value || value.length > 200 || value.trim() !== value) return false;
-  if (value.startsWith("-") || value.startsWith("/") || value.endsWith("/") || value.endsWith(".")) return false;
-  if (value.includes("..") || value.includes("//") || value.includes("@{")) return false;
-  if (UNSAFE_REF_CHARS.test(value)) return false;
-  if (!/^[A-Za-z0-9._/-]+$/.test(value)) return false;
-  return value.split("/").every(part => Boolean(part) && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
-}
-
-function checkedBaseBranch(value: unknown, source: string): string | null {
-  if (typeof value !== "string") return null;
-  if (isSafeConfigRefName(value)) return value;
-  throw {
-    type: "config",
-    subtype: "config_invalid",
-    code: "INVALID_BASE_BRANCH",
-    message: `${source} must be a safe Git branch name.`,
-    hint: "Use letters, numbers, dot, underscore, slash, and hyphen only; do not use shell metacharacters, whitespace, leading dash, '..', '@{', or .lock suffixes.",
-    detail: { value },
-  };
-}
-
 export function configuredBaseBranch(root: string): string {
-  try {
-    const sharedPath = path.join(root, "hy-workflow.json");
-    const unifiedPath = fs.existsSync(sharedPath) ? sharedPath : projectPaths(root).config;
-    if (fs.existsSync(unifiedPath)) {
-      const config = JSON.parse(fs.readFileSync(unifiedPath, "utf-8"));
-      const branch = checkedBaseBranch(config?.project?.baseBranch, `${unifiedPath} project.baseBranch`);
-      if (branch) return branch;
-    }
-    const legacyPath = path.join(root, "codelint.json");
-    if (fs.existsSync(legacyPath)) {
-      const config = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
-      const branch = checkedBaseBranch(config.baseBranch, "codelint.json baseBranch");
-      if (branch) return branch;
-    }
-  } catch (e: any) {
-    if (e?.type === "config") throw e;
-  }
-  return "dev";
+  return requireRuntimeBaseBranch(root);
 }

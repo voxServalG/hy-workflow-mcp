@@ -51,8 +51,12 @@ try {
   run("git config user.name test", root);
   run("git config user.email test@example.com", root);
   writeFileSync(join(root, "README.md"), "initial\n");
-  writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "main", codeExt: ".ts" }, null, 2));
-  run("git add README.md codelint.json", root);
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
+    codelint: { lintDirs: ["src"] },
+  }, null, 2) + "\n");
+  writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "dev", codeExt: ".py" }, null, 2));
+  run("git add README.md hy-workflow.json codelint.json", root);
   run("git -c user.name=test -c user.email=test@example.com commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
 

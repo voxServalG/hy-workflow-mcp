@@ -1,10 +1,10 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, WorkflowState } from "./state.js";
 import { getBaseBranch } from "./state.js";
 import { PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
-import { readUnifiedConfig, withRuntimeCompatConfigs } from "./config.js";
+import { requireRuntimeConfig, withRuntimeCompatConfigs } from "./config.js";
 import { runContractLint } from "./contralint/run.js";
 
 // ── Result ───────────────────────────────────────────────────
@@ -27,9 +27,11 @@ interface ExecResult {
   status: number | null;
 }
 
+const CHECK_COMMAND_TIMEOUT_MS = 300_000;
+
 function execOr(cmd: string, cwd?: string): ExecResult {
   try {
-    const stdout = execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe","pipe","pipe"], timeout: 120_000 });
+    const stdout = execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe","pipe","pipe"], timeout: CHECK_COMMAND_TIMEOUT_MS });
     return { ok: true, stdout: stdout.trim(), stderr: "", status: 0 };
   } catch (e: any) {
     const status = typeof e.status === "number" ? e.status : null;
@@ -179,19 +181,12 @@ function stringArray(value: unknown): string[] {
 }
 
 function readCompileConfig(root: string): CompileConfig {
-  const configPath = path.join(root, "codelint.json");
-  const legacy = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf-8")) : null;
-  const unified = readUnifiedConfig(root);
-  const project = unified && typeof unified.project === "object" ? unified.project as Record<string, unknown> : {};
-  const codelint = unified && typeof unified.codelint === "object" ? unified.codelint as Record<string, unknown> : {};
-  const exts = normalizeCodeExt(project.codeExt ?? legacy?.codeExt);
-  const codeDirs = unique([
-    ...stringArray(project.codeDirs),
-    ...stringArray(codelint.lintDirs),
-    ...stringArray(legacy?.codeDirs),
-    ...stringArray(legacy?.lintDirs),
-  ]);
-  return { exts, codeDirs: codeDirs.length ? codeDirs : ["src"] };
+  const unified = requireRuntimeConfig(root);
+  const project = unified.project as Record<string, unknown>;
+  return {
+    exts: normalizeCodeExt(project.codeExt),
+    codeDirs: unique(stringArray(project.codeDirs)),
+  };
 }
 
 function hasTsCompileConfig(root: string): boolean {
@@ -436,9 +431,10 @@ export function runScopeCheck(root: string, plan: PlanDoc, manifest?: Implementa
 
   const missing = declared.filter(f => !actual.includes(f));
   if (missing.length) {
+    const amendedScopeWouldRemain = declared.length > missing.length || extra.some(file => isAmendableScopeFile(file, plan));
     res.push({
       ...fail("scope", "scope", `Declared but not changed: ${missing.join(", ")}`, true),
-      classification: "hard_fail",
+      classification: amendedScopeWouldRemain ? "amend_required" : "hard_fail",
     });
   }
   return res;
@@ -478,6 +474,72 @@ function isDependencyManifest(file: string): boolean {
   return DEPENDENCY_MANIFEST_FILES.has(normalized) || (normalized.startsWith("requirements/") && normalized.endsWith(".txt"));
 }
 
+const NPM_DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "peerDependenciesMeta",
+  "optionalDependencies",
+  "bundleDependencies",
+  "bundledDependencies",
+] as const;
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalJson).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, nested]) => [key, canonicalJson(nested)]));
+}
+
+function npmDependencyFields(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(NPM_DEPENDENCY_FIELDS
+    .filter(field => record[field] !== undefined)
+    .map(field => [field, canonicalJson(record[field])]));
+}
+
+function parseJsonFile(content: string | null, label: string): unknown {
+  if (content === null) return null;
+  try {
+    return JSON.parse(content);
+  } catch (caught: any) {
+    throw new Error(`${label} is not valid JSON: ${caught?.message ?? String(caught)}`);
+  }
+}
+
+function readBaseFile(root: string, baseRef: string, file: string): string | null {
+  try {
+    return execFileSync("git", ["show", `${baseRef}:${file}`], { cwd: root, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 });
+  } catch {
+    return null;
+  }
+}
+
+function npmDependencyProjection(packageJson: unknown, packageLock: unknown): unknown {
+  const lockRecord = packageLock && typeof packageLock === "object" && !Array.isArray(packageLock)
+    ? packageLock as Record<string, unknown>
+    : {};
+  const packages = lockRecord.packages && typeof lockRecord.packages === "object" && !Array.isArray(lockRecord.packages)
+    ? lockRecord.packages as Record<string, unknown>
+    : null;
+  const lockRoot = packages?.[""] ?? (packages ? null : lockRecord.dependencies ?? null);
+  return canonicalJson({ package: npmDependencyFields(packageJson), lockRoot: npmDependencyFields(lockRoot) });
+}
+
+function npmDependencyDeclarationsChanged(root: string): boolean {
+  const baseRef = `origin/${getBaseBranch(root)}`;
+  execFileSync("git", ["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: root, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 });
+  const currentPackage = parseJsonFile(fs.existsSync(path.join(root, "package.json")) ? fs.readFileSync(path.join(root, "package.json"), "utf-8") : null, "package.json");
+  const currentLock = parseJsonFile(fs.existsSync(path.join(root, "package-lock.json")) ? fs.readFileSync(path.join(root, "package-lock.json"), "utf-8") : null, "package-lock.json");
+  const basePackage = parseJsonFile(readBaseFile(root, baseRef, "package.json"), `${baseRef}:package.json`);
+  const baseLock = parseJsonFile(readBaseFile(root, baseRef, "package-lock.json"), `${baseRef}:package-lock.json`);
+  return JSON.stringify(npmDependencyProjection(currentPackage, currentLock)) !== JSON.stringify(npmDependencyProjection(basePackage, baseLock));
+}
+
 export function runBoundaryCheck(root: string, plan: PlanDoc, manifest?: ImplementationManifest, manifestError?: string): CheckResult[] {
   const res: CheckResult[] = [];
 
@@ -503,9 +565,17 @@ export function runBoundaryCheck(root: string, plan: PlanDoc, manifest?: Impleme
       res.push(fail("no_new_external", "boundary", `Cannot verify dependency manifests: ${boundaryManifestError}`));
     } else {
       const changedDeps = (boundaryManifest?.changed ?? []).filter(isDependencyManifest);
-      res.push(changedDeps.length
-        ? fail("no_new_external", "boundary", `Dependency manifest changed: ${changedDeps.join(", ")}`)
-        : ok("no_new_external", "boundary", "No dependency manifest changes"));
+      const nonNpmChanges = changedDeps.filter(file => file !== "package.json" && file !== "package-lock.json");
+      try {
+        const npmDeclarationsChanged = changedDeps.some(file => file === "package.json" || file === "package-lock.json")
+          && npmDependencyDeclarationsChanged(root);
+        const dependencyChanges = [...nonNpmChanges, ...(npmDeclarationsChanged ? ["package.json"] : [])];
+        res.push(dependencyChanges.length
+          ? fail("no_new_external", "boundary", `Dependency declarations changed: ${dependencyChanges.join(", ")}`)
+          : ok("no_new_external", "boundary", "No external dependency declaration changes"));
+      } catch (caught: any) {
+        res.push(fail("no_new_external", "boundary", `Cannot verify dependency manifests: ${caught?.message ?? String(caught)}`));
+      }
     }
   }
 

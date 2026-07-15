@@ -62,7 +62,10 @@ try {
   mkdirSync(join(root, "guides"), { recursive: true });
   writeFileSync(join(root, "src", "server.ts"), "export const server = true;\n");
   writeFileSync(join(root, "AGENTS.md"), "# Agent Instructions\n");
-  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { docsDir: "guides" } }, null, 2) + "\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "guides" },
+    codelint: { lintDirs: ["src"] },
+  }, null, 2) + "\n");
   writeFileSync(join(root, "guides", "README.md"), "# Guide README\n");
   writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   run("git add .", root);

@@ -22,7 +22,7 @@ import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { resolveDocsDir } from "../docs_paths.js";
-import { readUnifiedConfig } from "../config.js";
+import { requireRuntimeConfig } from "../config.js";
 
 function sha256(value: string): string {
   const hash = createHash("sha256");
@@ -35,8 +35,13 @@ function shortHash(value: string): string {
 }
 
 function readDocsDir(root: string): string {
-  const docsDir = readUnifiedConfig(root)?.project?.docsDir;
-  return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
+  return requireRuntimeConfig(root).project.docsDir as string;
+}
+
+function documentReadPhase(stage: DocumentReadStage): "plan" | "approve" | "edit" {
+  if (stage === "before_plan") return "plan";
+  if (stage === "before_approve") return "approve";
+  return "edit";
 }
 
 function buildFindings(
@@ -83,10 +88,22 @@ function buildSnapshot(
   planHash: string | null
 ): DocumentReadSnapshot | ToolResult {
   const root = projectRoot();
-  const configuredDocsDir = readDocsDir(root);
+  const nextPhase = documentReadPhase(stage);
+  let configuredDocsDir: string;
+  try {
+    configuredDocsDir = readDocsDir(root);
+  } catch (error) {
+    return toolResult(nextPhase, {
+      error,
+      hint: "Run hy-workflow setup in the project root, then retry hy_read_docs.",
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+    });
+  }
   const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
   if (!resolvedDocsDir.ok) {
-    return toolResult(stage === "before_plan" ? "plan" : "approve", {
+    return toolResult(nextPhase, {
       error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
       hint: "Update hy-workflow.json project.docsDir to a project-relative directory inside the repository.",
       allowedTools: ["hy_status"],
@@ -95,7 +112,7 @@ function buildSnapshot(
   const { docsDir, docsRoot } = resolvedDocsDir;
 
   if (!fs.existsSync(docsRoot) || !fs.statSync(docsRoot).isDirectory()) {
-    return toolResult(stage === "before_plan" ? "plan" : "approve", {
+    return toolResult(nextPhase, {
       error: `Configured docsDir does not exist or is not a directory: ${docsDir}`,
       hint: "Create the configured docs directory or update hy-workflow.json project.docsDir before continuing.",
       allowedTools: ["hy_status"],

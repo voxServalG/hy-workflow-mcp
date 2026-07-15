@@ -62,6 +62,26 @@ type ConfigArgs = {
 export const UNIFIED_CONFIG_FILE = "hy-workflow.json";
 const COMPAT_CONFIG_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"];
 
+export class RuntimeConfigError extends Error {
+  readonly type = "config" as const;
+  readonly subtype = "config_invalid" as const;
+  readonly code: "ROOT_CONFIG_REQUIRED" | "ROOT_CONFIG_INVALID";
+  readonly hint = "Run hy-workflow setup in the project root, or repair hy-workflow.json with hy-workflow config --apply --json.";
+  readonly retryable = false;
+  readonly detail: { source: string; issues: string[] };
+
+  constructor(root: string, issues: string[], missing: boolean) {
+    const source = path.join(root, UNIFIED_CONFIG_FILE);
+    super(missing
+      ? `Runtime project config is required at ${source}.`
+      : `Runtime project config is invalid at ${source}: ${issues.join("; ")}`);
+    this.name = "RuntimeConfigError";
+    Object.defineProperty(this, "message", { enumerable: true, configurable: true, writable: true, value: this.message });
+    this.code = missing ? "ROOT_CONFIG_REQUIRED" : "ROOT_CONFIG_INVALID";
+    this.detail = { source, issues };
+  }
+}
+
 function exists(root: string, rel: string): boolean {
   return fs.existsSync(path.join(root, rel));
 }
@@ -385,13 +405,70 @@ export function ensureConfigDefaults(root: string, options: { dryRun?: boolean }
   return applyConfig(root, suggestion, { preserveExisting: true, dryRun: options.dryRun ?? false, mode: "shared" });
 }
 
-export function readUnifiedConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject | null {
+function runtimeRequiredFieldIssues(raw: JsonObject): string[] {
+  const issues: string[] = [];
+  const project = asObject(raw.project);
+  const codelint = asObject(raw.codelint);
+  const requiredProjectFields = ["baseBranch", "codeExt", "codeDirs", "docsDir"];
+
+  for (const field of requiredProjectFields) {
+    if (!hasOwn(project, field)) issues.push(`${UNIFIED_CONFIG_FILE} project.${field} is required at runtime`);
+  }
+  if (!hasOwn(codelint, "lintDirs")) issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs is required at runtime`);
+
+  if (Array.isArray(project.codeDirs) && project.codeDirs.length === 0) {
+    issues.push(`${UNIFIED_CONFIG_FILE} project.codeDirs must not be empty at runtime`);
+  }
+  if (Array.isArray(codelint.lintDirs) && codelint.lintDirs.length === 0) {
+    issues.push(`${UNIFIED_CONFIG_FILE} codelint.lintDirs must not be empty at runtime`);
+  }
+  return issues;
+}
+
+function inspectRuntimeConfig(root: string, suggestion: ConfigSuggestion): { config: JsonObject | null; issues: string[]; missing: boolean } {
   const source = path.join(root, UNIFIED_CONFIG_FILE);
   const unifiedRead = readJsonPath(source, UNIFIED_CONFIG_FILE);
-  if (!unifiedRead.value) return null;
+  if (!unifiedRead.value) {
+    const missing = !fs.existsSync(source);
+    return {
+      config: null,
+      issues: [unifiedRead.issue ?? `Missing project config: ${source}`],
+      missing,
+    };
+  }
   const unified = normalizedUnified(unifiedRead.value, suggestion);
-  if (validateUnifiedConfig(root, unifiedRead.value, unified, { checkExists: false }).length) return null;
-  return unified;
+  const issues = [
+    ...validateUnifiedConfig(root, unifiedRead.value, unified, { checkExists: false }),
+    ...runtimeRequiredFieldIssues(unifiedRead.value),
+  ];
+  return { config: issues.length ? null : unified, issues: [...new Set(issues)], missing: false };
+}
+
+export function readUnifiedConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject | null {
+  return inspectRuntimeConfig(root, suggestion).config;
+}
+
+export function requireRuntimeBaseBranch(root: string): string {
+  const source = path.join(root, UNIFIED_CONFIG_FILE);
+  const unifiedRead = readJsonPath(source, UNIFIED_CONFIG_FILE);
+  if (!unifiedRead.value) {
+    throw new RuntimeConfigError(root, [unifiedRead.issue ?? `Missing project config: ${source}`], !fs.existsSync(source));
+  }
+  const projectValue = unifiedRead.value.project;
+  const project = projectValue && typeof projectValue === "object" && !Array.isArray(projectValue) ? projectValue as JsonObject : null;
+  const issues: string[] = [];
+  if (!project) issues.push(`${UNIFIED_CONFIG_FILE} project must be an object; got ${typeName(projectValue)}`);
+  else if (!hasOwn(project, "baseBranch")) issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch is required at runtime`);
+  else if (typeof project.baseBranch !== "string") issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch must be a string; got ${typeName(project.baseBranch)}`);
+  else if (!isSafeConfigRefName(project.baseBranch)) issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch is not a safe Git branch name: ${project.baseBranch}`);
+  if (issues.length) throw new RuntimeConfigError(root, issues, false);
+  return project!.baseBranch as string;
+}
+
+export function requireRuntimeConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject {
+  const inspected = inspectRuntimeConfig(root, suggestion);
+  if (!inspected.config) throw new RuntimeConfigError(root, inspected.issues, inspected.missing);
+  return inspected.config;
 }
 
 type CompatSnapshot = {
@@ -403,35 +480,51 @@ type CompatSnapshot = {
 
 export function withRuntimeCompatConfigs<T>(root: string, run: () => T): T {
   const suggestion = defaultSuggestion(root);
-  const unified = readUnifiedConfig(root, suggestion);
+  const unified = requireRuntimeConfig(root, suggestion);
   const snapshots: CompatSnapshot[] = [];
-  if (unified) {
-    for (const file of COMPAT_CONFIG_FILES) {
-      const filePath = path.join(root, file);
-      const existed = fs.existsSync(filePath);
-      snapshots.push({
-        filePath,
-        existed,
-        text: existed ? fs.readFileSync(filePath, "utf-8") : null,
-        value: readJsonFile(root, file).value,
-      });
-    }
-    const existing = Object.fromEntries(COMPAT_CONFIG_FILES.map((file, index) => [file, snapshots[index].value]));
-    const configs = compatConfigs(existing, unified);
+  for (const file of COMPAT_CONFIG_FILES) {
+    const filePath = path.join(root, file);
+    const existed = fs.existsSync(filePath);
+    snapshots.push({
+      filePath,
+      existed,
+      text: existed ? fs.readFileSync(filePath, "utf-8") : null,
+      value: readJsonFile(root, file).value,
+    });
+  }
+  const existing = Object.fromEntries(COMPAT_CONFIG_FILES.map((file, index) => [file, snapshots[index].value]));
+  const configs = compatConfigs(existing, unified);
+  let operationFailed = false;
+  let operationError: unknown;
+  let result!: T;
+  try {
     for (const [file, value] of Object.entries(configs)) {
       fs.writeFileSync(path.join(root, file), JSON.stringify(value, null, 2) + "\n", "utf-8");
     }
+    result = run();
+  } catch (caught) {
+    operationFailed = true;
+    operationError = caught;
   }
-  try {
-    return run();
-  } finally {
-    for (const snapshot of snapshots) {
-      try {
-        if (snapshot.existed && snapshot.text !== null) fs.writeFileSync(snapshot.filePath, snapshot.text, "utf-8");
-        else fs.unlinkSync(snapshot.filePath);
-      } catch {}
+
+  const restoreErrors: unknown[] = [];
+  for (const snapshot of [...snapshots].reverse()) {
+    try {
+      if (snapshot.existed && snapshot.text !== null) fs.writeFileSync(snapshot.filePath, snapshot.text, "utf-8");
+      else fs.rmSync(snapshot.filePath, { force: true });
+    } catch (caught) {
+      restoreErrors.push(caught);
     }
   }
+  if (restoreErrors.length) {
+    if (operationFailed) {
+      throw new AggregateError([operationError, ...restoreErrors], "Runtime compatibility config operation and restoration failed.");
+    }
+    if (restoreErrors.length === 1) throw restoreErrors[0];
+    throw new AggregateError(restoreErrors, "Runtime compatibility config restoration failed.");
+  }
+  if (operationFailed) throw operationError;
+  return result;
 }
 
 function preservedKeys(before: JsonObject | null, after: JsonObject): string[] {
@@ -649,7 +742,7 @@ function migrationInput(root: string): JsonObject | null {
 }
 
 function buildDocsRecoveryCommand(): string {
-  return ["hy-workflow config", "--apply", "--json", "--docs-dir", quoteArg("<existing-docs-dir>")].join(" ");
+  return ["hy-workflow config", "--apply", "--json", "--docs-dir", "existing-docs-dir"].join(" ");
 }
 
 function buildMigrationCommand(): string {
@@ -665,9 +758,10 @@ function configResult(root: string, suggestion: ConfigSuggestion, issues: string
     : typeof existingDocsDir === "string" && directoryExists(root, existingDocsDir) ? existingDocsDir : "";
   const recoverySuggestion = { ...suggestion, docsDir: recoveryDocsDir };
   const docsIssue = issues.some(issue => issue.includes("project.docsDir"));
+  const missingRuntimeField = issues.some(issue => issue.endsWith(" is required at runtime"));
   const suggestedCommand = docsIssue && existing
     ? buildDocsRecoveryCommand()
-    : existing && !fs.existsSync(path.join(root, UNIFIED_CONFIG_FILE))
+    : existing && (!fs.existsSync(path.join(root, UNIFIED_CONFIG_FILE)) || missingRuntimeField)
       ? buildMigrationCommand()
     : buildSuggestedCommand(recoverySuggestion, ambiguous);
   const ok = issues.length === 0 && !ambiguous;
@@ -729,7 +823,10 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const projectConfig = asObject(unified.project);
   const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
 
-  if (unifiedRaw) issues.push(...validateUnifiedConfig(root, unifiedRaw, unified));
+  if (unifiedRaw) {
+    issues.push(...validateUnifiedConfig(root, unifiedRaw, unified));
+    issues.push(...runtimeRequiredFieldIssues(unifiedRaw));
+  }
 
   drift.push(...compareCompat("codelint.json", codelint, expectedCompat["codelint.json"], ["lintDirs", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
   drift.push(...compareCompat("doclint.json", doclint, expectedCompat["doclint.json"], ["docsDir", "codeDirs", "codeExt", "baseBranch", "maxLines"]));
@@ -745,22 +842,23 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   return { ...configResult(root, suggestion, [...new Set(issues)], drift, ambiguous), source, candidate: unified };
 }
 
-function quoteArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+function portableCommandArg(value: string, label: string): string {
+  if (value && !value.startsWith("-") && /^[A-Za-z0-9._/,-]+$/.test(value)) return value;
+  return `INVALID_${label.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
 }
 
 export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
   const mode = !suggestion.docsDir ? "--apply" : needsExplicit ? "--dry-run" : "--apply-suggested";
-  const docsDir = suggestion.docsDir || "<existing-docs-dir>";
+  const docsDir = suggestion.docsDir || "existing-docs-dir";
   return [
     "hy-workflow config",
     mode,
     "--json",
-    "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
-    "--code-dirs", quoteArg(suggestion.codeDirs.join(",")),
-    "--lint-dirs", quoteArg(suggestion.lintDirs.join(",")),
-    "--docs-dir", quoteArg(docsDir),
-    "--base-branch", quoteArg(suggestion.baseBranch),
+    "--code-ext", portableCommandArg(formatCodeExt(suggestion.codeExt), "code_ext"),
+    "--code-dirs", portableCommandArg(suggestion.codeDirs.join(","), "code_dirs"),
+    "--lint-dirs", portableCommandArg(suggestion.lintDirs.join(","), "lint_dirs"),
+    "--docs-dir", portableCommandArg(docsDir, "docs_dir"),
+    "--base-branch", portableCommandArg(suggestion.baseBranch, "base_branch"),
   ].join(" ");
 }
 

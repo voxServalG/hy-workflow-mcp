@@ -3,8 +3,9 @@ import * as path from "node:path";
 import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
 import { projectPaths } from "./runtime/user-paths.js";
+import { readDeployment, type DeploymentManifest } from "./runtime/deployment.js";
 
-export const SETUP_VERSION = "2026.07.14.3";
+export const SETUP_VERSION = "2026.07.14.4";
 export const SETUP_STAMP = path.join(".git", "hy-workflow", "setup.json");
 export const LEGACY_SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
 export const INSTALL_COMMAND = "npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest";
@@ -33,23 +34,41 @@ export function setupStampPath(root = projectRoot()): string {
 }
 
 export function readSetupStamp(root = projectRoot()): SetupStamp | null {
-  const filePath = setupStampPath(root);
-  const gitLegacyPath = path.join(root, SETUP_STAMP);
-  const legacyPath = path.join(root, LEGACY_SETUP_STAMP);
-  const target = [filePath, gitLegacyPath, legacyPath].find(candidate => fs.existsSync(candidate));
-  if (!target) return null;
-  return JSON.parse(fs.readFileSync(target, "utf-8"));
+  const deployment = readDeployment(root);
+  if (!deployment || !validDeployment(root, deployment)) return null;
+  return deployment;
+}
+
+function validDeployment(root: string, deployment: DeploymentManifest): boolean {
+  const expected = projectPaths(root).identity;
+  const identity = deployment.identity;
+  return deployment.schemaVersion === "2"
+    && typeof deployment.setupVersion === "string"
+    && typeof deployment.createdAt === "string"
+    && typeof deployment.updatedAt === "string"
+    && deployment.mode === "shared"
+    && Array.isArray(deployment.clients)
+    && deployment.clients.every(client => client === "codex" || client === "claude" || client === "opencode")
+    && Array.isArray(deployment.projectFiles)
+    && deployment.projectFiles.every(file => typeof file === "string")
+    && Boolean(identity)
+    && identity.id === expected.id
+    && identity.root === expected.root
+    && identity.gitCommonDir === expected.gitCommonDir
+    && identity.remote === expected.remote;
 }
 
 export function checkSetupStamp(root = projectRoot()): SetupCheck {
   const stampPath = setupStampPath(root);
+  if (!fs.existsSync(stampPath)) {
+    return { status: "missing_stamp", currentVersion: null, latestVersion: SETUP_VERSION, stampPath };
+  }
   try {
     const stamp = readSetupStamp(root);
     if (!stamp?.setupVersion) {
-      return { status: "missing_stamp", currentVersion: null, latestVersion: SETUP_VERSION, stampPath };
+      return { status: "unreadable", currentVersion: null, latestVersion: SETUP_VERSION, stampPath };
     }
-    const legacyCompatible = !fs.existsSync(stampPath) && stamp.setupVersion === "2026.07.14.2";
-    if (stamp.setupVersion !== SETUP_VERSION && !legacyCompatible) {
+    if (stamp.setupVersion !== SETUP_VERSION) {
       return { status: "outdated", currentVersion: stamp.setupVersion, latestVersion: SETUP_VERSION, stampPath };
     }
     return { status: "current", currentVersion: stamp.setupVersion, latestVersion: SETUP_VERSION, stampPath };

@@ -42,7 +42,7 @@ MCP clients run installed bins directly:
 
 Do not put `npx`, GitHub URLs, or SSH URLs in client startup configuration. Package download/update is an explicit npm HTTPS operation, never part of MCP startup.
 
-The workflow is copied from the template packaged in the npm tarball. Root `hy-workflow.json` is the canonical project configuration. Legacy user-local config and deployment manifests with a `mode` field are read-only migration inputs: setup may use them to preserve existing values, but does not restore a mode choice, rewrite them as the project source, or delete them automatically.
+The workflow is copied from the template packaged in the npm tarball. Root `hy-workflow.json` is the canonical project configuration. MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input. Runtime fields `project.baseBranch`, `project.codeExt`, `project.codeDirs`, `project.docsDir`, and `codelint.lintDirs` must be explicitly present. Legacy deployment manifests with a `mode` field are also read-only migration inputs. These migration paths may preserve existing values, but do not restore a mode choice, rewrite legacy inputs as the project source, or delete them automatically.
 
 Setup fails closed when it cannot find an existing `docs`, `documentation`, or `doc` directory. It does not silently use the repository root or create a third project artifact. First create the intended documentation directory or select another existing project-relative directory, then confirm it explicitly and rerun setup:
 
@@ -75,7 +75,7 @@ Non-interactive use requires both `--yes` and explicit `--clients`. `--dry-run` 
 
 ## CI enforcement
 
-The generated workflow must run doclint and codelint on every relevant pull request and push. It materializes `doclint.json`, `codelint.json`, and `docs-gardener.json` only while compatibility CLIs run, then restores the project state; these files must not be committed. `hy_ci` fails closed when GitHub reports no checks or only skipped/neutral checks. A repository administrator must separately make the workflow's Verify check required in a GitHub ruleset or branch protection rule; setup reports this responsibility but does not change repository administration settings.
+The generated workflow must run doclint and codelint on every relevant pull request and push. Before running those CLIs, the lint step snapshots existing `doclint.json`, `codelint.json`, and `docs-gardener.json`, materializes temporary configs from `hy-workflow.json`, and registers an EXIT trap that attempts to restore the snapshots or remove generated files when the step ends. Lint or materialization failures fail the step. These compatibility files must not be committed. `hy_ci` fails closed when GitHub reports no checks or only skipped/neutral checks. A repository administrator must separately make the workflow's Verify check required in a GitHub ruleset or branch protection rule; setup reports this responsibility but does not change repository administration settings.
 
 ## Runtime prerequisites
 
@@ -87,6 +87,6 @@ The generated workflow must run doclint and codelint on every relevant pull requ
 
 ## Version migration
 
-Every `hy_*` dispatch checks the external deployment version. Missing, unreadable, or outdated deployments return a structured refresh envelope with the npm update command and `hy-workflow setup`. Legacy user config, deployment manifests, `.git/hy-workflow` state, and setup stamps are read only for compatibility or one-way value migration and are never automatically deleted or treated as a second active mode.
+Every `hy_*` dispatch checks the external deployment version. Missing, unreadable, or outdated deployments return a structured refresh envelope with the npm update command and `hy-workflow setup`. Only that external deployment can satisfy the gate: `.git/hy-workflow/setup.json` or `.hy/hy-workflow-setup.json` remains legacy input even when its version equals the current setup version. Legacy user config, deployment manifests, `.git/hy-workflow` state, and setup stamps are never automatically deleted or treated as a second active mode.
 
 The npm package contains compiled `dist/`, docs, the shared workflow template, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.

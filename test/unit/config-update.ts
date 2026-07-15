@@ -1,4 +1,5 @@
-import * as fs from "node:fs";
+import fsDefault, * as fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildSuggestedCommand, checkConfig, ensureConfigDefaults, readUnifiedConfig, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
@@ -114,7 +115,7 @@ fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ code
 const mismatch = checkConfig(mismatchRoot);
 assert(!mismatch.ok, "missing unified config should need confirmation");
 assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
-assert(mismatch.suggestedCommand.includes("--code-ext '.py'"), "suggested command should include detected Python ext with shell quoting");
+assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include the detected Python extension in a platform-neutral form");
 assert(mismatch.issues.some(issue => issue.startsWith("Missing project config:")), "missing project config should be reported");
 const mismatchCli = runConfigCli(["--check", "--json"], mismatchRoot);
 assert(mismatchCli.exitCode === 1, "config CLI should exit nonzero when --check emits ok false");
@@ -128,9 +129,10 @@ fs.writeFileSync(path.join(unsafeRoot, "hy-workflow.json"), JSON.stringify({
 const unsafe = checkConfig(unsafeRoot);
 assert(!unsafe.ok, "unsafe baseBranch should fail config check");
 assert(unsafe.issues.some(issue => issue.includes("project.baseBranch is not a safe Git branch name")), "unsafe baseBranch should be reported");
-const quoted = buildSuggestedCommand({ codeExt: ".py", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
-assert(quoted.includes("--code-dirs 'src;touch${IFS}/tmp/x'"), "suggested command should quote unsafe-looking code dirs");
-assert(quoted.includes("--base-branch 'dev;touch${IFS}/tmp/x'"), "suggested command should quote unsafe-looking base branch");
+const portable = buildSuggestedCommand({ codeExt: ".py", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
+assert(portable.includes("--code-dirs INVALID_CODE_DIRS"), `unsafe code dirs must be replaced instead of shell-quoted: ${portable}`);
+assert(portable.includes("--base-branch INVALID_BASE_BRANCH"), `unsafe base branch must be replaced instead of shell-quoted: ${portable}`);
+assert(!portable.includes("touch${IFS}"), "suggested commands must not echo unsafe payloads on any platform");
 
 const malformedRoot = tempRoot();
 fs.writeFileSync(path.join(malformedRoot, "hy-workflow.json"), "{ bad json\n", "utf-8");
@@ -183,6 +185,59 @@ assert(readUnifiedConfig(legacyLocalRoot)?.keep.owner === "user", "runtime confi
 assert(readJson(legacyLocalRoot, "hy-workflow.json").keep.owner === "user", "local migration should preserve unknown fields");
 assert(readJson(legacyLocalRoot, "hy-workflow.json").codelint.maxLines === 321, "local migration should preserve known user choices");
 assert(fs.readFileSync(legacyLocalPath, "utf-8") === legacyLocalBefore, "migration should not rewrite or delete the legacy local config");
+
+const missingRuntimeRoot = tempRoot();
+fs.writeFileSync(path.join(missingRuntimeRoot, "codelint.json"), JSON.stringify({
+  baseBranch: "legacy-main", codeExt: ".py", codeDirs: ["src"], lintDirs: ["src"],
+}, null, 2) + "\n", "utf-8");
+const missingRuntimeCompat = fs.readFileSync(path.join(missingRuntimeRoot, "codelint.json"), "utf-8");
+let missingRuntimeCalled = false;
+let missingRuntimeError: any = null;
+try {
+  withRuntimeCompatConfigs(missingRuntimeRoot, () => { missingRuntimeCalled = true; });
+} catch (error) {
+  missingRuntimeError = error;
+}
+assert(!missingRuntimeCalled, "runtime compat callback must not execute when root config is missing");
+assert(missingRuntimeError?.type === "config" && missingRuntimeError?.subtype === "config_invalid" && missingRuntimeError?.code === "ROOT_CONFIG_REQUIRED", `missing root config should throw a structured error: ${JSON.stringify(missingRuntimeError)}`);
+assert(fs.readFileSync(path.join(missingRuntimeRoot, "codelint.json"), "utf-8") === missingRuntimeCompat, "missing root config must not mutate legacy compatibility files");
+
+const incompleteRuntimeRoot = tempRoot();
+fs.writeFileSync(path.join(incompleteRuntimeRoot, "hy-workflow.json"), JSON.stringify({
+  project: { baseBranch: "main", docsDir: "docs" },
+}, null, 2) + "\n", "utf-8");
+fs.writeFileSync(path.join(incompleteRuntimeRoot, "codelint.json"), JSON.stringify({
+  codeExt: ".py", codeDirs: ["src"], lintDirs: ["src"],
+}, null, 2) + "\n", "utf-8");
+let incompleteRuntimeCalled = false;
+let incompleteRuntimeError: any = null;
+try {
+  withRuntimeCompatConfigs(incompleteRuntimeRoot, () => { incompleteRuntimeCalled = true; });
+} catch (error) {
+  incompleteRuntimeError = error;
+}
+assert(!incompleteRuntimeCalled, "runtime compat callback must not execute when required root fields are missing");
+assert(readUnifiedConfig(incompleteRuntimeRoot) === null, "runtime config reads must reject root config with missing required fields");
+assert(incompleteRuntimeError?.code === "ROOT_CONFIG_INVALID", `incomplete root config should throw ROOT_CONFIG_INVALID: ${JSON.stringify(incompleteRuntimeError)}`);
+assert(incompleteRuntimeError?.detail?.issues?.some((issue: string) => issue.includes("project.codeExt is required at runtime")), "runtime config error should identify missing project.codeExt");
+assert(incompleteRuntimeError?.detail?.issues?.some((issue: string) => issue.includes("codelint.lintDirs is required at runtime")), "runtime config error should identify missing codelint.lintDirs");
+const incompleteRuntimeCheck = checkConfig(incompleteRuntimeRoot);
+assert(!incompleteRuntimeCheck.ok, "config check must reject root config with runtime-required fields missing");
+assert(incompleteRuntimeCheck.issues.some(issue => issue.includes("project.codeExt is required at runtime")), "config check should expose missing project.codeExt");
+assert(incompleteRuntimeCheck.issues.some(issue => issue.includes("codelint.lintDirs is required at runtime")), "config check should expose missing codelint.lintDirs");
+assert(incompleteRuntimeCheck.suggestedCommand === "hy-workflow config --apply --json", "incomplete root config recovery must preserve existing choices instead of applying detected defaults wholesale");
+const incompleteRuntimeApply = runConfigCli(["--apply", "--json"], incompleteRuntimeRoot);
+assert(incompleteRuntimeApply.exitCode === 0, `preserve-first recovery should complete: ${incompleteRuntimeApply.stdout}`);
+const recoveredIncompleteRuntime = readJson(incompleteRuntimeRoot, "hy-workflow.json");
+assert(recoveredIncompleteRuntime.project.baseBranch === "main", "preserve-first recovery must retain the existing baseBranch");
+assert(recoveredIncompleteRuntime.project.codeExt && recoveredIncompleteRuntime.project.codeDirs.length > 0 && recoveredIncompleteRuntime.codelint.lintDirs.length > 0, "preserve-first recovery must fill every runtime-required field");
+
+const missingBaseBranchRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const missingBaseBranchConfig = readJson(missingBaseBranchRoot, "hy-workflow.json");
+delete missingBaseBranchConfig.project.baseBranch;
+fs.writeFileSync(path.join(missingBaseBranchRoot, "hy-workflow.json"), JSON.stringify(missingBaseBranchConfig, null, 2) + "\n", "utf-8");
+const missingBaseBranchCheck = checkConfig(missingBaseBranchRoot);
+assert(!missingBaseBranchCheck.ok && missingBaseBranchCheck.issues.some(issue => issue.includes("project.baseBranch is required at runtime")), "config check must not default a missing runtime baseBranch");
 
 const primaryPrecedenceRoot = tempRoot();
 fs.writeFileSync(path.join(primaryPrecedenceRoot, "hy-workflow.json"), JSON.stringify({
@@ -252,6 +307,91 @@ withRuntimeCompatConfigs(staleCompatRoot, () => {
 });
 assert(fs.readFileSync(path.join(staleCompatRoot, "codelint.json"), "utf-8") === staleCompatBefore, "runtime compat should restore stale existing codelint after run");
 
+const callbackFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const callbackCodelintText = "{\n  \"owner\": \"existing\"\n}\n";
+fs.writeFileSync(path.join(callbackFailureRoot, "codelint.json"), callbackCodelintText, "utf-8");
+const callbackFailure = new Error("runtime callback failed");
+let callbackFailureCaught: unknown;
+try {
+  withRuntimeCompatConfigs(callbackFailureRoot, () => { throw callbackFailure; });
+} catch (error) {
+  callbackFailureCaught = error;
+}
+assert(callbackFailureCaught === callbackFailure, "runtime callback error should be rethrown after restoration");
+assert(fs.readFileSync(path.join(callbackFailureRoot, "codelint.json"), "utf-8") === callbackCodelintText, "callback failure must restore an existing compat file byte-for-byte");
+assert(!exists(callbackFailureRoot, "doclint.json") && !exists(callbackFailureRoot, "docs-gardener.json"), "callback failure must remove generated compat files that did not exist before the run");
+
+const materializeFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const originalWriteFileSync = fsDefault.writeFileSync;
+const materializeFailure = new Error("doclint materialization failed");
+const failingPath = path.join(materializeFailureRoot, "doclint.json");
+let materializeCallbackCalled = false;
+let materializeFailureCaught: unknown;
+let injectedFailure = false;
+try {
+  (fsDefault as any).writeFileSync = (...args: any[]) => {
+    if (!injectedFailure && path.resolve(String(args[0])) === path.resolve(failingPath)) {
+      injectedFailure = true;
+      throw materializeFailure;
+    }
+    return (originalWriteFileSync as any)(...args);
+  };
+  syncBuiltinESMExports();
+  withRuntimeCompatConfigs(materializeFailureRoot, () => { materializeCallbackCalled = true; });
+} catch (error) {
+  materializeFailureCaught = error;
+} finally {
+  (fsDefault as any).writeFileSync = originalWriteFileSync;
+  syncBuiltinESMExports();
+}
+assert(materializeFailureCaught === materializeFailure, "materialization error should remain visible after earlier compat files are restored");
+assert(!materializeCallbackCalled, "runtime callback must not run after partial compat materialization fails");
+assert(!exists(materializeFailureRoot, "codelint.json") && !exists(materializeFailureRoot, "doclint.json") && !exists(materializeFailureRoot, "docs-gardener.json"), "partial materialization failure must restore all compat paths to their original absent state");
+
+const restoreFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+fs.writeFileSync(path.join(restoreFailureRoot, "codelint.json"), "{\n  \"owner\": \"original\"\n}\n", "utf-8");
+const restoreFailure = new Error("codelint restoration failed");
+let restoreWrites = 0;
+let restoreFailureCaught: unknown;
+try {
+  (fsDefault as any).writeFileSync = (...args: any[]) => {
+    if (path.resolve(String(args[0])) === path.resolve(path.join(restoreFailureRoot, "codelint.json")) && ++restoreWrites === 2) throw restoreFailure;
+    return (originalWriteFileSync as any)(...args);
+  };
+  syncBuiltinESMExports();
+  withRuntimeCompatConfigs(restoreFailureRoot, () => "ok");
+} catch (error) {
+  restoreFailureCaught = error;
+} finally {
+  (fsDefault as any).writeFileSync = originalWriteFileSync;
+  syncBuiltinESMExports();
+}
+assert(restoreFailureCaught === restoreFailure, "a standalone restoration failure must be surfaced unchanged");
+assert(!exists(restoreFailureRoot, "doclint.json") && !exists(restoreFailureRoot, "docs-gardener.json"), "one restoration failure must not prevent the other snapshots from being restored");
+
+const combinedFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+fs.writeFileSync(path.join(combinedFailureRoot, "codelint.json"), "{\n  \"owner\": \"original\"\n}\n", "utf-8");
+const operationFailure = new Error("runtime operation failed");
+const combinedRestoreFailure = new Error("combined restoration failed");
+let combinedWrites = 0;
+let combinedFailureCaught: unknown;
+try {
+  (fsDefault as any).writeFileSync = (...args: any[]) => {
+    if (path.resolve(String(args[0])) === path.resolve(path.join(combinedFailureRoot, "codelint.json")) && ++combinedWrites === 2) throw combinedRestoreFailure;
+    return (originalWriteFileSync as any)(...args);
+  };
+  syncBuiltinESMExports();
+  withRuntimeCompatConfigs(combinedFailureRoot, () => { throw operationFailure; });
+} catch (error) {
+  combinedFailureCaught = error;
+} finally {
+  (fsDefault as any).writeFileSync = originalWriteFileSync;
+  syncBuiltinESMExports();
+}
+assert(combinedFailureCaught instanceof AggregateError, "operation plus restoration failure must use AggregateError");
+assert((combinedFailureCaught as AggregateError).errors[0] === operationFailure && (combinedFailureCaught as AggregateError).errors.includes(combinedRestoreFailure), "AggregateError must retain both the operation and restoration errors");
+assert(!exists(combinedFailureRoot, "doclint.json") && !exists(combinedFailureRoot, "docs-gardener.json"), "combined failure must still restore every unaffected snapshot");
+
 const invalidCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
 fs.writeFileSync(path.join(invalidCompatRoot, "codelint.json"), "{ invalid compatibility json\n", "utf-8");
 const invalidCompatBefore = fs.readFileSync(path.join(invalidCompatRoot, "codelint.json"), "utf-8");
@@ -271,7 +411,7 @@ fs.writeFileSync(path.join(noDocsRoot, "tsconfig.json"), "{}\n", "utf-8");
 fs.writeFileSync(path.join(noDocsRoot, "src", "index.ts"), "export {};\n", "utf-8");
 const noDocs = checkConfig(noDocsRoot);
 assert(noDocs.suggestion.docsDir === "", "config detection must not invent a missing docs directory or fall back to project root");
-assert(noDocs.suggestedCommand.includes("--docs-dir '<existing-docs-dir>'") && !noDocs.suggestedCommand.includes("--docs-dir 'docs'"), "recovery must require an explicit existing docs directory instead of emitting a failing loop");
+assert(noDocs.suggestedCommand.includes("--docs-dir existing-docs-dir") && !noDocs.suggestedCommand.includes("--docs-dir docs"), "recovery must require an explicit existing docs directory instead of emitting a failing loop");
 assert(!noDocs.suggestedCommand.includes("--apply-suggested"), "missing-docs recovery must use preserving apply semantics");
 const noDocsApply = runConfigCli(["--apply-suggested", "--json"], noDocsRoot);
 assert(noDocsApply.exitCode === 1 && JSON.parse(noDocsApply.stdout).issues.some((issue: string) => issue.includes("no documentation directory was detected")), "apply-suggested must stop when docsDir cannot be inferred");
@@ -279,8 +419,8 @@ assert(!exists(noDocsRoot, "hy-workflow.json"), "failed no-docs apply must not w
 fs.writeFileSync(path.join(noDocsRoot, "docs"), "not a directory\n", "utf-8");
 const invalidExplicitDocs = runConfigCli(["--apply-suggested", "--json", "--docs-dir", "docs"], noDocsRoot);
 const invalidExplicitPayload = JSON.parse(invalidExplicitDocs.stdout);
-assert(invalidExplicitDocs.exitCode === 1 && invalidExplicitPayload.suggestedCommand.includes("--docs-dir '<existing-docs-dir>'"), "an explicit nonexistent docsDir must not be echoed into another guaranteed-failing recovery command");
-assert(!invalidExplicitPayload.suggestedCommand.includes("--docs-dir 'docs'"), "recovery must not repeat the nonexistent explicit docsDir");
+assert(invalidExplicitDocs.exitCode === 1 && invalidExplicitPayload.suggestedCommand.includes("--docs-dir existing-docs-dir"), "an explicit nonexistent docsDir must not be echoed into another guaranteed-failing recovery command");
+assert(!invalidExplicitPayload.suggestedCommand.includes("--docs-dir docs"), "recovery must not repeat the nonexistent explicit docsDir");
 fs.mkdirSync(path.join(noDocsRoot, "guide"));
 const explicitDocs = runConfigCli(["--apply", "--json", "--docs-dir", "guide"], noDocsRoot);
 assert(explicitDocs.exitCode === 0 && readJson(noDocsRoot, "hy-workflow.json").project.docsDir === "guide", "an explicit existing docsDir should recover setup");
@@ -326,7 +466,7 @@ fs.writeFileSync(path.join(customDocsRoot, "hy-workflow.json"), JSON.stringify({
 }, null, 2) + "\n", "utf-8");
 const customDocsCheck = checkConfig(customDocsRoot);
 assert(!customDocsCheck.ok, "a missing custom docsDir should require recovery");
-assert(customDocsCheck.suggestedCommand === "hy-workflow config --apply --json --docs-dir '<existing-docs-dir>'", "existing config recovery should only request docsDir and preserve every other field");
+assert(customDocsCheck.suggestedCommand === "hy-workflow config --apply --json --docs-dir existing-docs-dir", "existing config recovery should only request docsDir and preserve every other field");
 fs.mkdirSync(path.join(customDocsRoot, "handbook"));
 const customDocsApply = runConfigCli(["--apply", "--json", "--docs-dir", "handbook"], customDocsRoot);
 assert(customDocsApply.exitCode === 0, "preserving docsDir recovery should succeed");
