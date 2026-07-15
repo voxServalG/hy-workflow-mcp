@@ -2,6 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildSuggestedCommand, checkConfig, ensureConfigDefaults, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
+import { projectPaths } from "../../src/runtime/user-paths.js";
+
+const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-runtime-"));
+process.env.HY_WORKFLOW_CONFIG_HOME = path.join(runtimeHome, "config");
+process.env.HY_WORKFLOW_STATE_HOME = path.join(runtimeHome, "state");
+process.env.HY_WORKFLOW_CACHE_HOME = path.join(runtimeHome, "cache");
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -22,6 +28,10 @@ function readJson(root: string, file: string): any {
 
 function exists(root: string, file: string): boolean {
   return fs.existsSync(path.join(root, file));
+}
+
+function readLocalConfig(root: string): any {
+  return JSON.parse(fs.readFileSync(projectPaths(root).config, "utf-8"));
 }
 
 function configuredRoot(codeExt: string | string[], files: Record<string, string>): string {
@@ -82,11 +92,12 @@ assert(JSON.stringify({
 }) === before, "dry-run must not write files");
 
 ensureConfigDefaults(root);
-assert(readJson(root, "hy-workflow.json").project.baseBranch === "main", "setup defaults must derive unified baseBranch from legacy config");
-assert(readJson(root, "hy-workflow.json").project.docsDir === "docs", "setup defaults must write unified docsDir");
-assert(readJson(root, "hy-workflow.json").codelint.lintDirs[0] === "src", "setup defaults must write codelint private lintDirs");
-assert(readJson(root, "hy-workflow.json").doclint.maxLines === 180, "setup defaults must preserve doclint maxLines");
-assert(readJson(root, "hy-workflow.json").docsGardener.catalogs.cli[0] === "hy_init", "setup defaults must preserve catalogs");
+assert(!exists(root, "hy-workflow.json"), "default config must not write the project root");
+assert(readLocalConfig(root).project.baseBranch === "main", "setup defaults must derive unified baseBranch from legacy config");
+assert(readLocalConfig(root).project.docsDir === "docs", "setup defaults must write local docsDir");
+assert(readLocalConfig(root).codelint.lintDirs[0] === "src", "setup defaults must write local codelint settings");
+assert(readLocalConfig(root).doclint.maxLines === 180, "setup defaults must preserve doclint maxLines");
+assert(readLocalConfig(root).docsGardener.catalogs.cli[0] === "hy_init", "setup defaults must preserve catalogs");
 assert(readJson(root, "codelint.json").codeExt === ".py", "setup defaults must not overwrite existing legacy codelint");
 
 const check = checkConfig(root);
@@ -107,7 +118,7 @@ const mismatch = checkConfig(mismatchRoot);
 assert(!mismatch.ok, "missing unified config should need confirmation");
 assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
 assert(mismatch.suggestedCommand.includes("--code-ext '.py'"), "suggested command should include detected Python ext with shell quoting");
-assert(mismatch.issues.includes("Missing hy-workflow.json"), "missing unified config should be reported");
+assert(mismatch.issues.some(issue => issue.startsWith("Missing project config:")), "missing project config should be reported");
 const mismatchCli = runConfigCli(["--check", "--json"], mismatchRoot);
 assert(mismatchCli.exitCode === 1, "config CLI should exit nonzero when --check emits ok false");
 assert(JSON.parse(mismatchCli.stdout).ok === false, "config CLI should preserve the ok false envelope");
@@ -150,6 +161,7 @@ const invalidApplyRoot = tempRoot();
 const invalidApply = runConfigCli(["--apply-suggested", "--json", "--base-branch", "dev;touch"], invalidApplyRoot);
 assert(invalidApply.exitCode === 1, "invalid apply should exit nonzero");
 assert(!exists(invalidApplyRoot, "hy-workflow.json"), "invalid apply should not write hy-workflow.json");
+assert(!fs.existsSync(projectPaths(invalidApplyRoot).config), "invalid apply should not write local config");
 
 const unknownArg = runConfigCli(["--json", "--unknown"], tempRoot());
 assert(unknownArg.exitCode === 1, "unknown config flags should exit nonzero");
@@ -164,7 +176,8 @@ const parsed = JSON.parse(cli.stdout);
 assert(cli.exitCode === 0, "config CLI should exit 0");
 assert(parsed.ok === true, "config CLI should emit ok envelope");
 assert(parsed.display?.title, "config CLI should emit display title");
-assert(readJson(cliRoot, "hy-workflow.json").project.codeExt === ".py", "config CLI should write unified config");
+assert(!exists(cliRoot, "hy-workflow.json"), "default config CLI should not write the project root");
+assert(readLocalConfig(cliRoot).project.codeExt === ".py", "config CLI should write the user-local project config");
 assert(!exists(cliRoot, "codelint.json"), "config CLI should not write root codelint compatibility file");
 assert(!exists(cliRoot, "doclint.json"), "config CLI should not write root doclint compatibility file");
 
@@ -196,7 +209,7 @@ assert(fs.readFileSync(path.join(invalidCompatRoot, "codelint.json"), "utf-8") =
 
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");
-assert(help.stdout.includes("hy-workflow.json is the source of truth"), "help should document unified config");
+assert(help.stdout.includes("OS user config directory"), "help should document user-local config");
 
 const tkspRoot = configuredRoot(".tksp", { "src/main.tksp": "module demo\n" });
 const tkspCheck = checkConfig(tkspRoot);

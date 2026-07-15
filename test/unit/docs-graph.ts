@@ -3,6 +3,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { buildDocsGraph, ensureGraph, isGraphStale } from "../../src/docs_graph.js";
+import { projectPaths } from "../../src/runtime/user-paths.js";
+
+const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-docs-graph-runtime-"));
+process.env.HY_WORKFLOW_CONFIG_HOME = path.join(runtimeHome, "config");
+process.env.HY_WORKFLOW_STATE_HOME = path.join(runtimeHome, "state");
+process.env.HY_WORKFLOW_CACHE_HOME = path.join(runtimeHome, "cache");
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -67,7 +73,7 @@ const rootDocsGraph = buildDocsGraph(root, ".");
 assert(rootDocsGraph.entries["docs/index.md"] !== undefined, "docsDir=. should be accepted as the project root");
 
 buildDocsGraph(root, "docs");
-const graphFile = path.join(root, ".git", "hy-workflow", "docs-graph.json");
+const graphFile = projectPaths(root).docsGraph;
 const cached = JSON.parse(fs.readFileSync(graphFile, "utf-8"));
 cached.sentinel = "cache-hit";
 fs.writeFileSync(graphFile, JSON.stringify(cached, null, 2) + "\n", "utf-8");

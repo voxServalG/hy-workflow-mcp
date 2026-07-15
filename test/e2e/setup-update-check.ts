@@ -2,7 +2,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
-import { checkSetupStamp, createSetupGate, SETUP_STAMP, SETUP_VERSION, setupUpdateRequiredResult } from "../../src/bootstrap.js";
+import { checkSetupStamp, createSetupGate, SETUP_VERSION, setupStampPath, setupUpdateRequiredResult } from "../../src/bootstrap.js";
+import { setupHelp } from "../../src/setup-cli.js";
+import { MCP_DEFINITIONS } from "../../src/setup/types.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -15,7 +17,7 @@ function tempRepo(): string {
 }
 
 function writeStamp(root: string, setupVersion: string): void {
-  const stampPath = path.join(root, SETUP_STAMP);
+  const stampPath = setupStampPath(root);
   fs.mkdirSync(path.dirname(stampPath), { recursive: true });
   fs.writeFileSync(stampPath, JSON.stringify({ schemaVersion: "1", setupVersion }, null, 2) + "\n", "utf-8");
 }
@@ -36,21 +38,16 @@ function listFiles(root: string): string[] {
 }
 
 const originalCwd = process.cwd();
-const setupPrompt = fs.readFileSync(path.join(originalCwd, "setup"), "utf-8");
-
-assert(setupPrompt.includes(".github/workflows/hy-workflow.yml"), "setup prompt should name the single tracked workflow");
-assert(setupPrompt.includes("hy-workflow.json 是唯一人工维护配置源"), "setup prompt should describe unified config as source of truth");
-assert(setupPrompt.includes("只有在用户明确要求配置某个客户端时"), "setup prompt should not ask agents to always write client config");
-assert(setupPrompt.includes(".opencode/opencode.json"), "setup prompt should describe OpenCode config path as local client state");
-assert(setupPrompt.includes(".codex/config.toml"), "setup prompt should describe Codex config path as local client state");
-assert(!setupPrompt.includes("[mcp_servers.hy-workflow]"), "setup prompt should not include a concrete Codex config block by default");
-assert(!setupPrompt.includes("\"\\$schema\": \"https://opencode.ai/config.json\""), "setup prompt should not include a concrete OpenCode JSON block by default");
-assert(setupPrompt.includes("hy_read_docs(before_plan)"), "setup prompt should include before_plan document read gate");
-assert(setupPrompt.includes("hy_read_docs(before_approve)"), "setup prompt should include before_approve document read gate");
-assert(setupPrompt.includes("hy_read_docs(after_edit)"), "setup prompt should include after_edit document read gate");
-assert(setupPrompt.includes("hy_sync_docs"), "setup prompt should include docs sync gate");
-assert(setupPrompt.includes("hy_amend_plan"), "setup prompt should include amend plan guidance");
-assert(setupPrompt.includes("理想项目状态"), "setup prompt should describe the ideal project state");
+const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-setup-check-runtime-"));
+process.env.HY_WORKFLOW_CONFIG_HOME = path.join(runtimeHome, "config");
+process.env.HY_WORKFLOW_STATE_HOME = path.join(runtimeHome, "state");
+process.env.HY_WORKFLOW_CACHE_HOME = path.join(runtimeHome, "cache");
+const help = setupHelp();
+assert(help.includes("Interactive install/update/unset TUI"), "setup help should describe the unified TUI");
+assert(help.includes("--shared") && help.includes("--remove-global"), "setup help should expose shared mode and safe global removal");
+assert(MCP_DEFINITIONS["hy-workflow"].command === "hy-workflow", "setup should configure the direct hy-workflow command");
+assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener", "setup should configure the direct docs-gardener command");
+assert(fs.existsSync(path.join(originalCwd, "templates", "hy-workflow.yml")), "explicit shared mode should ship one workflow template");
 
 try {
   const missingRoot = tempRepo();
@@ -92,7 +89,7 @@ try {
   assert(current.status === "current", `expected current, got ${current.status}`);
   const currentGate = createSetupGate(currentRoot);
   assert(currentGate() === null, "current setup should not stop tool dispatch");
-  fs.unlinkSync(path.join(currentRoot, SETUP_STAMP));
+  fs.unlinkSync(setupStampPath(currentRoot));
   assert(currentGate()?.error?.subtype === "setup_update_required", "gate should detect setup stamp drift after an earlier successful check");
 } finally {
   process.chdir(originalCwd);

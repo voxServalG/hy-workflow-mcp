@@ -58,7 +58,7 @@ init → plan → approve → branch → edit → hy_read_docs(after_edit) → h
 
 ## 状态持久化
 
-状态文件: `.git/hy-workflow/workflow.json`
+状态文件位于 OS 用户 state 的 `projects/<project-id>/workflow.json`；project id 由规范化项目根、Git common dir 和 origin remote 计算。
 
 ```typescript
 interface WorkflowState {
@@ -78,8 +78,8 @@ interface WorkflowState {
 }
 ```
 
-- `readState()`: 文件不存在时返回 `phase: init` 默认值，并迁移未跟踪的旧 `.hy/workflow.json`；损坏 JSON、非对象状态或非法 phase 会返回结构化 workflow state 错误，不再暴露原始 parse 异常
-- `writeState()`: 自动创建 Git 私有运行态目录
+- `readState()`: 新文件不存在时读取旧 `.git/hy-workflow/workflow.json` 或 `.hy/workflow.json` 并复制到用户 state；旧文件不自动删除。没有状态时返回 `phase: init`
+- `writeState()`: 原子写入用户 state 并自动创建父目录
 - `projectRoot()`: 向上查找 `.git`，找不到则报 `PROJECT_ROOT_NOT_FOUND`，不会在非 Git 目录创建伪 `.git/hy-workflow` 状态
 
 ## 状态守卫
@@ -156,9 +156,9 @@ interface PlanDoc {
 
 ## workflow.json
 
-状态持久化在 Git 私有目录 `.git/hy-workflow/workflow.json`，通过 `git rev-parse --git-path` 解析真实路径，避免运行态文件进入工作树、PR diff 或 checkout 冲突。`readState()` 在新文件不存在时会读取旧 `.hy/workflow.json` 并迁移；没有任何状态文件时返回 `phase: init` 默认值。
+状态持久化在 OS 用户 state，不写工作树或 Git 私有目录，因此不会进入 PR diff、污染 checkout 或改变 `git status`。旧状态仅作为兼容迁移源读取。
 
-`hy_edit` 额外写入 `.git/hy-workflow/scope.json` 锁定当前 scope 边界，供 LLM 参考。旧 `.hy/scope.json` 只作为 legacy runtime metadata 诊断和清理对象。所有运行态路径都要求真实 Git worktree；非 Git 目录会结构化失败，不会创建本地 `.git` 目录。
+`hy_edit` 额外写入同一 project state 目录的 `scope.json` 锁定当前 scope。旧 `.git/hy-workflow/scope.json` 和 `.hy/scope.json` 可复制迁移但不会自动删除。仍要求真实 Git worktree 来计算稳定身份；非 Git 目录会结构化失败。
 
 ## Related
 

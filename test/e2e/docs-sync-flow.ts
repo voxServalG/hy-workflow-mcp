@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -7,6 +7,8 @@ import { handleReadDocs } from "../../src/tools/read_docs.js";
 import { handleSyncDocs } from "../../src/tools/sync_docs.js";
 import { handleVerify } from "../../src/tools/verify.js";
 import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { projectPaths } from "../../src/runtime/user-paths.js";
+import { useRuntimeHome } from "../helpers/runtime-home.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -47,6 +49,7 @@ function editState(plan: PlanDoc): WorkflowState {
 }
 
 const originalCwd = cwd();
+useRuntimeHome("hy-docs-sync-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-docs-sync-"));
 
 try {
@@ -109,6 +112,12 @@ try {
   const stateAfterRead = readState();
   if (!stateAfterRead.documentReads?.afterEdit?.implementationDigest) {
     throw new Error("after_edit should store implementation digest");
+  }
+  if (!existsSync(projectPaths(root).docsGraph)) {
+    throw new Error("after_edit should migrate DocsGraph cache into the identity-scoped user cache");
+  }
+  if (!existsSync(join(root, ".git", "hy-workflow", "docs-graph.json"))) {
+    throw new Error("DocsGraph migration must preserve the legacy project-local cache");
   }
 
   const missingSync = await handleVerify();

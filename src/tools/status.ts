@@ -1,14 +1,16 @@
-import { documentReadHealth, legacyRuntimeDiagnostics, readState } from "../state.js";
+import { documentReadHealth, legacyRuntimeDiagnostics, projectRoot, readState } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { initArtifactGuidance } from "./init.js";
 import { checkSetupStamp } from "../bootstrap.js";
 import { getStartupExecutorCapabilities } from "../executors.js";
+import { projectPaths } from "../runtime/user-paths.js";
 
 export async function handleStatus(): Promise<ToolResult> {
   const state = readState();
   const legacyDiagnostics = legacyRuntimeDiagnostics();
   const artifactGuidance = initArtifactGuidance();
   const setupUpdateCheck = checkSetupStamp();
+  const paths = projectPaths(projectRoot());
   const health = documentReadHealth(state);
   const needsBeforePlan = state.phase === "plan" && !state.plan;
   const needsBeforeApprove = state.phase === "approve" && !health.okForApprove;
@@ -32,7 +34,15 @@ export async function handleStatus(): Promise<ToolResult> {
       : "Use phase, next, allowedTools, and action to decide the next safe tool call.",
     allowedTools,
     commitArtifacts: artifactGuidance.commitArtifacts,
-    localArtifacts: artifactGuidance.localArtifacts,
+    localArtifacts: [paths.configDir, paths.stateDir, paths.cacheDir],
+    projectIdentity: paths.identity,
+    runtimePaths: {
+      config: paths.config,
+      deployment: paths.deployment,
+      workflowState: paths.workflowState,
+      scope: paths.scope,
+      docsGraph: paths.docsGraph,
+    },
     setupUpdateCheck,
     capabilities: getStartupExecutorCapabilities(),
     pendingAmendment: state.pendingAmendment ?? undefined,

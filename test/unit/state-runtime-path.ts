@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -40,6 +40,10 @@ function basePlan(): PlanDoc {
 }
 
 const originalCwd = cwd();
+const runtimeHome = mkdtempSync(join(tmpdir(), "hy-state-runtime-home-"));
+process.env.HY_WORKFLOW_CONFIG_HOME = join(runtimeHome, "config");
+process.env.HY_WORKFLOW_STATE_HOME = join(runtimeHome, "state");
+process.env.HY_WORKFLOW_CACHE_HOME = join(runtimeHome, "cache");
 const root = mkdtempSync(join(tmpdir(), "hy-state-runtime-"));
 
 try {
@@ -57,18 +61,18 @@ try {
   const state = baseState();
   writeState(state);
   const runtimePath = statePath();
-  if (!runtimePath.includes(join(".git", "hy-workflow", "workflow.json"))) {
-    throw new Error(`statePath should use git private storage, got ${runtimePath}`);
+  if (!runtimePath.startsWith(join(runtimeHome, "state")) || runtimePath.startsWith(root)) {
+    throw new Error(`statePath should use OS user state outside the project, got ${runtimePath}`);
   }
   if (!existsSync(runtimePath)) {
-    throw new Error("writeState should create git-private workflow.json");
+    throw new Error("writeState should create user-local workflow.json");
   }
 
   const legacyDir = join(root, ".hy");
   mkdirSync(legacyDir, { recursive: true });
   const legacyState = { ...baseState(), phase: "approve" as const };
   writeFileSync(join(legacyDir, "workflow.json"), JSON.stringify(legacyState, null, 2));
-  run("rm -f .git/hy-workflow/workflow.json", root);
+  unlinkSync(runtimePath);
 
   const migrated = readState();
   if (migrated.phase !== "approve") {
@@ -76,17 +80,17 @@ try {
   }
   const migratedRaw = JSON.parse(readFileSync(runtimePath, "utf-8"));
   if (migratedRaw.phase !== "approve") {
-    throw new Error("readState should migrate legacy state into git-private workflow.json");
+    throw new Error("readState should migrate legacy state into user-local workflow.json");
   }
-  if (existsSync(join(legacyDir, "workflow.json"))) {
-    throw new Error("readState should delete untracked legacy .hy/workflow.json after migration");
+  if (!existsSync(join(legacyDir, "workflow.json"))) {
+    throw new Error("readState must preserve legacy .hy/workflow.json after migration");
   }
 
   writeFileSync(join(root, "README.md"), "changed\n");
   writeFileSync(join(legacyDir, "scope.json"), "{}\n");
   cleanupLegacyRuntimeFiles(root);
-  if (existsSync(join(legacyDir, "scope.json"))) {
-    throw new Error("cleanupLegacyRuntimeFiles should delete untracked legacy .hy/scope.json");
+  if (!existsSync(join(legacyDir, "scope.json"))) {
+    throw new Error("cleanupLegacyRuntimeFiles must not delete legacy .hy/scope.json");
   }
   writeFileSync(join(legacyDir, "scope.json"), "{}\n");
   const results = runScopeCheck(root, basePlan());
@@ -112,11 +116,11 @@ try {
   writeState(editState);
   await handleEdit();
   const runtimeScopePath = scopePath();
-  if (!runtimeScopePath.includes(join(".git", "hy-workflow", "scope.json"))) {
-    throw new Error(`scopePath should use git-private storage, got ${runtimeScopePath}`);
+  if (!runtimeScopePath.startsWith(join(runtimeHome, "state")) || runtimeScopePath.startsWith(root)) {
+    throw new Error(`scopePath should use OS user state outside the project, got ${runtimeScopePath}`);
   }
   if (!existsSync(runtimeScopePath)) {
-    throw new Error("handleEdit should create git-private scope.json");
+    throw new Error("handleEdit should create user-local scope.json");
   }
 
   writeFileSync(join(root, "README.md"), "committed change\n");

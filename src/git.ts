@@ -127,7 +127,7 @@ export function createBranch(root: string, category: string, topic: string): { o
         subtype: "config_invalid",
         code: "BASE_BRANCH_REMOTE_MISSING",
         message: `Base branch remote ref is missing: ${remoteRef}.`,
-        hint: `Fetch or publish the configured base branch before retrying hy_branch, for example: git fetch origin ${base}. If this project uses a different base branch, update hy-workflow.json project.baseBranch.`,
+        hint: `Fetch or publish the configured base branch before retrying hy_branch, for example: git fetch origin ${base}. If this project uses a different base branch, update project.baseBranch in the effective local or shared configuration.`,
         detail: { branch: name, baseBranch: base, remoteRef },
         retryable: true,
       },

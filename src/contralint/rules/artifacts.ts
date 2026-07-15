@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { trackedFiles } from "../../adapters/git.js";
-import { isLocalArtifact, LOCAL_RUNTIME_ARTIFACTS, TRACKED_PROJECT_ARTIFACTS } from "../../policy/artifacts.js";
+import { isLocalArtifact, TRACKED_PROJECT_ARTIFACTS } from "../../policy/artifacts.js";
 import { readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
@@ -16,11 +16,6 @@ export function checkArtifactContracts(context: ContractRuleContext): ContractFi
     findings.push({ rule: "artifacts", severity: "hard_fail", message: "Generated build output must not be tracked: dist/", file: ".gitignore" });
   }
   const ignore = readText(context.root, ".gitignore");
-  for (const artifact of LOCAL_RUNTIME_ARTIFACTS) {
-    if (!ignore.includes(artifact)) {
-      findings.push({ rule: "artifacts", severity: "hard_fail", message: ".gitignore does not ignore " + artifact + ".", file: ".gitignore" });
-    }
-  }
   if (!ignore.includes("dist/") && !ignore.includes("dist")) {
     findings.push({ rule: "artifacts", severity: "hard_fail", message: ".gitignore does not ignore generated dist/ output.", file: ".gitignore" });
   }

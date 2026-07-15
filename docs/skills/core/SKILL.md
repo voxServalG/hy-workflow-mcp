@@ -9,7 +9,7 @@ description: Operate the hy-workflow MCP safely in this repository.
 
 Use this workflow order for ordinary development: hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_ci -> hy_merge -> hy_chain -> hy_reset.
 
-For first setup, run hy_init before planning. Do not call approve, branch, edit, verify, commit, CI, merge, chain, or reset out of order.
+For first setup, run the `hy-workflow setup` TUI, restart the client, then run hy_init before planning. Default setup/hy_init must not change project files; use `hy-workflow unset` to remove the local deployment. Do not call later workflow tools out of order.
 
 ## Tools
 

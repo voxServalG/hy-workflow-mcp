@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { PHASES, VALID_TRANSITIONS, isPhase, type Phase } from "./runtime/state-machine.js";
 import { configuredBaseBranch, currentGitBranch, findProjectRoot, resolveGitPrivatePath } from "./runtime/project.js";
 import { createHash } from "node:crypto";
+import { atomicWriteJson, ensureParent, projectPaths } from "./runtime/user-paths.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -205,11 +206,14 @@ export interface LegacyRuntimeDiagnostic {
 }
 
 export function statePath(): string {
-  return gitPrivatePath(projectRoot(), RUNTIME_STATE_FILE);
+  return projectPaths(projectRoot()).workflowState;
 }
 
 export function scopePath(): string {
-  return gitPrivatePath(projectRoot(), RUNTIME_SCOPE_FILE);
+  const root = projectRoot();
+  const target = projectPaths(root).scope;
+  migrateLegacyFile(target, [gitPrivatePath(root, RUNTIME_SCOPE_FILE), legacyScopePath(root)]);
+  return target;
 }
 
 function legacyStatePath(root: string): string {
@@ -265,14 +269,15 @@ export function legacyRuntimeDiagnostics(root = projectRoot()): LegacyRuntimeDia
 }
 
 export function cleanupLegacyRuntimeFiles(root = projectRoot()): void {
-  for (const file of [LEGACY_STATE_FILE, LEGACY_SCOPE_FILE]) {
-    const fullPath = path.join(root, file);
-    if (!fs.existsSync(fullPath)) continue;
-    const tracked = isTracked(root, file);
-    if (tracked === false) {
-      try { fs.unlinkSync(fullPath); } catch {}
-    }
-  }
+  void root;
+}
+
+function migrateLegacyFile(target: string, candidates: string[]): void {
+  if (fs.existsSync(target)) return;
+  const source = candidates.find(candidate => fs.existsSync(candidate));
+  if (!source) return;
+  ensureParent(target);
+  fs.copyFileSync(source, target);
 }
 
 // ── Read / Write ─────────────────────────────────────────────
@@ -363,26 +368,20 @@ export function readState(): WorkflowState {
   const root = projectRoot();
   const p = statePath();
   if (!fs.existsSync(p)) {
-    const legacy = legacyStatePath(root);
-    if (fs.existsSync(legacy)) {
+    const legacy = [gitPrivatePath(root, RUNTIME_STATE_FILE), legacyStatePath(root)]
+      .find(candidate => fs.existsSync(candidate));
+    if (legacy) {
       const state = parseWorkflowStateFile(legacy);
-      try {
-        writeState(state);
-        cleanupLegacyRuntimeFiles(root);
-      } catch {}
+      writeState(state);
       return state;
     }
-    cleanupLegacyRuntimeFiles(root);
     return initialState();
   }
-  cleanupLegacyRuntimeFiles(root);
   return parseWorkflowStateFile(p);
 }
 
 export function writeState(state: WorkflowState): void {
-  const dir = path.dirname(statePath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(statePath(), JSON.stringify(state, null, 2) + "\n", "utf-8");
+  atomicWriteJson(statePath(), state);
 }
 
 // ── Phase transitions ────────────────────────────────────────

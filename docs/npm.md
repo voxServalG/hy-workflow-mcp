@@ -22,9 +22,10 @@ There is no `prepare`, `install`, or `postinstall` build. Registry users receive
 
 - `name` must be `@voxstudio/hy-workflow`, with public scoped-package access
 - `bin["hy-workflow"]` and `main` must point at `dist/server.js`
-- `files` must include `dist`, `docs`, `setup`, `setup.ps1`, and `README.md`
+- `files` must include `dist`, `docs`, `templates`, and `README.md`
 - `dist/` and local `*.tgz` tarballs must not be tracked by Git
-- npm pack must include `dist/server.js`
+- npm pack must include `dist/server.js` and `templates/hy-workflow.yml`
+- npm pack must not include legacy `setup` or `setup.ps1`
 - No `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, compatibility JSON, `test/`, or `src/` files may enter npm pack
 
 ## Release boundary

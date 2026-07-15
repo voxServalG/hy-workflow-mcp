@@ -18,11 +18,12 @@ const syncDocs = readDist("tools/sync_docs.js");
 assert(!init.includes("npx --yes github:voxServalG/hy-harness"), "dist init must not execute hy-harness");
 assert(!init.includes("stdio: \"inherit\""), "dist init must not inherit stdio");
 assert(!init.includes("Harness deployed"), "dist init must not report harness deployment");
-assert(init.includes("harnessArtifactStatus"), "dist init should verify harness artifacts");
+assert(init.includes("setupArtifactStatus"), "dist init should verify user-local setup artifacts");
 assert(init.includes("harness_missing"), "dist init should expose structured missing-harness recovery");
 
 assert(!server.includes("初始化项目：部署 hy-harness"), "dist server description must not claim hy_init deploys hy-harness");
-assert(server.includes("不会在 MCP 内启动交互式 harness"), "dist server description should describe non-interactive init");
+assert(server.includes("默认不写项目或 .git"), "dist server description should describe zero-project-change init");
+assert(server.includes('argv[0] === "setup" || argv[0] === "unset"'), "dist server should expose setup and unset through one CLI engine");
 
 assert(server.includes("hy_read_docs"), "dist server should register hy_read_docs");
 assert(readDocs.includes("before_plan"), "dist read_docs should implement before_plan stage");
