@@ -6,6 +6,8 @@
 
 hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在"先读文档、先计划、等用户批准、锁定 scope、实现、同步文档、验证、提交、CI、合并、整理下游"的闭环里，减少跳步、乱改和把本地产物混进 PR 的机会。
 
+完整合同文档从 [docs/index.md](docs/index.md) 进入。
+
 ## 安装与部署
 
 先从 npm 全局安装两个 scoped 包，再进入任意 Git 项目根目录运行统一 setup TUI：
