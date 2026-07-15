@@ -31,7 +31,7 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [], allowedTools: ["hy_read_docs", "hy_status"] }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 是唯一有效项目配置源。旧用户 config 和含 mode 的 deployment manifest 仅供 setup 只读迁移，不能让 hy_init 绕过缺失的根配置。缺少 deployment/root config 或版本过期时，agent 必须停下并请用户运行 `hy-workflow setup`。
+`hy-workflow.json` 是唯一有效项目配置源。MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input. 根配置必须显式包含 runtime 必填字段，默认推断不能让缺项通过 `hy_init`。只有外置 deployment 满足 setup gate；含 mode 的旧 manifest 或当前版本的项目内 legacy stamp 都不能绕过。缺少 deployment/root config 或版本过期时，agent 必须停下并请用户运行 `hy-workflow setup`。
 
 旧 local/runtime artifacts 已被跟踪时仍返回诊断，但不会自动删除或改写。
 
@@ -108,6 +108,8 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state �
 
 执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后记录当前 implementation manifest、manifest hash、文件内容 digest 和 verifyHash，并转换到 commit。
 
+`boundary.no_new_external` 校验外部依赖声明，而不是把 `package.json` / `package-lock.json` 的任意字节变化都当成新增依赖。npm 包的 version、scripts 和 lockfile 根包 version 等发布元数据可以变化；dependencies、devDependencies、peerDependencies、optionalDependencies、bundle/bundledDependencies 或其他生态依赖清单发生变化仍 fail closed。无法读取或解析 `origin/<baseBranch>` 基线时同样失败。
+
 - **进入 Phase**: `edit`, `verify`
 - **通过后转换到**: `commit`
 - **失败后转换到**: `edit`
@@ -116,7 +118,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state �
 
 ## hy_amend_plan
 
-`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，不替代 `hy_plan` 的人类审批。应用前会校验 pending amendment shape、所有增删路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的用户 state scope lock。
+`hy_verify` 返回 `amend_required` 时，用户明确批准后应用 pending scope amendment。该工具只处理 verifier 判断为安全的小范围 scope 修订，包括批准边界内的测试支持文件，以及从 scope 移除实际未改动且不会导致 scope 为空的已声明路径；不替代 `hy_plan` 的人类审批。应用前会校验 pending amendment shape、所有增删路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的用户 state scope lock。
 
 - **进入 Phase**: `verify`
 - **转换到**: `edit` / `verify`
@@ -124,17 +126,19 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state �
 
 ## hy_commit
 
-`hy_commit` 先用 `git status --porcelain -z` 在 PlanDoc scope 内筛出当前真实差异，再执行 git add → commit → push → gh pr create。已在前一次提交中删除的 `scope.delete` 路径不会在 CI 修复后的后续提交中重复传给 `git add`；没有真实 scope 差异时返回 `NO_SCOPED_CHANGES`，不创建空提交。提交前仍执行安全 preflight：当前 Git 分支必须等于 `WorkflowState.branch`，当前 implementation manifest、内容 digest 和 verifyHash 必须与 `hy_verify` 记录一致。`hy_commit` 全程使用 argv 传参，并在 `data.executor` 中分别报告 commit、push 和 createPr 使用的执行器。
+`hy_commit` 先固定 `baseBranch` 和 origin repository，要求 origin fetch/push URL 解析为同一带 host selector，再用 `git status --porcelain -z` 在 PlanDoc scope 内筛出当前真实差异并执行 git add → commit。提交后再次核对 implementation 路径集合与内容 digest，并在 push 前持久化 commit OID、verifyHash、branch、baseBranch 和 repository。push 使用 `<verified-commit-oid>:refs/heads/<branch>`，不会推送可移动 branch ref。PR 操作忽略 `GH_REPO` 与 `GH_HOST`，查询 repository/base/head/headRefOid 全部精确匹配的 OPEN PR：唯一匹配直接复用，零匹配才调用 `gh pr create`；多匹配、旧 head OID、查询失败、JSON 异常或不精确匹配均 fail closed。create 无论命令成功或失败都必须再查询确认 exact PR，成功输出的 PR number 也必须与确认结果一致。
 
-PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 GitHub PR 创建成功之后，不反向改写 PR body。
+已在前一次提交中删除的 `scope.delete` 路径不会在 CI 修复后的后续提交中重复传给 `git add`。一般情况下没有真实 scope 差异仍返回 `NO_SCOPED_CHANGES`；只有持久化 recovery record 与当前 verifyHash/branch/base/repository/HEAD 全部一致时，重试才把记录中的 OID 作为 `recovered_verified_head` 继续 exact-SHA push 和 PR lookup。相同 verifyHash 已存在 recovery record 时进入 recovery-only 路径，绝不再次 commit；scope worktree 变脏，或 branch/base/repository 任一漂移都会在 push 前 fail closed。缺少记录或 clean HEAD 被空提交等方式移动时同样失败。提交前当前 Git 分支必须等于 `WorkflowState.branch`。`hy_commit` 全程使用 argv 传参，并在 `data.executor` 及 `data.commit`/`data.push` 中报告执行器、恢复动作和 SHA。
+
+新建 PR 的 body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 PR 新建或复用成功之后，不反向改写 PR body。复用既有 PR 时不覆盖它的 body。
 
 - **进入 Phase**: `commit`
 - **转换到**: `ci`
-- **返回**: `{ next: "ci", prNumber, url, display, hint }` 或 `{ error, requires_user: true, stop_here: true, recovery }`
+- **返回**: `{ next: "ci", prNumber, url, reused, data: { prAction, commit: { action, sha }, push: { sha }, repository, headRefOid }, display, hint }` 或 `{ error, requires_user: true, stop_here: true, recovery }`
 
 ## hy_ci
 
-通过已安装且已认证的 `gh pr view --json statusCheckRollup` 轮询 GitHub CI 状态，并在 `data.executor` 报告本次 `gh` 能力。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
+通过已安装且已认证的 `gh pr view` 在每次 polling 的同一响应中读取 `state`、`baseRefName`、`headRefName`、`headRefOid`、`isCrossRepository` 和 `statusCheckRollup`。活跃 workflow 必须有 matching recovery record，origin 必须仍解析到记录中的 repository，PR tuple 也必须精确匹配；`GH_REPO` 与 `GH_HOST` 会被忽略。`data.executor` 报告本次 `gh` 能力。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
 
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
@@ -147,7 +151,7 @@ setup 生成的 workflow 必须执行 doclint 与 codelint。仓库管理员需�
 
 ## hy_merge
 
-通过已安装且已认证的 `gh pr merge --merge --delete-branch` 合并 PR，并在 `data.executor` 报告执行器。PR number 必须是正整数，并通过 argv 传给 `gh`；损坏运行态不会被当作命令片段执行。
+通过已安装且已认证的 `gh` 在 merge 前再次读取并精确比较 PR repository/base/head/headRefOid，然后执行 `gh pr merge --match-head-commit <verified-oid> --merge --delete-branch`。origin 必须仍匹配 recovery record；`GH_REPO` 与 `GH_HOST` 会被忽略。`data.executor` 报告执行器。PR number 必须是正整数，并通过 argv 传给 `gh`；损坏运行态不会被当作命令片段执行。
 
 - **进入 Phase**: `merge`
 - **转换到**: `chain`

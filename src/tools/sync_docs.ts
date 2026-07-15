@@ -14,7 +14,7 @@ import { buildImplementationManifest } from "../checks.js";
 import { ensureGraph, incrementalUpdate, detectBrokenLinks } from "../docs_graph.js";
 import { isDocumentPath, pathInsideDocs, resolveDocsDir } from "../docs_paths.js";
 import { toolResult, type ToolResult } from "./_base.js";
-import { readUnifiedConfig } from "../config.js";
+import { requireRuntimeConfig } from "../config.js";
 
 export function isSyncDocumentPath(file: string): boolean {
   return file === "README.md"
@@ -53,8 +53,7 @@ export function implementationDigest(root: string, plan: PlanDoc, manifest: Impl
 }
 
 function readDocsDir(root: string): string {
-  const docsDir = readUnifiedConfig(root)?.project?.docsDir;
-  return typeof docsDir === "string" && docsDir.trim() ? docsDir : "docs";
+  return requireRuntimeConfig(root).project.docsDir as string;
 }
 
 export async function handleSyncDocs(): Promise<ToolResult> {
@@ -75,8 +74,24 @@ export async function handleSyncDocs(): Promise<ToolResult> {
     });
   }
 
-  const manifest = buildImplementationManifest(projectRoot());
-  const currentImplementationDigest = implementationDigest(projectRoot(), state.plan, manifest);
+  const root = projectRoot();
+  let configuredDocsDir: string;
+  try {
+    configuredDocsDir = readDocsDir(root);
+  } catch (error) {
+    return toolResult("edit", {
+      phase: state.phase,
+      error,
+      hint: "Run hy-workflow setup in the project root, then retry hy_sync_docs.",
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const manifest = buildImplementationManifest(root);
+  const currentImplementationDigest = implementationDigest(root, state.plan, manifest);
   if (afterEdit.implementationDigest !== currentImplementationDigest) {
     return toolResult("edit", {
       phase: state.phase,
@@ -87,8 +102,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
     });
   }
 
-  const root = projectRoot();
-  const configuredDocsDir = readDocsDir(root);
   const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
   if (!resolvedDocsDir.ok) {
     return toolResult("edit", {

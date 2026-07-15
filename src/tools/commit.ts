@@ -1,6 +1,7 @@
 import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computeImplementationManifestHash, computePlanHash, computeVerifyHash, currentBranch, type PlanDoc } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
-import { commitScope, push, createPr } from "../git.js";
+import { requireRuntimeConfig } from "../config.js";
+import { commitScope, push, createPr, inspectScopedWorktree, resolveHeadCommit, resolveOriginRepository, parseCommitRecovery, type CommitRecoveryRecord } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
 function markdownFenceFor(value: string): string {
@@ -147,34 +148,295 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     });
   }
 
+  if (!state.approval) {
+    return toolResult("commit", {
+      error: "Missing approval state",
+      hint: "Reset the invalid workflow state before committing.",
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  let baseBranch: string;
+  try {
+    requireRuntimeConfig(root);
+    baseBranch = getBaseBranch(root);
+  } catch (caught: any) {
+    return toolResult("commit", {
+      error: caught,
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+  const origin = resolveOriginRepository(root);
+  if (!origin.ok) {
+    return toolResult("commit", {
+      error: origin.error,
+      data: { executor: { origin: origin.executor } },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_commit", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+  const repository = origin.repository;
+
   const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: state.verifyHash });
 
-  const c = commitScope(root, state.plan.scope, args.title, body);
-  if (!c.ok) return toolResult("commit", { error: c.error, data: { executor: { commit: c.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
+  const rawRecovery = (state.approval as typeof state.approval & { commitRecovery?: unknown }).commitRecovery;
+  const parsedRecovery = parseCommitRecovery(rawRecovery);
+  const sameVerificationRecovery: CommitRecoveryRecord | null = parsedRecovery?.verifyHash === state.verifyHash ? parsedRecovery : null;
+  if (sameVerificationRecovery && (
+    sameVerificationRecovery.branch !== state.branch
+    || sameVerificationRecovery.baseBranch !== baseBranch
+    || sameVerificationRecovery.repository !== repository
+  )) {
+    return toolResult("commit", {
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "COMMIT_RECOVERY_IDENTITY_MISMATCH",
+        message: "The branch, base branch, or origin repository changed after this verified commit recovery identity was recorded.",
+        hint: "Do not create another commit from the old verification. Restore the recorded Git identity or rerun the edit, document, and verify gates.",
+        detail: {
+          expected: {
+            branch: sameVerificationRecovery.branch,
+            baseBranch: sameVerificationRecovery.baseBranch,
+            repository: sameVerificationRecovery.repository,
+          },
+          actual: { branch: state.branch, baseBranch, repository },
+          verifyHash: state.verifyHash,
+        },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+  const matchingRecovery: CommitRecoveryRecord | null = sameVerificationRecovery
+    && sameVerificationRecovery.branch === state.branch
+    && sameVerificationRecovery.baseBranch === baseBranch
+    && sameVerificationRecovery.repository === repository
+    ? sameVerificationRecovery
+    : null;
 
-  const p = push(root, state.branch);
-  if (!p.ok) return toolResult("commit", { error: p.error, data: { executor: { commit: c.executor, push: p.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry or manually recover the already-created local commit if needed." }, allowedTools: ["hy_commit", "hy_status"] });
+  let c: ReturnType<typeof commitScope>;
+  let noScopedChanges: boolean;
+  if (matchingRecovery) {
+    const inspectedScope = inspectScopedWorktree(root, state.plan.scope);
+    if (!inspectedScope.ok) {
+      return toolResult("commit", {
+        error: inspectedScope.error,
+        data: { executor: { commit: inspectedScope.executor }, stagedPaths: inspectedScope.changedPaths },
+        requires_user: true,
+        stop_here: true,
+        allowedTools: ["hy_commit", "hy_status"],
+        blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      });
+    }
+    if (inspectedScope.changedPaths.length) {
+      return toolResult("commit", {
+        error: {
+          type: "workflow_state",
+          subtype: "invalid_phase",
+          code: "COMMIT_RECOVERY_WORKTREE_CHANGED",
+          message: "Scoped worktree changes exist after a verified commit recovery identity was recorded.",
+          hint: "Do not create another commit from the old verification. Restore the recorded commit or rerun the edit, document, and verify gates.",
+          detail: { expectedCommitOid: matchingRecovery.commitOid, changedPaths: inspectedScope.changedPaths },
+        },
+        data: { executor: { commit: inspectedScope.executor }, stagedPaths: inspectedScope.changedPaths },
+        requires_user: true,
+        stop_here: true,
+        allowedTools: ["hy_verify", "hy_status"],
+        blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      });
+    }
+    c = {
+      ok: false,
+      error: { code: "NO_SCOPED_CHANGES" },
+      executor: inspectedScope.executor,
+      stagedPaths: [],
+    };
+    noScopedChanges = true;
+  } else {
+    c = commitScope(root, state.plan.scope, args.title, body);
+    noScopedChanges = !c.ok && (c.error as any)?.code === "NO_SCOPED_CHANGES";
+  }
+  if (!c.ok && !noScopedChanges) return toolResult("commit", { error: c.error, data: { executor: { commit: c.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (noScopedChanges && !matchingRecovery) {
+    return toolResult("commit", {
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "COMMIT_RECOVERY_STATE_MISSING",
+        message: "No scoped worktree changes remain, but no matching verified commit recovery record exists.",
+        hint: "Do not create an empty commit or guess from HEAD. Return to edit/verify so a real verified commit can be recorded.",
+        detail: { verifyHash: state.verifyHash, branch: state.branch, baseBranch, repository, recovery: rawRecovery ?? null },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
 
-  const pr = createPr(root, args.title, body, getBaseBranch(root), state.branch);
-  if (!pr.ok) return toolResult("commit", { error: pr.error, data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR creation failure. If the branch is already pushed, create the PR without recommitting only with user approval." }, allowedTools: ["hy_commit", "hy_status"] });
+  const resolvedHead = resolveHeadCommit(root);
+  if (!resolvedHead.ok || !resolvedHead.hash) {
+    return toolResult("commit", {
+      error: resolvedHead.error ?? {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "GIT_HEAD_UNAVAILABLE",
+        message: "Could not resolve the verified commit after the commit step.",
+        hint: "Repair the workflow branch, then retry hy_commit.",
+      },
+      data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths },
+      requires_user: true,
+      stop_here: true,
+      recovery: { tool: "hy_commit", instruction: "Repair the workflow branch and retry hy_commit without creating an empty commit." },
+      allowedTools: ["hy_commit", "hy_status"],
+    });
+  }
+  if (c.ok && c.hash !== resolvedHead.hash) {
+    return toolResult("commit", {
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "GIT_COMMIT_OID_MISMATCH",
+        message: "The commit result no longer matches the current workflow HEAD.",
+        hint: "Do not push. Inspect the workflow branch, then rerun verification and hy_commit.",
+        detail: { committed: c.hash, current: resolvedHead.hash },
+      },
+      data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+  if (noScopedChanges && matchingRecovery && resolvedHead.hash !== matchingRecovery.commitOid) {
+    return toolResult("commit", {
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "GIT_RECOVERY_OID_MISMATCH",
+        message: "The current clean HEAD does not match the verified commit recorded before the earlier push or PR failure.",
+        hint: "Do not push the moved HEAD. Restore the recorded commit or rerun the edit, document, and verify gates.",
+        detail: { expected: matchingRecovery.commitOid, actual: resolvedHead.hash },
+      },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
 
-  const next = transition(state, "ci");
+  const commitHash = resolvedHead.hash;
+  const commitAction = noScopedChanges ? "recovered_verified_head" : "created";
+  let postCommitManifest;
+  try {
+    postCommitManifest = buildImplementationManifest(root);
+  } catch (e: any) {
+    return toolResult("commit", {
+      error: {
+        type: "scope",
+        subtype: "scope_drift",
+        code: "IMPLEMENTATION_MANIFEST_UNAVAILABLE_AFTER_COMMIT",
+        message: e?.message ?? String(e),
+        hint: "Do not push. Fix the Git manifest error, then rerun hy_verify before hy_commit.",
+      },
+      data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+  const beforePaths = [...currentManifest.changed].sort();
+  const afterPaths = [...postCommitManifest.changed].sort();
+  const postCommitDigest = computeImplementationDigest(root, postCommitManifest);
+  if (JSON.stringify(beforePaths) !== JSON.stringify(afterPaths) || postCommitDigest !== state.verifiedImplementationDigest) {
+    return toolResult("commit", {
+      error: {
+        type: "verification",
+        subtype: "check_failed",
+        code: "IMPLEMENTATION_CHANGED_AFTER_COMMIT",
+        message: "Implementation paths or content changed during the commit step.",
+        hint: "Do not push. Review the concurrent change, then rerun hy_read_docs(after_edit), hy_sync_docs, hy_verify, and hy_commit.",
+        detail: { expectedPaths: beforePaths, actualPaths: afterPaths, expectedDigest: state.verifiedImplementationDigest, actualDigest: postCommitDigest },
+      },
+      data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_read_docs", "hy_verify", "hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  let activeState = state;
+  if (!noScopedChanges) {
+    const commitRecovery: CommitRecoveryRecord = {
+      version: 1,
+      commitOid: commitHash,
+      verifyHash: state.verifyHash,
+      branch: state.branch,
+      baseBranch,
+      repository,
+    };
+    activeState = {
+      ...state,
+      approval: { ...state.approval, commitRecovery } as typeof state.approval,
+    };
+    try {
+      writeState(activeState);
+    } catch (caught: any) {
+      return toolResult("commit", {
+        error: {
+          type: "io",
+          subtype: "io_failure",
+          code: "COMMIT_RECOVERY_PERSIST_FAILED",
+          message: "The verified commit was created but its recovery identity could not be persisted before push.",
+          hint: "Do not push. Repair the user state directory, then rerun the edit/verify/commit flow.",
+          cause: caught?.message ?? String(caught),
+        },
+        requires_user: true,
+        stop_here: true,
+        allowedTools: ["hy_status"],
+        blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      });
+    }
+  }
+
+  const p = push(root, state.branch, commitHash, repository);
+  if (!p.ok) return toolResult("commit", { error: p.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry hy_commit; it will reuse the same verified commit instead of creating an empty commit." }, allowedTools: ["hy_commit", "hy_status"] });
+
+  const pr = createPr(root, args.title, body, baseBranch, state.branch, commitHash, repository);
+  if (!pr.ok) return toolResult("commit", { error: pr.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash } }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR lookup or creation failure, then retry hy_commit. The retry will reuse the verified commit and must not create a duplicate PR." }, allowedTools: ["hy_commit", "hy_status"] });
+
+  const next = transition(activeState, "ci");
   next.prNumber = pr.prNumber ?? null;
   next.plan!.pr_number = next.prNumber;
   writeState(next);
+  const action = pr.reused ? "reused" : "created";
 
   return toolResult("ci", {
     prNumber: pr.prNumber,
     url: pr.url,
-    data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths },
+    reused: Boolean(pr.reused),
+    data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash }, prAction: action, repository: pr.repository, headRefOid: pr.headRefOid },
     display: {
-      title: "Pull request created",
-      body: `PR #${pr.prNumber} created.`,
+      title: pr.reused ? "Pull request reused" : "Pull request created",
+      body: `PR #${pr.prNumber} ${action}.`,
       urls: pr.url ? [pr.url] : [],
     },
     hint: "Show the PR URL briefly, then continue to hy_ci. Do not stop here unless a later tool reports CI or merge problems.",
     allowedTools: ["hy_ci", "hy_status"],
     blockedTools: ["hy_merge", "hy_chain"],
-    message: `PR #${pr.prNumber} created. Waiting for CI...`,
+    message: `PR #${pr.prNumber} ${action}. Waiting for CI...`,
   });
 }

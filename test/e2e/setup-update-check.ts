@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { checkSetupStamp, createSetupGate, SETUP_VERSION, setupStampPath, setupUpdateRequiredResult } from "../../src/bootstrap.js";
+import { writeDeployment } from "../../src/runtime/deployment.js";
 import { setupHelp } from "../../src/setup-cli.js";
 import { MCP_DEFINITIONS } from "../../src/setup/types.js";
 
@@ -17,9 +18,7 @@ function tempRepo(): string {
 }
 
 function writeStamp(root: string, setupVersion: string): void {
-  const stampPath = setupStampPath(root);
-  fs.mkdirSync(path.dirname(stampPath), { recursive: true });
-  fs.writeFileSync(stampPath, JSON.stringify({ schemaVersion: "1", setupVersion }, null, 2) + "\n", "utf-8");
+  writeDeployment(root, { setupVersion, mode: "shared", clients: [] });
 }
 
 function listFiles(root: string): string[] {
@@ -82,6 +81,43 @@ try {
   const outdated = checkSetupStamp(outdatedRoot);
   assert(outdated.status === "outdated", `expected outdated, got ${outdated.status}`);
   assert(outdated.currentVersion === "0.0.0", "outdated check should expose current version");
+
+  const previousDeploymentRoot = tempRepo();
+  writeStamp(previousDeploymentRoot, "2026.07.14.3");
+  const previousDeployment = checkSetupStamp(previousDeploymentRoot);
+  assert(previousDeployment.status === "outdated", `previous deployment must rerun setup, got ${previousDeployment.status}`);
+  assert(previousDeployment.latestVersion === "2026.07.14.4", "setup gate should advertise the new deployment version");
+
+  const legacyStampRoot = tempRepo();
+  const legacyStampPath = path.join(legacyStampRoot, ".git", "hy-workflow", "setup.json");
+  fs.mkdirSync(path.dirname(legacyStampPath), { recursive: true });
+  fs.writeFileSync(legacyStampPath, JSON.stringify({ setupVersion: "2026.07.14.2" }) + "\n", "utf-8");
+  const legacyStamp = checkSetupStamp(legacyStampRoot);
+  assert(legacyStamp.status === "missing_stamp", `legacy project stamp must not count as an external deployment, got ${legacyStamp.status}`);
+  assert(legacyStamp.currentVersion === null, "legacy project stamp must not supply the active deployment version");
+  assert(legacyStamp.stampPath === setupStampPath(legacyStampRoot), "legacy reads should still direct users to the external deployment path");
+
+  const currentLegacyStampRoot = tempRepo();
+  const currentLegacyStampPath = path.join(currentLegacyStampRoot, ".git", "hy-workflow", "setup.json");
+  fs.mkdirSync(path.dirname(currentLegacyStampPath), { recursive: true });
+  fs.writeFileSync(currentLegacyStampPath, JSON.stringify({ setupVersion: SETUP_VERSION }) + "\n", "utf-8");
+  const currentLegacyStamp = checkSetupStamp(currentLegacyStampRoot);
+  assert(currentLegacyStamp.status === "missing_stamp" && currentLegacyStamp.currentVersion === null, "even a current-version legacy stamp must not bypass the required external deployment");
+
+  const corruptDeploymentRoot = tempRepo();
+  const corruptDeploymentPath = setupStampPath(corruptDeploymentRoot);
+  fs.mkdirSync(path.dirname(corruptDeploymentPath), { recursive: true });
+  fs.writeFileSync(corruptDeploymentPath, JSON.stringify({ setupVersion: SETUP_VERSION }) + "\n", "utf-8");
+  const corruptDeployment = checkSetupStamp(corruptDeploymentRoot);
+  assert(corruptDeployment.status === "unreadable", "an external file without the deployment schema must fail closed as unreadable");
+
+  const mismatchedIdentityRoot = tempRepo();
+  writeStamp(mismatchedIdentityRoot, SETUP_VERSION);
+  const mismatchedIdentityPath = setupStampPath(mismatchedIdentityRoot);
+  const mismatchedIdentity = JSON.parse(fs.readFileSync(mismatchedIdentityPath, "utf-8"));
+  mismatchedIdentity.identity.root = `${mismatchedIdentity.identity.root}-other`;
+  fs.writeFileSync(mismatchedIdentityPath, JSON.stringify(mismatchedIdentity, null, 2) + "\n", "utf-8");
+  assert(checkSetupStamp(mismatchedIdentityRoot).status === "unreadable", "a deployment for another canonical project identity must fail closed");
 
   const currentRoot = tempRepo();
   writeStamp(currentRoot, SETUP_VERSION);

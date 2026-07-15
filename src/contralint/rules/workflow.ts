@@ -23,6 +23,7 @@ const DOCUMENT_GATE_SEQUENCE = [
 const DOCUMENT_GATE_CONTRACT_FILES = [
   "AGENTS.md",
   "src/server.ts",
+  "docs/state-machine.md",
   "docs/skills/core/SKILL.md",
 ];
 
