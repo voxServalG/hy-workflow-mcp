@@ -1,4 +1,4 @@
-import { readPackageJson, npmPackDryRun } from "../../src/npm/package.js";
+import { readPackageJson, npmPackDryRun, parseNpmPackFiles } from "../../src/npm/package.js";
 import { execFileSync, execSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,19 @@ function assert(condition: boolean, message: string): void {
 }
 
 const pkg = readPackageJson(process.cwd());
+
+const expectedFixtureFiles = ["dist/server.js", "templates/hy-workflow.yml"];
+const npm10FixtureFiles = parseNpmPackFiles([{ files: expectedFixtureFiles.map(path => ({ path })) }]);
+const npm12FixtureFiles = parseNpmPackFiles({
+  "@voxstudio/hy-workflow": { files: expectedFixtureFiles.map(path => ({ path })) },
+});
+const malformedFixtureFiles = parseNpmPackFiles({
+  "@voxstudio/hy-workflow": { files: [{ path: "dist/server.js" }, { path: "" }, {}, "invalid"] },
+  metadata: null,
+});
+assert(npm10FixtureFiles.join(",") === expectedFixtureFiles.join(","), "npm 10 array-shaped pack JSON must be parsed");
+assert(npm12FixtureFiles.join(",") === expectedFixtureFiles.join(","), "npm 12 package-keyed pack JSON must be parsed");
+assert(malformedFixtureFiles.join(",") === "dist/server.js", "malformed pack entries must be ignored");
 
 assert(pkg.name === "@voxstudio/hy-workflow", "package.json name must be @voxstudio/hy-workflow");
 assert(pkg.publishConfig?.access === "public", "scoped package must publish with public access");
