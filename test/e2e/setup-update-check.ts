@@ -44,10 +44,10 @@ process.env.HY_WORKFLOW_STATE_HOME = path.join(runtimeHome, "state");
 process.env.HY_WORKFLOW_CACHE_HOME = path.join(runtimeHome, "cache");
 const help = setupHelp();
 assert(help.includes("Interactive install/update/unset TUI"), "setup help should describe the unified TUI");
-assert(help.includes("--shared") && help.includes("--remove-global"), "setup help should expose shared mode and safe global removal");
+assert(!help.includes("--shared") && !help.includes("--local") && help.includes("--remove-global"), "setup help should expose one default deployment and safe global removal");
 assert(MCP_DEFINITIONS["hy-workflow"].command === "hy-workflow", "setup should configure the direct hy-workflow command");
 assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener", "setup should configure the direct docs-gardener command");
-assert(fs.existsSync(path.join(originalCwd, "templates", "hy-workflow.yml")), "explicit shared mode should ship one workflow template");
+assert(fs.existsSync(path.join(originalCwd, "templates", "hy-workflow.yml")), "default setup should ship one workflow template");
 
 try {
   const missingRoot = tempRepo();

@@ -17,16 +17,17 @@ assert(!fs.existsSync(path.join(root, "setup")), "legacy Bash setup entrypoint m
 assert(!fs.existsSync(path.join(root, "setup.ps1")), "legacy PowerShell setup entrypoint must be removed");
 assert(pkg.files.includes("templates") && !pkg.files.includes("setup") && !pkg.files.includes("setup.ps1"), "npm files must package templates, not platform scripts");
 
-for (const token of ["hy-workflow setup", "hy-workflow unset", "--clients", "--yes", "--json", "--dry-run", "--shared", "--remove-global"]) {
+for (const token of ["hy-workflow setup", "hy-workflow unset", "--clients", "--yes", "--json", "--dry-run", "--remove-global"]) {
   assert(help.includes(token), `setup help should include ${token}`);
 }
+assert(!help.includes("--local") && !help.includes("--shared"), "setup help should expose no deployment-mode choice");
 assert(MCP_DEFINITIONS["hy-workflow"].command === "hy-workflow" && MCP_DEFINITIONS["hy-workflow"].args.length === 0, "hy-workflow MCP should use the installed binary directly");
 assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener" && MCP_DEFINITIONS["docs-gardener"].args.join(" ") === "mcp", "docs-gardener MCP should use the installed binary directly");
 
 const template = read("templates/hy-workflow.yml");
 const workflow = read(".github/workflows/hy-workflow.yml");
 assert(template === workflow, "checked-in shared workflow must match the packaged template exactly");
-assert(!template.includes('"setup"') && !template.includes('"setup.ps1"'), "shared workflow must not reference removed installers");
+assert(!template.includes('"setup"') && !template.includes('"setup.ps1"'), "default workflow must not reference removed installers");
 
 for (const file of ["README.md", "docs/setup.md"]) {
   const content = read(file);

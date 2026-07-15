@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { codeExtOr, formatCodeExt, normalizeCodeExt, type CodeExt, validateCodeExt } from "./code_ext.js";
-import { atomicWriteJson, projectPaths } from "./runtime/user-paths.js";
+import { projectPaths } from "./runtime/user-paths.js";
 
 export type ProjectKind = "python" | "typescript" | "unknown" | "mixed";
 
@@ -66,6 +66,11 @@ function exists(root: string, rel: string): boolean {
   return fs.existsSync(path.join(root, rel));
 }
 
+function directoryExists(root: string, rel: string): boolean {
+  try { return Boolean(rel) && fs.statSync(path.join(root, rel)).isDirectory(); }
+  catch { return false; }
+}
+
 type JsonRead = {
   value: JsonObject | null;
   issue: string | null;
@@ -103,8 +108,7 @@ function readJsonPath(filePath: string, label = filePath): JsonRead {
 }
 
 export function effectiveConfigPath(root: string): string {
-  const shared = path.join(root, UNIFIED_CONFIG_FILE);
-  return fs.existsSync(shared) ? shared : projectPaths(root).config;
+  return path.join(root, UNIFIED_CONFIG_FILE);
 }
 
 function readJson(root: string, rel: string): JsonObject | null {
@@ -137,8 +141,15 @@ function listFiles(root: string, dir: string, ext: string): string[] {
 }
 
 function existingDirs(root: string, candidates: string[]): string[] {
-  return candidates.filter(dir => {
-    try { return fs.statSync(path.join(root, dir)).isDirectory(); } catch { return false; }
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); }
+  catch { return []; }
+  return candidates.flatMap(candidate => {
+    const matches = entries.filter(entry => entry.name === candidate || entry.name.toLowerCase() === candidate.toLowerCase());
+    const isDirectory = (entry: fs.Dirent): boolean => directoryExists(root, entry.name);
+    const match = matches.find(entry => entry.name === candidate && isDirectory(entry))
+      ?? matches.find(isDirectory);
+    return match ? [match.name] : [];
   });
 }
 
@@ -189,12 +200,14 @@ function inferDirs(root: string, ext: string): string[] {
   const dirs = existingDirs(root, ["src", "test", "tests", "scripts", "lib", "packages"]);
   const withFiles = dirs.filter(dir => listFiles(root, dir, ext).length > 0);
   if (withFiles.length) return withFiles;
-  if (exists(root, "src")) return ["src"];
+  const [srcDir] = existingDirs(root, ["src"]);
+  if (srcDir) return [srcDir];
   return ["src"];
 }
 
 function inferLintDirs(root: string, codeDirs: string[]): string[] {
-  if (exists(root, "src")) return ["src"];
+  const [srcDir] = existingDirs(root, ["src"]);
+  if (srcDir) return [srcDir];
   return codeDirs;
 }
 
@@ -219,7 +232,7 @@ export function defaultSuggestion(root: string): ConfigSuggestion {
     codeExt,
     codeDirs,
     lintDirs: inferLintDirs(root, codeDirs),
-    docsDir: exists(root, "docs") ? "docs" : "docs",
+    docsDir: existingDirs(root, ["docs", "documentation", "doc"])[0] ?? "",
     baseBranch: "dev",
     maxCodeLines: 500,
     maxDocLines: 200,
@@ -290,6 +303,20 @@ function unifiedFromInputs(
   };
 }
 
+function withExplicitOverrides(config: JsonObject, explicit: Partial<ConfigSuggestion>): JsonObject {
+  const project = { ...asObject(config.project) };
+  const codelint = { ...asObject(config.codelint) };
+  const doclint = { ...asObject(config.doclint) };
+  if (explicit.baseBranch !== undefined) project.baseBranch = explicit.baseBranch;
+  if (explicit.codeExt !== undefined) project.codeExt = explicit.codeExt;
+  if (explicit.codeDirs !== undefined) project.codeDirs = explicit.codeDirs;
+  if (explicit.docsDir !== undefined) project.docsDir = explicit.docsDir;
+  if (explicit.lintDirs !== undefined) codelint.lintDirs = explicit.lintDirs;
+  if (explicit.maxCodeLines !== undefined) codelint.maxLines = explicit.maxCodeLines;
+  if (explicit.maxDocLines !== undefined) doclint.maxLines = explicit.maxDocLines;
+  return { ...config, project, codelint, doclint };
+}
+
 function normalizedUnified(config: JsonObject, suggestion: ConfigSuggestion): JsonObject {
   const project = asObject(config.project);
   const codelint = asObject(config.codelint);
@@ -355,12 +382,12 @@ export function compatConfigs(existing: Record<string, JsonObject | null>, unifi
 
 export function ensureConfigDefaults(root: string, options: { dryRun?: boolean } = {}): ConfigCheckResult {
   const suggestion = defaultSuggestion(root);
-  return applyConfig(root, suggestion, { preserveExisting: true, dryRun: options.dryRun ?? false, mode: "setup" });
+  return applyConfig(root, suggestion, { preserveExisting: true, dryRun: options.dryRun ?? false, mode: "shared" });
 }
 
 export function readUnifiedConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject | null {
-  const source = effectiveConfigPath(root);
-  const unifiedRead = readJsonPath(source, source === path.join(root, UNIFIED_CONFIG_FILE) ? UNIFIED_CONFIG_FILE : "local project config");
+  const source = path.join(root, UNIFIED_CONFIG_FILE);
+  const unifiedRead = readJsonPath(source, UNIFIED_CONFIG_FILE);
   if (!unifiedRead.value) return null;
   const unified = normalizedUnified(unifiedRead.value, suggestion);
   if (validateUnifiedConfig(root, unifiedRead.value, unified, { checkExists: false }).length) return null;
@@ -412,20 +439,30 @@ function preservedKeys(before: JsonObject | null, after: JsonObject): string[] {
   return Object.keys(before).filter(key => JSON.stringify(before[key]) === JSON.stringify(after[key]));
 }
 
-export function applyConfig(root: string, suggestion: ConfigSuggestion, options: { preserveExisting: boolean; dryRun: boolean; mode?: string }): ConfigCheckResult {
-  const targetPath = options.mode === "shared" ? path.join(root, UNIFIED_CONFIG_FILE) : projectPaths(root).config;
-  const targetLabel = options.mode === "shared" ? UNIFIED_CONFIG_FILE : targetPath;
-  const effectiveRead = readJsonPath(targetPath, targetLabel);
-  const sharedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
-  const reads = {
-    [UNIFIED_CONFIG_FILE]: effectiveRead.value || effectiveRead.issue ? effectiveRead : sharedRead,
+export function applyConfig(root: string, suggestion: ConfigSuggestion, options: { preserveExisting: boolean; dryRun: boolean; mode?: string; overrides?: Partial<ConfigSuggestion> }): ConfigCheckResult {
+  const targetPath = path.join(root, UNIFIED_CONFIG_FILE);
+  const targetRead = readJsonPath(targetPath, UNIFIED_CONFIG_FILE);
+  const localPath = projectPaths(root).config;
+  const localRead = targetRead.value || targetRead.issue
+    ? { value: null, issue: null }
+    : readJsonPath(localPath, "local project config");
+  const effectiveRead = targetRead.value || targetRead.issue ? targetRead : localRead;
+  const compatReads = {
     "codelint.json": readJsonFile(root, "codelint.json"),
     "doclint.json": readJsonFile(root, "doclint.json"),
     "docs-gardener.json": readJsonFile(root, "docs-gardener.json"),
   };
+  const useCompatMigration = !effectiveRead.value && !effectiveRead.issue;
+  const ignoredCompat = { value: null, issue: null };
+  const reads = {
+    [UNIFIED_CONFIG_FILE]: effectiveRead,
+    "codelint.json": useCompatMigration ? compatReads["codelint.json"] : ignoredCompat,
+    "doclint.json": useCompatMigration ? compatReads["doclint.json"] : ignoredCompat,
+    "docs-gardener.json": useCompatMigration ? compatReads["docs-gardener.json"] : ignoredCompat,
+  };
   const readIssues = [reads[UNIFIED_CONFIG_FILE].issue];
-  if (options.preserveExisting) {
-    readIssues.push(reads["codelint.json"].issue, reads["doclint.json"].issue, reads["docs-gardener.json"].issue);
+  if (useCompatMigration) {
+    readIssues.push(compatReads["codelint.json"].issue, compatReads["doclint.json"].issue, compatReads["docs-gardener.json"].issue);
   }
   const blockingReadIssues = readIssues.filter((issue): issue is string => Boolean(issue));
   if (blockingReadIssues.length) return configResult(root, suggestion, blockingReadIssues, [], false);
@@ -436,10 +473,8 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
     "doclint.json": reads["doclint.json"].value,
     "docs-gardener.json": reads["docs-gardener.json"].value,
   };
-  const unified = normalizedUnified(
-    unifiedFromInputs(before[UNIFIED_CONFIG_FILE], before, suggestion, options.preserveExisting),
-    suggestion,
-  );
+  const merged = unifiedFromInputs(before[UNIFIED_CONFIG_FILE], before, suggestion, options.preserveExisting);
+  const unified = normalizedUnified(withExplicitOverrides(merged, options.overrides ?? {}), suggestion);
   const validationIssues = validateUnifiedConfig(root, unified, unified);
   if (validationIssues.length) return configResult(root, suggestion, validationIssues, [], false);
 
@@ -449,11 +484,10 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
   for (const file of [UNIFIED_CONFIG_FILE]) {
     const prev = before[file as keyof typeof before];
     const next = after[file as keyof typeof after];
-    if (JSON.stringify(prev) !== JSON.stringify(next)) changed.push(file);
+    if (!fs.existsSync(targetPath) || JSON.stringify(prev) !== JSON.stringify(next)) changed.push(file);
     preserved[file] = preservedKeys(prev, next);
     if (!options.dryRun) {
-      if (options.mode === "shared") writeJson(root, file, next);
-      else atomicWriteJson(targetPath, next);
+      writeJson(root, file, next);
     }
   }
   const result = options.dryRun ? configResult(root, suggestion, [], [], false) : checkConfig(root, suggestion);
@@ -590,8 +624,9 @@ function validateUnifiedConfig(root: string, raw: JsonObject, unified: JsonObjec
   if (typeof projectConfig.baseBranch !== "string") issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch must be a string; got ${typeName(projectConfig.baseBranch)}`);
   else if (!isSafeConfigRefName(projectConfig.baseBranch)) issues.push(`${UNIFIED_CONFIG_FILE} project.baseBranch is not a safe Git branch name: ${projectConfig.baseBranch}`);
   if (typeof projectConfig.docsDir !== "string") issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir must be a string; got ${typeName(projectConfig.docsDir)}`);
+  else if (!projectConfig.docsDir) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir is required; no documentation directory was detected. Pass --docs-dir with an existing project-relative directory.`);
   else if (!isSafeRelativePath(projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir is not a safe relative path: ${projectConfig.docsDir}`);
-  else if (checkExists && !exists(root, projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir does not exist: ${projectConfig.docsDir}`);
+  else if (checkExists && !directoryExists(root, projectConfig.docsDir)) issues.push(`${UNIFIED_CONFIG_FILE} project.docsDir is not an existing directory: ${projectConfig.docsDir}`);
 
   if (!valueCodeExtArray(projectConfig.codeExt).length) issues.push(`${UNIFIED_CONFIG_FILE} project.codeExt is empty`);
   for (const dir of valueArray(projectConfig.codeDirs)) {
@@ -606,9 +641,35 @@ function validateUnifiedConfig(root: string, raw: JsonObject, unified: JsonObjec
   return [...new Set(issues)];
 }
 
+function migrationInput(root: string): JsonObject | null {
+  const rootRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
+  if (rootRead.value) return rootRead.value;
+  if (rootRead.issue || fs.existsSync(path.join(root, UNIFIED_CONFIG_FILE))) return null;
+  return readJsonPath(projectPaths(root).config, "local project config").value;
+}
+
+function buildDocsRecoveryCommand(): string {
+  return ["hy-workflow config", "--apply", "--json", "--docs-dir", quoteArg("<existing-docs-dir>")].join(" ");
+}
+
+function buildMigrationCommand(): string {
+  return "hy-workflow config --apply --json";
+}
+
 function configResult(root: string, suggestion: ConfigSuggestion, issues: string[], drift: ConfigDrift[], ambiguous: boolean): ConfigCheckResult {
   const project = detectProject(root);
-  const suggestedCommand = buildSuggestedCommand(suggestion, ambiguous);
+  const existing = migrationInput(root);
+  const existingDocsDir = asObject(existing?.project).docsDir;
+  const recoveryDocsDir = directoryExists(root, suggestion.docsDir)
+    ? suggestion.docsDir
+    : typeof existingDocsDir === "string" && directoryExists(root, existingDocsDir) ? existingDocsDir : "";
+  const recoverySuggestion = { ...suggestion, docsDir: recoveryDocsDir };
+  const docsIssue = issues.some(issue => issue.includes("project.docsDir"));
+  const suggestedCommand = docsIssue && existing
+    ? buildDocsRecoveryCommand()
+    : existing && !fs.existsSync(path.join(root, UNIFIED_CONFIG_FILE))
+      ? buildMigrationCommand()
+    : buildSuggestedCommand(recoverySuggestion, ambiguous);
   const ok = issues.length === 0 && !ambiguous;
   const driftBody = !ok && drift.length
     ? ["", "Config drift:", ...drift.map(item => `- ${item.file}.${item.field}: expected ${JSON.stringify(item.expected)}, actual ${JSON.stringify(item.actual)}`)].join("\n")
@@ -643,9 +704,8 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const project = detectProject(root);
   const issues: string[] = [];
   const drift: ConfigDrift[] = [];
-  const source = effectiveConfigPath(root);
-  const sourceLabel = source === path.join(root, UNIFIED_CONFIG_FILE) ? UNIFIED_CONFIG_FILE : "local project config";
-  const unifiedRead = readJsonPath(source, sourceLabel);
+  const source = path.join(root, UNIFIED_CONFIG_FILE);
+  const unifiedRead = readJsonPath(source, UNIFIED_CONFIG_FILE);
   const codelintRead = readJsonFile(root, "codelint.json");
   const doclintRead = readJsonFile(root, "doclint.json");
   const gardenerRead = readJsonFile(root, "docs-gardener.json");
@@ -690,15 +750,16 @@ function quoteArg(value: string): string {
 }
 
 export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
-  const mode = needsExplicit ? " --dry-run" : " --apply-suggested";
+  const mode = !suggestion.docsDir ? "--apply" : needsExplicit ? "--dry-run" : "--apply-suggested";
+  const docsDir = suggestion.docsDir || "<existing-docs-dir>";
   return [
     "hy-workflow config",
-    mode.trim(),
+    mode,
     "--json",
     "--code-ext", quoteArg(formatCodeExt(suggestion.codeExt)),
     "--code-dirs", quoteArg(suggestion.codeDirs.join(",")),
     "--lint-dirs", quoteArg(suggestion.lintDirs.join(",")),
-    "--docs-dir", quoteArg(suggestion.docsDir),
+    "--docs-dir", quoteArg(docsDir),
     "--base-branch", quoteArg(suggestion.baseBranch),
   ].join(" ");
 }
@@ -725,7 +786,8 @@ function parseArgs(argv: string[]): ConfigArgs {
     else if (arg === "--check") args.mode = "check";
     else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--shared") args.shared = true;
-    else if (arg === "--apply" || arg === "--apply-suggested") { args.mode = "apply"; args.applySuggested = true; }
+    else if (arg === "--apply") args.mode = "apply";
+    else if (arg === "--apply-suggested") { args.mode = "apply"; args.applySuggested = true; }
     else if (arg === "--python") args.explicit.codeExt = ".py";
     else if (arg === "--typescript") args.explicit.codeExt = ".ts";
     else if (arg === "--code-ext") {
@@ -761,15 +823,16 @@ export function configHelp(): string {
     "",
     "Usage:",
     "  hy-workflow                 Start MCP stdio server",
-    "  hy-workflow setup           Configure MCP clients and local project state",
+    "  hy-workflow setup           Configure MCP clients and shared project checks",
     "  hy-workflow unset           Remove the local project deployment",
     "  hy-workflow --version       Show the installed package version",
     "  hy-workflow --help          Show this help",
     "  hy-workflow config --check --json",
+    "  hy-workflow config --apply --json --docs-dir docs",
     "  hy-workflow config --apply-suggested --json",
     "  hy-workflow config --python --code-dirs src,test --docs-dir docs --base-branch dev --json",
     "",
-    "Config is stored in the OS user config directory by default. Pass --shared to write hy-workflow.json.",
+    "Project config is stored in hy-workflow.json.",
     "Config commands emit a single JSON envelope when --json is passed.",
   ].join("\n");
 }
@@ -782,7 +845,12 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
   const result = args.errors.length
     ? configResult(root, suggestion, args.errors, [], false)
     : args.mode === "apply"
-      ? applyConfig(root, suggestion, { preserveExisting: !args.applySuggested && Object.keys(args.explicit).length === 0, dryRun: args.dryRun, mode: args.shared ? "shared" : "local" })
+      ? applyConfig(root, suggestion, {
+          preserveExisting: !args.applySuggested,
+          dryRun: args.dryRun,
+          mode: "shared",
+          overrides: args.applySuggested ? undefined : args.explicit,
+        })
       : checkConfig(root, suggestion);
   return { exitCode: result.ok ? 0 : 1, stdout: args.json ? JSON.stringify(result, null, 2) + "\n" : `${result.display.title}
 ${result.display.body}

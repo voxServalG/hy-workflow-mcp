@@ -36,7 +36,7 @@ try {
   mkdirSync(bin);
   writeFileSync(
     join(bin, "gh"),
-    "#!/usr/bin/env bash\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n  printf '{\"statusCheckRollup\":[]}'\n  exit 0\nfi\nexit 1\n",
+    "#!/usr/bin/env bash\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n  if [ \"${HY_TEST_CI_RESULT:-empty}\" = \"neutral\" ]; then\n    printf '{\"statusCheckRollup\":[{\"name\":\"docs\",\"conclusion\":\"SKIPPED\"},{\"name\":\"advisory\",\"conclusion\":\"NEUTRAL\"}]}'\n  else\n    printf '{\"statusCheckRollup\":[]}'\n  fi\n  exit 0\nfi\nexit 1\n",
     "utf-8",
   );
   chmodSync(join(bin, "gh"), 0o755);
@@ -46,19 +46,33 @@ try {
   writeState(baseState());
   const result = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
 
-  if (result.next !== "merge" || result.phase !== "merge") {
-    throw new Error(`no checks should advance to merge, got ${JSON.stringify(result)}`);
+  if (result.next !== "ci" || result.phase !== "ci") {
+    throw new Error(`no checks should remain in ci, got ${JSON.stringify(result)}`);
   }
-  if (!result.skipped || result.skipReason !== "no_reported_checks" || !result.noChecks) {
-    throw new Error(`no checks should return auditable skip fields, got ${JSON.stringify(result)}`);
+  if (!result.noChecks || result.allGreen || result.error?.code !== "CI_CHECKS_REQUIRED") {
+    throw new Error(`no checks should return a structured fail-closed result, got ${JSON.stringify(result)}`);
   }
-  if (result.requires_user || result.stop_here) {
-    throw new Error(`no checks skip should be a happy path, got ${JSON.stringify(result)}`);
+  if (!result.requires_user || !result.stop_here || !result.blockedTools?.includes("hy_merge")) {
+    throw new Error(`no checks should stop and block merge, got ${JSON.stringify(result)}`);
   }
-  if (readState().phase !== "merge") {
-    throw new Error("no checks skip should persist merge phase");
+  if (readState().phase !== "ci") {
+    throw new Error("no checks must preserve ci phase");
   }
 
+  process.env.HY_TEST_CI_RESULT = "neutral";
+  writeState(baseState());
+  const neutral = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
+  if (neutral.next !== "ci" || neutral.phase !== "ci" || !neutral.noEffectiveChecks) {
+    throw new Error(`only skipped/neutral checks should remain in ci, got ${JSON.stringify(neutral)}`);
+  }
+  if (!neutral.requires_user || !neutral.stop_here || neutral.error?.code !== "CI_CHECKS_REQUIRED") {
+    throw new Error(`only skipped/neutral checks should fail closed, got ${JSON.stringify(neutral)}`);
+  }
+  if (readState().phase !== "ci") {
+    throw new Error("only skipped/neutral checks must preserve ci phase");
+  }
+
+  delete process.env.HY_TEST_CI_RESULT;
   const sentinel = join(root, "ci-injection-sentinel");
   writeFileSync(statePath(), JSON.stringify({ ...baseState(), phase: "ci", prNumber: `123;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
   try {
@@ -73,6 +87,7 @@ try {
     throw new Error("invalid prNumber should not execute shell payload");
   }
 } finally {
+  delete process.env.HY_TEST_CI_RESULT;
   chdir(originalCwd);
   process.env.PATH = originalPath;
 }

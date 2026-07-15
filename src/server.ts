@@ -41,12 +41,12 @@ const SYSTEM_PROMPT = `
 
 ## 硬性流程（必须严格按顺序，禁止跳过）
 
-  首次使用: hy_init → hy_plan → ...
-  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+  首次使用: hy_init → hy_read_docs(before_plan) → hy_plan → ...
+  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain → hy_reset
 
 ### 流程规则
 
-**0. hy_init — 项目首次使用时调用。** 验证 OS 用户目录中的 deployment、配置与运行时状态，默认不写项目或 .git，随后自动进 plan。hy_init 不会在 MCP 内启动 setup TUI；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。
+**0. hy_init — 项目首次使用时调用。** 验证 OS 用户目录中的 deployment、根目录 hy-workflow.json 与外置运行时状态；hy_init 本身默认不写项目或 .git，随后自动进 plan。hy_init 不会在 MCP 内启动 setup TUI；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。
 
 1. hy_read_docs(before_plan) — 在 hy_plan 前由 agent 自动调用，不需要人类审核。读取 hy-workflow.json project.docsDir 指向的文档系统，形成规划事实基线，用于发现约束、术语、相关文件、未知点和验证期望。
 2. hy_plan — 调用时传入 {task, plan}。你需要先基于 before_plan 的文档事实基线构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 gate 校验 PlanDoc 质量，通过后方可进入 approve。
@@ -57,12 +57,13 @@ const SYSTEM_PROMPT = `
 5. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
 6. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
-8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或 shared template 文件内同步，完成后再 hy_verify。
-9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。完整 lint 由 GitHub Actions 和 setup 生成的 workflow 执行；hy_verify 失败回 hy_edit，通过进 hy_commit。
+8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或团队 workflow/template 文件内同步，完成后再 hy_verify。
+9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 生成的 GitHub Actions workflow 必须执行 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
 10. hy_commit — git add + commit + push + gh pr create，PR 正文嵌入 plan 摘要。
-11. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
+11. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge；没有 checks 或只有 skipped/neutral checks 时 fail closed，保持在 ci。
 12. hy_merge — 合并 PR，删除远程分支。
 13. hy_chain — rebase 下游分支。
+14. hy_reset — PR 合并并完成 hy_chain 后清理 workflow 派生状态，回到 plan。
 
 ### 禁止操作
 
@@ -70,6 +71,14 @@ const SYSTEM_PROMPT = `
 - 跳过 hy_verify 直接调 hy_commit
 - hy_approve 驳回后自行推进
 - 编辑 plan.scope 声明外的文件
+
+### Setup 与 CI 产物契约
+
+- setup 不提供部署模式选择，固定且只维护 hy-workflow.json 与 .github/workflows/hy-workflow.yml
+- deployment、registry、workflow state、scope、DocsGraph、客户端配置和 compatibility JSON 均外置或临时生成，不得提交
+- unset 只解除本机部署，不删除两个团队文件
+- 旧用户 config 与含 mode 的 deployment manifest 仅只读兼容，不恢复第二套模式
+- GitHub workflow 必须运行 doclint 与 codelint；仓库管理员需把 Verify check 配为 required，setup 不修改 ruleset
 
 ### hy_reset
 
@@ -130,7 +139,7 @@ const server = new Server(
 const TOOLS = [
   {
     name: "hy_init",
-    description: "初始化工作流：验证 OS 用户目录中的 deployment/config 并初始化外置状态；不写项目或 .git，也不会在 MCP 内启动 setup TUI。",
+    description: "初始化工作流：验证 OS 用户目录中的 deployment 与根 hy-workflow.json 并初始化外置状态；不写项目或 .git，也不会在 MCP 内启动 setup TUI。成功后必须先调用 hy_read_docs(before_plan)，再调用 hy_plan。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -261,17 +270,17 @@ const TOOLS = [
   },
   {
     name: "hy_edit",
-    description: "锁定 scope，LLM 使用标准 Read/Edit/Write 编辑文件。返回 display/hint/allowedTools，完成后调 hy_verify。",
+    description: "锁定 scope，LLM 使用标准 Read/Edit/Write 编辑文件。返回 display/hint/allowedTools；完成编辑后必须先调 hy_read_docs(after_edit)，再调 hy_sync_docs，最后才调 hy_verify。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_sync_docs",
-    description: "实现编辑后、hy_verify 前的文档同步 gate。要求已运行 hy_read_docs(after_edit)，确认只在 plan.scope 声明的文档或 shared template 文件内同步。",
+    description: "实现编辑后、hy_verify 前的文档同步 gate。要求已运行 hy_read_docs(after_edit)，确认只在 plan.scope 声明的文档或团队 workflow/template 文件内同步。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_verify",
-    description: "本地任务校验：compile + scope + boundary + platform + smoke + tests。shared 模式可追加 GitHub Actions 完整 lint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。",
+    description: "本地任务校验：compile + scope + boundary + platform + smoke + tests。setup 部署的 GitHub Actions 必须执行 doclint 与 codelint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {

@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { ensureConfigDefaults, readUnifiedConfig } from "../config.js";
+import { ensureConfigDefaults } from "../config.js";
 import { readDeployment, readRegistry, unregisterProject, writeDeployment, type ClientName } from "../runtime/deployment.js";
 import { atomicWriteJson, projectPaths } from "../runtime/user-paths.js";
 import { SETUP_VERSION } from "../bootstrap.js";
@@ -7,7 +7,7 @@ import { createClaudeAdapter } from "./clients/claude.js";
 import { createCodexAdapter } from "./clients/codex.js";
 import { definitionEquals } from "./clients/index.js";
 import { createOpenCodeAdapter } from "./clients/opencode.js";
-import { writeSharedArtifacts } from "./shared.js";
+import { SHARED_PROJECT_FILES, writeSharedArtifacts } from "./shared.js";
 import { MCP_DEFINITIONS, type ClientAdapter, type ClientDetection, type ClientServerSnapshot, type McpDefinition, type ServerName, type SetupOptions, type SetupResult } from "./types.js";
 
 type OwnershipEntry = {
@@ -46,6 +46,13 @@ function readOwnership(root: string): OwnershipManifest {
 
 function writeOwnership(root: string, ownership: OwnershipManifest): void {
   atomicWriteJson(projectPaths(root).clientOwnership, ownership);
+}
+
+function restoreLegacyConfig(file: string, parent: string, text: string): void {
+  fs.mkdirSync(parent, { recursive: true });
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporary, text, { encoding: "utf-8", mode: 0o600 });
+  fs.renameSync(temporary, file);
 }
 
 function selectedAdapters(options: SetupOptions, adapters: ClientAdapter[]): ClientAdapter[] {
@@ -125,6 +132,7 @@ export async function executeSetup(root: string, options: SetupOptions, adapters
   const selected = selectedAdapters(options, adapters);
 
   if (options.action === "unset") {
+    const legacyConfig = fs.existsSync(paths.config) ? fs.readFileSync(paths.config, "utf-8") : null;
     const deployment = readDeployment(root);
     const registry = readRegistry(root);
     const remainingAfter = Math.max(0, Object.keys(registry.projects).length - (deployment ? 1 : 0));
@@ -132,10 +140,11 @@ export async function executeSetup(root: string, options: SetupOptions, adapters
     const outcome = options.dryRun
       ? { removed: Boolean(deployment), remaining: remainingAfter }
       : unregisterProject(root);
+    if (!options.dryRun && legacyConfig !== null) restoreLegacyConfig(paths.config, paths.configDir, legacyConfig);
     return {
       ok: true,
       action: "unset",
-      mode: deployment?.mode ?? options.mode,
+      mode: deployment?.mode ?? "shared",
       projectId: paths.identity.id,
       projectRoot: paths.identity.root,
       clients,
@@ -143,38 +152,33 @@ export async function executeSetup(root: string, options: SetupOptions, adapters
       localFilesChanged: [paths.configDir, paths.stateDir, paths.cacheDir],
       remainingProjects: outcome.remaining,
       dryRun: options.dryRun,
-      message: "No project files changed",
+      message: "Local deployment removed; shared project files kept",
     };
   }
 
-  let config = readUnifiedConfig(root);
-  if (!config) {
-    const configResult = ensureConfigDefaults(root, { dryRun: options.dryRun });
-    if (!configResult.ok && !configResult.candidate) throw new Error(configResult.display.body);
-    config = options.dryRun ? configResult.candidate ?? null : readUnifiedConfig(root);
-  }
-  if (!config) throw new Error("Could not construct project configuration");
-
+  const configResult = ensureConfigDefaults(root, { dryRun: true });
+  if (!configResult.ok || !configResult.candidate) throw new Error(configResult.display.body);
+  const config = configResult.candidate;
   const clients = installClients(root, selected, options.dryRun);
-  const projectFilesChanged = options.mode === "shared" ? writeSharedArtifacts(root, config, options.dryRun) : [];
+  const projectFilesChanged = writeSharedArtifacts(root, config, options.dryRun);
   if (!options.dryRun) {
     writeDeployment(root, {
       setupVersion: SETUP_VERSION,
-      mode: options.mode,
+      mode: "shared",
       clients: options.clients,
-      projectFiles: projectFilesChanged,
+      projectFiles: [...SHARED_PROJECT_FILES],
     });
   }
   return {
     ok: true,
     action: "setup",
-    mode: options.mode,
+    mode: "shared",
     projectId: paths.identity.id,
     projectRoot: paths.identity.root,
     clients,
     projectFilesChanged,
-    localFilesChanged: [paths.config, paths.deployment, paths.registry, paths.clientOwnership],
+    localFilesChanged: [paths.deployment, paths.registry, paths.clientOwnership],
     dryRun: options.dryRun,
-    message: projectFilesChanged.length ? `Shared project files changed: ${projectFilesChanged.join(", ")}` : "No project files changed",
+    message: projectFilesChanged.length ? `Shared project files changed: ${projectFilesChanged.join(", ")}` : "Shared project files already current",
   };
 }

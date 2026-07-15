@@ -16,7 +16,7 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
 | `hy_amend_plan` | verify | `{approved, note?}` | edit / verify | 否 |
 | `hy_commit` | commit | `{title, body}` | ci | 否 |
-| `hy_ci`     | ci, edit | — | merge (全绿) / edit (失败) | 否 |
+| `hy_ci`     | ci, edit | — | merge (有效 checks 全绿) / ci (缺失、无效或 pending) / edit (失败) | 否 |
 | `hy_merge`  | merge | — | chain | 否 |
 | `hy_chain`  | chain | `{branches: string[]}` | done | 否 |
 | `hy_reset`  | 任意 | — | plan | 否 |
@@ -24,18 +24,18 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-验证 OS 用户目录中的 deployment 和有效配置，并把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
+验证 OS 用户目录中的 deployment 和根 `hy-workflow.json`，并把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
-- **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [] }`
+- **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [], allowedTools: ["hy_read_docs", "hy_status"] }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 仅在 shared 模式下作为仓库配置源；本机模式使用用户 config。缺少 deployment/config 或版本过期时，agent 必须停下并请用户运行 `hy-workflow setup`。
+`hy-workflow.json` 是唯一有效项目配置源。旧用户 config 和含 mode 的 deployment manifest 仅供 setup 只读迁移，不能让 hy_init 绕过缺失的根配置。缺少 deployment/root config 或版本过期时，agent 必须停下并请用户运行 `hy-workflow setup`。
 
 旧 local/runtime artifacts 已被跟踪时仍返回诊断，但不会自动删除或改写。
 
-Artifact contract: 本机 setup/unset/hy_init 的 project diff 必须为空。shared 模式只允许 `hy-workflow.json` 和 workflow template，其变化单独走 artifact sync PR。
+Artifact contract: setup 固定且只维护 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`，其变化单独走 artifact sync PR。unset/hy_init 不删除或改写团队文件；deployment/state/cache、客户端配置和 compatibility JSON 不提交。
 
 ## Session setup check
 
@@ -43,7 +43,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state �
 
 ## Config CLI
 
-`hy-workflow config --check --json` 会只读检查项目语言、目录和有效配置；异常时输出结构化 issues 并非零退出。`config --apply-suggested --json` 默认写用户 config；只有 `--shared` 写 `hy-workflow.json`。运行旧 doclint/codelint CLI 时才临时生成根目录兼容 JSON，执行后恢复项目原状。
+`hy-workflow config --check --json` 会只读检查项目语言、目录和根 `hy-workflow.json`；异常时输出结构化 issues 并非零退出。`config --apply --json` 只覆盖显式字段并保留其余现有配置；`config --apply-suggested --json` 会应用完整检测建议。两者都在校验后写根配置。运行旧 doclint/codelint/docs-gardener CLI 时才临时生成根目录兼容 JSON，执行后恢复项目原状且不提交。
 
 ## hy_read_docs
 
@@ -96,7 +96,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state �
 
 ## hy_sync_docs
 
-实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或 shared template 文件内同步，再运行 `hy_verify`。
+实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或团队 workflow/template 文件内同步，再运行 `hy_verify`。
 
 同步时增量更新用户 cache 中的 DocsGraph 并检测坏链接；结果通过 `graphInfo` 返回。docsDir membership 使用规范化路径边界判断。
 
@@ -139,9 +139,11 @@ PR body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，�
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
 - **失败后转换到**: `edit`（通过 transition(state, "edit") 并 writeState）
-- **no checks**: GitHub 没有 reported checks 时转换到 `merge`，返回 `skipped: true`、`skipReason: "no_reported_checks"`、`noChecks: true`，用于表示 workflow 未命中而非 CI 失败或 pending
+- **缺失/无有效 checks**: GitHub 没有 reported checks，或全部 checks 为 skipped/neutral 时保持 `ci`，返回 `error.code: "CI_CHECKS_REQUIRED"`、`requires_user: true`、`stop_here: true` 并阻止 `hy_merge`
 - **pending/API 异常**: polling 超时后保持 `ci`，等待后重试 `hy_ci`
-- **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；no checks `{ next: "merge", skipped: true, skipReason: "no_reported_checks", noChecks: true, checks: [] }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
+- **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；缺失/无有效 checks `{ next: "ci", allGreen: false, noChecks?, noEffectiveChecks?, error, requires_user: true, stop_here: true, recovery }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
+
+setup 生成的 workflow 必须执行 doclint 与 codelint。仓库管理员需在 GitHub ruleset 或 branch protection 中把 Verify check 设为 required；这是管理员动作，setup 不越权配置。
 
 ## hy_merge
 

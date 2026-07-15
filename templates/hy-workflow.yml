@@ -2,33 +2,7 @@ name: hy-workflow
 
 on:
   push:
-    paths:
-      - ".github/workflows/**"
-      - "src/**"
-      - "test/**"
-      - "tests/**"
-      - "docs/**"
-      - "templates/**"
-      - "README.md"
-      - "AGENTS.md"
-      - "hy-workflow.json"
-      - "package.json"
-      - "package-lock.json"
-      - "tsconfig.json"
   pull_request:
-    paths:
-      - ".github/workflows/**"
-      - "src/**"
-      - "test/**"
-      - "tests/**"
-      - "docs/**"
-      - "templates/**"
-      - "README.md"
-      - "AGENTS.md"
-      - "hy-workflow.json"
-      - "package.json"
-      - "package-lock.json"
-      - "tsconfig.json"
   workflow_dispatch:
 
 jobs:
@@ -39,13 +13,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
-      - run: npm ci
+      - name: Install Node dependencies
+        if: ${{ hashFiles('package.json') != '' && (hashFiles('package-lock.json') != '' || hashFiles('npm-shrinkwrap.json') != '') }}
+        run: npm ci
       - name: Run package CI scripts
+        if: ${{ hashFiles('package.json') != '' && (hashFiles('package-lock.json') != '' || hashFiles('npm-shrinkwrap.json') != '') }}
         run: |
           node <<'NODE'
           const fs = require('fs');
           const cp = require('child_process');
-          const pkg = fs.existsSync('package.json') ? JSON.parse(fs.readFileSync('package.json', 'utf8')) : {};
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const scripts = pkg.scripts || {};
           const run = (label, command) => {
             console.log('::group::' + label);
@@ -56,8 +33,31 @@ jobs:
           if (scripts['lint:contract']) run('lint:contract', 'npm run lint:contract');
           if (scripts.test) run('test', 'npm test');
           NODE
-      - name: Materialize legacy lint configs
+      - name: Run doclint and codelint
+        shell: bash
         run: |
+          set -euo pipefail
+          compat_files=(codelint.json doclint.json docs-gardener.json)
+          compat_backup_dir="$RUNNER_TEMP/hy-workflow-compat-backup"
+          mkdir -p "$compat_backup_dir"
+          restore_compat() {
+            local file
+            for file in "${compat_files[@]}"; do
+              rm -f -- "$file"
+              if [ -e "$compat_backup_dir/$file" ] || [ -L "$compat_backup_dir/$file" ]; then
+                cp -a -- "$compat_backup_dir/$file" "$file"
+              fi
+            done
+            rm -rf -- "$compat_backup_dir"
+          }
+          trap restore_compat EXIT
+          for file in "${compat_files[@]}"; do
+            if [ -e "$file" ] || [ -L "$file" ]; then
+              cp -a -- "$file" "$compat_backup_dir/$file"
+            fi
+            rm -f -- "$file"
+          done
+
           node <<'NODE'
           const fs = require('fs');
           const config = JSON.parse(fs.readFileSync('hy-workflow.json', 'utf8'));
@@ -65,24 +65,68 @@ jobs:
           const codelint = config.codelint || {};
           const doclint = config.doclint || {};
           const gardener = config.docsGardener || {};
-          const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n');
+          const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
           write('codelint.json', { lintDirs: codelint.lintDirs, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: codelint.maxLines });
           write('doclint.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: doclint.maxLines });
           write('docs-gardener.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, catalogs: gardener.catalogs || {} });
           NODE
-      - run: npx --yes github:voxServalG/doclint lint --json > doclint-report.json || true
-      - name: Fail if doclint errors
-        run: |
-          failed=$(jq '.failed // .data.counts.failed // .data.summary.failed // .counts.failed // .summary.failed // 0' doclint-report.json)
-          if [ "$failed" -gt 0 ]; then
-            echo "::error::doclint found $failed errors"
-            exit 1
-          fi
-      - run: npx --yes github:voxServalG/codelint check --json > codelint-report.json || true
-      - name: Fail if codelint errors
-        run: |
-          errors=$(jq '.errors // .data.errors // 0' codelint-report.json)
-          if [ "$errors" -gt 0 ]; then
-            echo "::error::codelint found $errors errors"
-            exit 1
-          fi
+
+          run_lint() {
+            local label="$1"
+            local source="$2"
+            local command="$3"
+            local report="$RUNNER_TEMP/${label}-report.json"
+            local status
+            set +e
+            npx --yes "$source" "$command" --json > "$report"
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ]; then
+              echo "::error::${label} command failed with exit ${status}"
+              cat "$report"
+              return "$status"
+            fi
+
+            LINT_LABEL="$label" REPORT_PATH="$report" node <<'NODE'
+          const fs = require('fs');
+          const label = process.env.LINT_LABEL;
+          const reportPath = process.env.REPORT_PATH;
+          let report;
+          try {
+            report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          } catch {
+            console.error(`::error::${label} returned invalid JSON`);
+            process.exit(1);
+          }
+          if (!report || typeof report !== 'object' || Array.isArray(report)) {
+            console.error(`::error::${label} returned an invalid JSON report`);
+            process.exit(1);
+          }
+          const numberFrom = (...values) => {
+            for (const value of values) {
+              if (typeof value === 'number' && Number.isFinite(value)) return value;
+              if (typeof value === 'string' && value.trim() !== '') {
+                const parsed = Number(value);
+                if (Number.isFinite(parsed)) return parsed;
+              }
+            }
+            return null;
+          };
+          const nestedNumber = key => numberFrom(
+            report?.data?.counts?.[key], report?.counts?.[key],
+            report?.data?.summary?.[key], report?.summary?.[key],
+            report?.data?.[key], report?.[key],
+          );
+          const errors = nestedNumber('errors');
+          const failed = nestedNumber('failed');
+          const invalid = typeof report.ok !== 'boolean' && errors === null && failed === null;
+          if (invalid || report.ok === false || (errors !== null && (errors < 0 || errors > 0)) || (failed !== null && (failed < 0 || failed > 0))) {
+            console.error(`::error::${label} failed: ${JSON.stringify({ ok: report.ok, errors, failed })}`);
+            process.exit(1);
+          }
+          console.log(`${label}: ${JSON.stringify({ ok: report.ok, errors, failed })}`);
+          NODE
+          }
+
+          run_lint doclint git+https://github.com/voxServalG/doclint.git lint
+          run_lint codelint git+https://github.com/voxServalG/codelint.git check

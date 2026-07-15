@@ -64,7 +64,7 @@ assert(trackedDist.length === 0, `dist files must not be tracked by git, found $
 const forbidden = [".hy/", ".opencode/", ".codex/", "test/", "src/", "codelint.json", "doclint.json", "docs-gardener.json"];
 const packFiles = npmPackDryRun(process.cwd());
 assert(packFiles.includes("dist/server.js"), "npm pack must include the compiled CLI entrypoint");
-assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must include the explicit shared-mode workflow template");
+assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must include the default setup workflow template");
 assert(!packFiles.includes("setup") && !packFiles.includes("setup.ps1"), "npm pack must not include removed platform installers");
 for (const file of packFiles) {
   for (const prefix of forbidden) {
