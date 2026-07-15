@@ -1,4 +1,4 @@
-import type { ClientName, DeploymentMode } from "./runtime/deployment.js";
+import type { ClientName } from "./runtime/deployment.js";
 import { detectClients, executeSetup } from "./setup/operations.js";
 import { finishPrompt, promptSetupOptions } from "./setup/prompts.js";
 import type { SetupAction, SetupLanguage, SetupOptions } from "./setup/types.js";
@@ -30,8 +30,6 @@ export function setupHelp(): string {
     "",
     "Options:",
     "  --clients <list|all>  Explicit client selection for non-interactive use",
-    "  --local               Store config and runtime data in OS user directories (default)",
-    "  --shared              Also write hy-workflow.json and .github/workflows/hy-workflow.yml",
     "  --remove-global       On final unset, remove MCP entries owned by hy-workflow",
     "  --yes                 Non-interactive mode; requires --clients",
     "  --dry-run             Report changes without writing",
@@ -48,7 +46,7 @@ export function parseSetupArgs(argv: string[], invokedAction: SetupAction): Pars
     errors: [],
     options: {
       action: invokedAction,
-      mode: "local",
+      mode: "shared",
       clients: [],
       language: "zh",
       yes: false,
@@ -71,7 +69,7 @@ export function parseSetupArgs(argv: string[], invokedAction: SetupAction): Pars
     else if (arg === "--yes" || arg === "-y") parsed.options.yes = true;
     else if (arg === "--dry-run") parsed.options.dryRun = true;
     else if (arg === "--json") parsed.options.json = true;
-    else if (arg === "--local") parsed.options.mode = "local";
+    else if (arg === "--local") parsed.errors.push("--local has been removed; setup always writes hy-workflow.json and .github/workflows/hy-workflow.yml");
     else if (arg === "--shared") parsed.options.mode = "shared";
     else if (arg === "--remove-global") parsed.options.removeGlobal = true;
     else if (arg === "--keep-global") parsed.options.removeGlobal = false;

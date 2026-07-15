@@ -25,9 +25,10 @@ The product should not become a large platform with many overlapping tools. The 
 The ideal first-time experience is:
 
 1. Install from README without reading all docs.
-2. Restart the MCP client.
-3. Ask the agent to call `hy_status`.
-4. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
+2. Run setup, review its two team files, and commit them through a focused PR.
+3. Restart the MCP client.
+4. Ask the agent to call `hy_status`.
+5. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
 
 ### `hy_status` Is The Dashboard
 
@@ -100,12 +101,12 @@ The workflow must continue to reject:
 - committing local/runtime artifacts;
 - skipping verification before commit;
 - using direct git or GitHub operations to bypass workflow gates;
-- treating setup/client compatibility artifacts as committed project source.
+- treating runtime, client, or compatibility artifacts as committed project source.
 
 Artifact boundaries stay central:
 
-- default setup/unset/hy_init: zero project and `.git` changes; config/state/cache stay in OS user directories;
-- explicit shared artifacts: `hy-workflow.json` and `.github/workflows/hy-workflow.yml`; legacy local/runtime/client artifacts stay untracked.
+- setup always maintains exactly `hy-workflow.json` and `.github/workflows/hy-workflow.yml` as team source;
+- unset and hy_init never delete or rewrite those team files; deployment/state/cache, client config, and legacy/runtime/compat artifacts stay external or untracked.
 
 ## Documentation Model
 
@@ -149,7 +150,7 @@ Each recipe should say when to use it, when not to use it, what can go wrong, wh
 - Add version policy, changelog discipline, migration notes, and deprecation paths.
 - Consider an optional UI/status page only after structured status output is reliable.
 - Add audit logging, telemetry/privacy switches, and stronger sensitive-output handling where appropriate.
-- Evaluate hosted or bridge modes without weakening local-first safety.
+- Evaluate hosted or bridge modes without weakening repository-minimal safety.
 
 ## Success Criteria
 

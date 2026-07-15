@@ -16,11 +16,16 @@ npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest --r
 hy-workflow setup
 ```
 
-The Node TUI detects Codex, Claude Code, and OpenCode, shows the installed clients as a multiselect, and offers install/update or unset. Restart selected clients after setup, then call `hy_init`.
+The Node TUI detects Codex, Claude Code, and OpenCode, shows the installed clients as a multiselect, and offers install/update or unset. There is no deployment mode choice. Restart selected clients after setup, then call `hy_init`.
 
-## Default: local mode
+## Single deployment model
 
-Local mode is the default and guarantees that setup, unset, and hy_init do not modify the project worktree or `.git`. Data is keyed by a stable project identity derived from canonical project root, Git common dir, and origin remote:
+Setup always creates or updates exactly two team-owned repository files:
+
+- `hy-workflow.json`
+- `.github/workflows/hy-workflow.yml`
+
+Review and commit those files in a dedicated setup artifact sync PR. No other setup output belongs in the repository. Deployment, registry, workflow state, scope locks, DocsGraph cache, and client MCP configuration remain outside the repository. External data is keyed by a stable project identity derived from canonical project root, Git common dir, and origin remote:
 
 | Data | Linux default | macOS default | Windows default |
 | --- | --- | --- | --- |
@@ -37,14 +42,16 @@ MCP clients run installed bins directly:
 
 Do not put `npx`, GitHub URLs, or SSH URLs in client startup configuration. Package download/update is an explicit npm HTTPS operation, never part of MCP startup.
 
-## Shared mode
+The workflow is copied from the template packaged in the npm tarball. Root `hy-workflow.json` is the canonical project configuration. Legacy user-local config and deployment manifests with a `mode` field are read-only migration inputs: setup may use them to preserve existing values, but does not restore a mode choice, rewrite them as the project source, or delete them automatically.
 
-Choose shared mode in the TUI or pass `--shared` only when the team intentionally wants repository artifacts. It may write exactly:
+Setup fails closed when it cannot find an existing `docs`, `documentation`, or `doc` directory. It does not silently use the repository root or create a third project artifact. First create the intended documentation directory or select another existing project-relative directory, then confirm it explicitly and rerun setup:
 
-- `hy-workflow.json`
-- `.github/workflows/hy-workflow.yml`
+```bash
+hy-workflow config --apply --json --docs-dir '<existing-project-relative-dir>'
+hy-workflow setup
+```
 
-The workflow is copied from the template packaged in the npm tarball. Review and commit these files in a dedicated setup artifact PR. Default local mode never writes them.
+`--apply` only changes the explicitly supplied fields and preserves the rest of an existing root or migrated legacy configuration. Use `--apply-suggested` only when the detected defaults should replace the configurable project and lint fields.
 
 ## Reversible unset
 
@@ -52,9 +59,9 @@ The workflow is copied from the template packaged in the npm tarball. Review and
 hy-workflow unset
 ```
 
-Unset uses the same TUI and removes only the current project's owned config/state/cache and registry record. Global MCP entries are retained while other registered projects exist. On the final project, the user may explicitly request global removal; ownership snapshots ensure unrelated or subsequently edited client configuration is not deleted.
+Unset uses the same TUI and removes only the current project's deployment, workflow state/cache, and registry entry. Global MCP entries and their ownership manifest remain while other registered projects exist. On the final project, the ownership manifest is updated or cleared only when the user explicitly requests removal of the owned global MCP entries; ownership snapshots ensure unrelated or subsequently edited client configuration is not deleted. Legacy user config remains untouched.
 
-Shared repository files are never silently removed by unset because they may be team-owned and committed. Remove them through an ordinary reviewed repository change if the team wants to retire shared mode.
+Repository files are never silently removed by unset because they are team-owned and may be committed. Remove them through an ordinary reviewed repository change if the team wants to retire hy-workflow.
 
 ## Automation
 
@@ -66,6 +73,10 @@ hy-workflow unset --yes --clients all --remove-global --json
 
 Non-interactive use requires both `--yes` and explicit `--clients`. `--dry-run` reports the candidate changes without writing. JSON mode emits one machine-readable result.
 
+## CI enforcement
+
+The generated workflow must run doclint and codelint on every relevant pull request and push. It materializes `doclint.json`, `codelint.json`, and `docs-gardener.json` only while compatibility CLIs run, then restores the project state; these files must not be committed. `hy_ci` fails closed when GitHub reports no checks or only skipped/neutral checks. A repository administrator must separately make the workflow's Verify check required in a GitHub ruleset or branch protection rule; setup reports this responsibility but does not change repository administration settings.
+
 ## Runtime prerequisites
 
 - Node.js 18 or newer and npm
@@ -76,6 +87,6 @@ Non-interactive use requires both `--yes` and explicit `--clients`. `--dry-run` 
 
 ## Version migration
 
-Every `hy_*` dispatch checks the user-local deployment version. Missing, unreadable, or outdated deployments return a structured refresh envelope with the npm update command and `hy-workflow setup`. Legacy `.git/hy-workflow` state and setup stamps may be read once for compatibility and copied to user storage, but are never automatically deleted.
+Every `hy_*` dispatch checks the external deployment version. Missing, unreadable, or outdated deployments return a structured refresh envelope with the npm update command and `hy-workflow setup`. Legacy user config, deployment manifests, `.git/hy-workflow` state, and setup stamps are read only for compatibility or one-way value migration and are never automatically deleted or treated as a second active mode.
 
 The npm package contains compiled `dist/`, docs, the shared workflow template, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.

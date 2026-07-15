@@ -4,6 +4,7 @@ import type { JsonObject } from "../config.js";
 
 const WORKFLOW_FILE = ".github/workflows/hy-workflow.yml";
 const CONFIG_FILE = "hy-workflow.json";
+export const SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE] as const;
 
 function templateText(): string {
   const template = new URL("../../templates/hy-workflow.yml", import.meta.url);
@@ -23,8 +24,8 @@ function write(root: string, relative: string, next: string): void {
 
 export function sharedArtifactPlan(root: string, config: JsonObject): Array<{ file: string; content: string }> {
   const values = [
-    { file: WORKFLOW_FILE, content: templateText() },
     { file: CONFIG_FILE, content: JSON.stringify(config, null, 2) + "\n" },
+    { file: WORKFLOW_FILE, content: templateText() },
   ];
   return values.filter(item => changed(root, item.file, item.content));
 }

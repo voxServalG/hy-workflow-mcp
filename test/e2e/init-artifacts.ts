@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SETUP_VERSION } from "../../src/bootstrap.js";
 import { ensureConfigDefaults } from "../../src/config.js";
 import { writeDeployment } from "../../src/runtime/deployment.js";
+import { projectPaths } from "../../src/runtime/user-paths.js";
 import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, initArtifactGuidance, trackedLocalArtifactDiagnostics } from "../../src/tools/init.js";
 
 function assert(condition: unknown, message: string): void {
@@ -38,7 +39,7 @@ process.env.HY_WORKFLOW_CACHE_HOME = join(runtimeHome, "cache");
 
 const guidance = initArtifactGuidance();
 assert(guidance.commitArtifacts.length === 0, "default init must not request project commits");
-assert(guidance.body.includes("do not change project files"), "guidance should state the zero-project-change default");
+assert(guidance.body.includes("hy_init itself changes no project files"), "guidance should separate setup team artifacts from hy_init behavior");
 const ignoreRoot = mkdtempSync(join(tmpdir(), "hy-init-ignore-"));
 assert(!ensureLocalArtifactIgnores(ignoreRoot), "hy_init must not create or update .gitignore");
 assert(!existsSync(join(ignoreRoot, ".gitignore")), "hy_init ignore helper must leave the project untouched");
@@ -47,10 +48,24 @@ const missingRoot = project("hy-init-missing-");
 const missing = harnessArtifactStatus(missingRoot);
 assert(!missing.ready && missing.missingArtifacts.length > 0, "project without setup must not be ready");
 
+const legacyOnlyRoot = project("hy-init-legacy-only-");
+const legacyConfigPath = projectPaths(legacyOnlyRoot).config;
+mkdirSync(join(legacyConfigPath, ".."), { recursive: true });
+writeFileSync(legacyConfigPath, JSON.stringify({
+  project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
+  codelint: { lintDirs: ["src"], maxLines: 500 },
+  doclint: { maxLines: 200 },
+  docsGardener: { catalogs: {} },
+}, null, 2) + "\n");
+writeDeployment(legacyOnlyRoot, { setupVersion: SETUP_VERSION, mode: "local", clients: [] });
+assert(!harnessArtifactStatus(legacyOnlyRoot).ready, "legacy user config plus deployment must not bypass the required shared project config");
+ensureConfigDefaults(legacyOnlyRoot);
+assert(existsSync(join(legacyOnlyRoot, "hy-workflow.json")) && harnessArtifactStatus(legacyOnlyRoot).ready, "migrating legacy config into the project root should make setup ready");
+
 const readyRoot = project("hy-init-ready-");
 ensureConfigDefaults(readyRoot);
-writeDeployment(readyRoot, { setupVersion: SETUP_VERSION, mode: "local", clients: [] });
-assert(harnessArtifactStatus(readyRoot).ready, "external config and deployment should satisfy init prerequisites");
+writeDeployment(readyRoot, { setupVersion: SETUP_VERSION, mode: "shared", clients: [] });
+assert(harnessArtifactStatus(readyRoot).ready, "shared config and deployment should satisfy init prerequisites");
 const before = git(readyRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
 const oldCwd = process.cwd();
 try {
@@ -76,7 +91,7 @@ assert(initArtifactGuidance(tracked).body.includes("separate cleanup change"), "
 
 const outdatedRoot = project("hy-init-outdated-");
 ensureConfigDefaults(outdatedRoot);
-writeDeployment(outdatedRoot, { setupVersion: "0.0.0", mode: "local", clients: [] });
+writeDeployment(outdatedRoot, { setupVersion: "0.0.0", mode: "shared", clients: [] });
 try {
   process.chdir(outdatedRoot);
   const result = await handleInit();

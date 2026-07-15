@@ -130,7 +130,10 @@ export function parseCodeLintReport(report: any): CheckResult {
 }
 
 export function runDocLint(root: string): CheckResult[] {
-  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes github:voxServalG/doclint lint --json", root));
+  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes git+https://github.com/voxServalG/doclint.git lint --json", root));
+  if (!r.ok) {
+    return [fail("doclint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "doclint command failed"}`, true)];
+  }
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [parseDocLintReport(report)];
@@ -140,7 +143,10 @@ export function runDocLint(root: string): CheckResult[] {
 }
 
 export function runCodeLint(root: string): CheckResult[] {
-  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes github:voxServalG/codelint check --json", root));
+  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes git+https://github.com/voxServalG/codelint.git check --json", root));
+  if (!r.ok) {
+    return [fail("codelint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "codelint command failed"}`, true)];
+  }
   try {
     const report = JSON.parse(r.stdout || "{}");
     return [parseCodeLintReport(report)];

@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import type { ClientName, DeploymentMode } from "../runtime/deployment.js";
+import type { ClientName } from "../runtime/deployment.js";
 import type { ClientDetection, SetupAction, SetupOptions } from "./types.js";
 
 type Copy = {
@@ -10,9 +10,6 @@ type Copy = {
   unset: string;
   clients: string;
   noClients: string;
-  mode: string;
-  local: string;
-  shared: string;
   removeGlobal: string;
   confirm: string;
   cancelled: string;
@@ -27,9 +24,6 @@ const COPY: Record<"zh" | "en", Copy> = {
     unset: "解除当前项目部署",
     clients: "选择要配置的 AI 客户端",
     noClients: "未检测到 Codex、Claude Code 或 OpenCode。请先安装至少一个客户端。",
-    mode: "选择部署模式",
-    local: "本机模式（项目零改动）",
-    shared: "共享模式（写入 hy-workflow.json 和 CI workflow）",
     removeGlobal: "若这是最后一个项目，同时移除全局 MCP 配置？",
     confirm: "确认执行？",
     cancelled: "已取消，未做任何改动。",
@@ -42,9 +36,6 @@ const COPY: Record<"zh" | "en", Copy> = {
     unset: "Unset this project",
     clients: "Select AI clients to configure",
     noClients: "Codex, Claude Code, and OpenCode were not detected. Install at least one client first.",
-    mode: "Choose deployment mode",
-    local: "Local mode (zero project changes)",
-    shared: "Shared mode (write hy-workflow.json and CI workflow)",
     removeGlobal: "If this is the last project, also remove global MCP configuration?",
     confirm: "Proceed?",
     cancelled: "Cancelled. No changes were made.",
@@ -105,20 +96,6 @@ export async function promptSetupOptions(
   });
   if (cancelled(clientValue, copy.cancelled)) return null;
 
-  let mode: DeploymentMode = "local";
-  if (action === "setup") {
-    const modeValue = await p.select({
-      message: copy.mode,
-      options: [
-        { value: "local", label: copy.local },
-        { value: "shared", label: copy.shared },
-      ],
-      initialValue: "local",
-    });
-    if (cancelled(modeValue, copy.cancelled)) return null;
-    mode = modeValue as DeploymentMode;
-  }
-
   let removeGlobal = false;
   if (action === "unset") {
     const removeValue = await p.confirm({ message: copy.removeGlobal, initialValue: false });
@@ -133,7 +110,7 @@ export async function promptSetupOptions(
   }
   return {
     action,
-    mode,
+    mode: "shared",
     clients: clientValue as ClientName[],
     language,
     yes: false,

@@ -37,8 +37,12 @@ if (process.platform !== "win32") {
   });
   assert(result.status === 0, `non-interactive dry-run should succeed: ${result.stderr}`);
   const payload = JSON.parse(result.stdout);
-  assert(payload.ok && payload.dryRun && payload.projectFilesChanged.length === 0, "non-interactive JSON should expose a zero-change dry-run");
+  assert(payload.ok && payload.dryRun && payload.mode === "shared", "non-interactive JSON should expose the single shared mode");
+  assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "non-interactive dry-run should report both planned team artifacts");
   assert(gitStatus(root) === before, "non-interactive dry-run must not touch the project");
+
+  const removedLocal = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--local", "--json"], { cwd: root, env, encoding: "utf-8" });
+  assert(removedLocal.status === 1 && JSON.parse(removedLocal.stdout).error.includes("--local has been removed"), "removed local mode should fail with a direct migration message");
 
   const missing = spawnSync(process.execPath, [server, "setup", "--clients", "codex", "--json"], { cwd: root, env, encoding: "utf-8" });
   assert(missing.status === 1, "non-TTY setup without --yes should fail");

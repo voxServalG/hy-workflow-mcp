@@ -34,7 +34,7 @@ export type ClientAdapter = {
 
 export type SetupOptions = {
   action: SetupAction;
-  mode: DeploymentMode;
+  mode: "shared";
   clients: ClientName[];
   language: SetupLanguage;
   yes: boolean;

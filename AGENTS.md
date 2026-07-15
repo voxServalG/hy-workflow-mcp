@@ -4,11 +4,11 @@
 
 ### 统一配置源头
 
-默认配置位于 OS 用户配置目录；显式 shared 模式下，根目录 `hy-workflow.json` 是人工维护的共享配置源并优先。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
+根目录 `hy-workflow.json` 是团队人工维护的统一配置源。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
 
 `codelint.json`、`doclint.json`、`docs-gardener.json` 只作为运行时 compatibility artifacts 临时生成，不作为根目录提交产物。
 
-默认 setup / unset / hy_init 不产生应提交的项目产物。只有显式 shared 模式允许生成 hy-workflow.json 和 .github/workflows/hy-workflow.yml。
+setup 固定维护且只维护两个应提交的团队产物：`hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`。不再提供部署模式选择。`unset` 只解除本机部署，不删除这两个团队文件；`hy_init` 只验证共享配置并初始化外置状态，不改工作树或 `.git`。
 
 不应提交的 local/runtime/client/compat artifacts：.hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json、MCP 客户端本地配置。
 
@@ -16,12 +16,12 @@
 
 ### 流程顺序（禁止跳过或重排）
 
-首次使用: hy_init → hy_plan → ...
-后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain
+首次使用: hy_init → hy_read_docs(before_plan) → hy_plan → ...
+后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain → hy_reset
 
 ### 各工具说明
 
-**0. hy_init** — 项目首次使用时调用。验证用户目录中的 deployment/config 并初始化外置状态，默认不写项目或 .git，自动进 plan。不会在 MCP 内启动 setup TUI。
+**0. hy_init** — 项目首次使用时调用。验证用户目录中的 deployment 与根目录 `hy-workflow.json`，并初始化外置状态；不写项目或 .git，自动进 plan。不会在 MCP 内启动 setup TUI。
 
 **1. hy_read_docs(before_plan)** — 在 hy_plan 前由 agent 自动调用，不需要人类审核。读取 hy-workflow.json project.docsDir 指向的文档系统，形成规划事实基线，用于发现约束、术语、相关文件、未知点和验证期望。
 
@@ -36,15 +36,21 @@
 
 **6. hy_edit** — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 
-**7. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。shared 模式项目可由显式部署的 GitHub Actions workflow 执行完整 lint；hy_verify 失败回 hy_edit，通过进 hy_commit。
+**7. hy_read_docs(after_edit)** — 实现编辑后由 agent 自动调用，审计实现 diff 与文档是否需要同步；不新增人类审核。
 
-**8. hy_commit** — git add + commit + push + gh pr create。
+**8. hy_sync_docs** — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或团队 workflow/template 文件内同步。
 
-**9. hy_ci** — 等待 CI，红色回 hy_edit，全绿进 hy_merge。
+**9. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 部署的 GitHub Actions workflow 必须执行 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
 
-**10. hy_merge** — 合并 PR，删除远程分支。
+**10. hy_commit** — git add + commit + push + gh pr create。
 
-**11. hy_chain** — rebase 下游分支。
+**11. hy_ci** — 等待 CI，红色回 hy_edit，全绿进 hy_merge。没有 checks 或只有 skipped/neutral checks 时 fail closed，保持在 CI，不得进入 merge。
+
+**12. hy_merge** — 合并 PR，删除远程分支。
+
+**13. hy_chain** — rebase 下游分支。
+
+**14. hy_reset** — PR 合并并完成 hy_chain 后清理当前 workflow 派生状态，回到 plan。
 
 ### 禁止操作
 
@@ -56,13 +62,15 @@
 
 ### hy_init 初始化产物
 
-hy_init 的 `commitArtifacts` 为空，projectFilesChanged 为空。配置、workflow state、scope 和 DocsGraph 存在 OS 用户 config/state/cache 目录，不应提交。
+hy_init 的 `commitArtifacts` 为空，projectFilesChanged 为空。根配置由 setup 写入 `hy-workflow.json`；deployment、workflow state、scope 和 DocsGraph 存在 OS 用户 config/state/cache 目录，不应提交。
 
 ### Artifact contract
 
-- **默认 local 模式**: setup、unset、hy_init 必须保持项目和 `.git` 零改动。
-- **显式 shared 模式**: 只允许 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`，应以单独的 setup artifact sync PR 提交。
-- **local/runtime/client/compat artifacts**: OS 用户 config/state/cache、客户端用户配置、.hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json 都不提交。旧文件迁移后也不自动删除。
+- **setup 团队产物**: 固定且只允许 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`，应以单独的 setup artifact sync PR 提交。
+- **runtime/client/compat artifacts**: OS 用户 config/state/cache、客户端用户配置、.hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json 都不提交。compat JSON 只在命令运行期临时生成并恢复原状。
+- **unset 边界**: 只清理本机 deployment、registry、state/cache 和自己拥有的客户端配置，不删除团队维护的 `hy-workflow.json` 或 workflow。
+- **兼容读取**: 旧用户 config 与带 mode 字段的 deployment manifest 仅作为只读迁移输入，不恢复模式选择，也不自动删除旧文件。
+- **CI 强制**: workflow 必须运行 doclint 和 codelint；仓库管理员还必须在 GitHub ruleset/branch protection 中把对应 Verify check 设为 required。没有有效 checks 时 `hy_ci` 必须 fail closed。
 
 ### Promotion / release 例外
 

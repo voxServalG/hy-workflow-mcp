@@ -1,6 +1,6 @@
 # Verify Pipeline
 
-`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。显式 shared 模式可由 GitHub Actions workflow 承担完整 lint。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。setup 固定部署的 GitHub Actions workflow 承担强制 doclint、codelint 和项目 CI。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 
@@ -28,6 +28,12 @@ Layer 6: smoke
 Layer 7: tests
 └── plan.verify.tests 命令逐条执行，actual exit 必须精确等于 expected_exit
 ```
+
+## CI evidence gate
+
+GitHub workflow 从根 `hy-workflow.json` 读取团队规则，只在 runner 执行兼容 CLI 时临时生成 `doclint.json`、`codelint.json` 和 `docs-gardener.json`，结束后恢复项目状态；这些 compatibility artifacts 不提交。`hy_ci` 只有在至少一个非 skipped/neutral check 实际成功且所有有效 checks 全绿时才进入 merge。没有 checks 或只有 skipped/neutral checks 时返回 `CI_CHECKS_REQUIRED` 并保持在 `ci`，不能作为跳过 CI 的成功路径。
+
+setup 负责生成 workflow，但不修改 GitHub 管理配置。仓库管理员必须在 ruleset 或 branch protection 中把 workflow 的 Verify check 设为 required，才能在平台层阻止绕过。
 
 ## 判定逻辑
 
@@ -117,6 +123,8 @@ interface VerifyReport {
 | `hy-workflow.json: project.codeDirs` | Python compile 的文件枚举根目录；同时支持顶层和嵌套 Python 文件 |
 | `hy-workflow.json: project.baseBranch` | scope check 和 dependency manifest boundary 的 Git diff 基线分支 |
 | runtime `doclint.json` | 由 `hy-workflow.json` 临时生成给 doclint 使用，验证文档质量 |
+| runtime `codelint.json` | 由 `hy-workflow.json` 临时生成给 codelint 使用，验证代码治理规则 |
+| runtime `docs-gardener.json` | 仅在旧 docs-gardener CLI 需要时临时生成；不作为配置源或提交产物 |
 
 ## Related
 

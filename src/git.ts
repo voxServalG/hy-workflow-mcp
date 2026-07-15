@@ -256,7 +256,7 @@ export function mergePr(root: string, prNumber: unknown): { ok: boolean; error?:
   return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGreen: boolean; noChecks?: boolean; checks: Array<{ name: string; conclusion: string }>; error?: unknown; executor?: ExecutorCapability } {
+export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGreen: boolean; noChecks?: boolean; noEffectiveChecks?: boolean; checks: Array<{ name: string; conclusion: string }>; error?: unknown; executor?: ExecutorCapability } {
   const valid = validatePrNumber(prNumber);
   if (!valid.ok) return { ok: false, allGreen: false, checks: [], error: valid.error };
   const required = requireGhExecutor();
@@ -274,6 +274,9 @@ export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGree
       return { ok: true, allGreen: false, noChecks: true, checks, executor: required.executor };
     }
     const relevant = checks.filter((c: any) => c.conclusion !== "SKIPPED" && c.conclusion !== "NEUTRAL");
+    if (relevant.length === 0) {
+      return { ok: true, allGreen: false, noEffectiveChecks: true, checks, executor: required.executor };
+    }
     const allGreen = relevant.length > 0 && relevant.every((c: any) => c.conclusion === "SUCCESS");
     return { ok: true, allGreen, checks, executor: required.executor };
   } catch {
