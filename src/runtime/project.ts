@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
+import { projectPaths } from "./user-paths.js";
 
 export class ProjectRootError extends Error {
   type = "config" as const;
@@ -71,10 +72,11 @@ function checkedBaseBranch(value: unknown, source: string): string | null {
 
 export function configuredBaseBranch(root: string): string {
   try {
-    const unifiedPath = path.join(root, "hy-workflow.json");
+    const sharedPath = path.join(root, "hy-workflow.json");
+    const unifiedPath = fs.existsSync(sharedPath) ? sharedPath : projectPaths(root).config;
     if (fs.existsSync(unifiedPath)) {
       const config = JSON.parse(fs.readFileSync(unifiedPath, "utf-8"));
-      const branch = checkedBaseBranch(config?.project?.baseBranch, "hy-workflow.json project.baseBranch");
+      const branch = checkedBaseBranch(config?.project?.baseBranch, `${unifiedPath} project.baseBranch`);
       if (branch) return branch;
     }
     const legacyPath = path.join(root, "codelint.json");
@@ -88,4 +90,3 @@ export function configuredBaseBranch(root: string): string {
   }
   return "dev";
 }
-

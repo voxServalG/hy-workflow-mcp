@@ -5,7 +5,7 @@ import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const REQUIRED_SCRIPTS = ["build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "verify", "prepack", "prepublishOnly"];
 const FORBIDDEN_PACK_PREFIXES = [".hy/", ".opencode/", ".codex/", "test/", "src/", "node_modules/", "codelint.json", "doclint.json", "docs-gardener.json"];
-const REQUIRED_PACK_FILES = ["dist", "docs", "setup", "setup.ps1", "README.md"];
+const REQUIRED_PACK_FILES = ["dist", "docs", "templates", "README.md"];
 
 export function checkNpmContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
@@ -36,6 +36,9 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
       if (FORBIDDEN_PACK_PREFIXES.some(prefix => file === prefix.replace(/\/$/, "") || file.startsWith(prefix))) {
         findings.push({ rule: "npm", severity: "hard_fail", message: "npm pack includes forbidden file " + file + ".", file: "package.json" });
       }
+    }
+    if (!packFiles.includes("templates/hy-workflow.yml")) {
+      findings.push({ rule: "npm", severity: "hard_fail", message: "npm pack must include templates/hy-workflow.yml.", file: "package.json" });
     }
   }
   const publishWorkflowPath = ".github/workflows/npm-publish.yml";

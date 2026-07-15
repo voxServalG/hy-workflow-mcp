@@ -1,40 +1,36 @@
 # CLI Contract
 
-The scoped package `@voxstudio/hy-workflow` exposes one bin entrypoint: `hy-workflow`. Install or update it with `npm install -g @voxstudio/hy-workflow@latest`; running without a subcommand starts the MCP stdio server. `hy-workflow setup` runs the bundled project bootstrap script, and `hy-workflow --version` reads the installed package version. Registry installs use the prebuilt npm tarball and never compile locally.
+The public package `@voxstudio/hy-workflow` exposes one bin: `hy-workflow`. Running it without a subcommand starts MCP stdio. Registry installs use the prebuilt npm tarball and never compile locally.
 
 ## Commands
 
-- hy-workflow
-- hy-workflow --help
-- hy-workflow --version
-- hy-workflow config --check --json
-- hy-workflow config --apply-suggested --json
-- hy-workflow lint-contract
+- `hy-workflow`
+- `hy-workflow --help`
+- `hy-workflow --version`
+- `hy-workflow setup`
+- `hy-workflow unset`
+- `hy-workflow setup --yes --clients codex,claude,opencode --json`
+- `hy-workflow unset --yes --clients all --remove-global --json`
+- `hy-workflow config --check --json`
+- `hy-workflow config --apply-suggested --json`
+- `hy-workflow lint-contract`
 
-## Config Safety
+`setup` and `unset` share one cross-platform Node engine. In a TTY, the `@clack/prompts` TUI detects Codex, Claude Code, and OpenCode and presents a client multiselect. In non-interactive use, `--yes` and explicit `--clients` are both required. `--dry-run` makes no writes; `--json` emits one result envelope. Local mode is default; `--shared` explicitly permits repository writes.
 
-`hy-workflow config --check --json` validates `hy-workflow.json` as the source of truth before workflow commands use `project.baseBranch`, `project.docsDir`, `project.codeDirs`, and `codelint.lintDirs`. Malformed JSON, invalid declared field types, unsafe branch/path characters, unknown flags, and missing flag values return a structured envelope instead of raw parser errors. Any `ok: false` config result exits nonzero.
+## Config safety
 
-`hy-workflow config --apply-suggested --json` and explicit apply commands validate the candidate config before writing `hy-workflow.json`; invalid values fail without writing. Suggested terminal commands quote every dynamic value with single quotes, including values containing semicolons, whitespace, or `${IFS}`-style text, so the displayed command is copyable without turning config values into shell syntax. Root compatibility files (`codelint.json`, `doclint.json`, `docs-gardener.json`) remain runtime artifacts: legacy CLI runs temporarily overwrite them from `hy-workflow.json` and restore or remove them afterwards.
+`hy-workflow config --check --json` validates the effective project config before tools use `project.baseBranch`, `project.docsDir`, `project.codeDirs`, and `codelint.lintDirs`. The effective source is a shared root `hy-workflow.json` when present, otherwise the identity-scoped config in the OS user config directory.
 
-## MCP Tools
+`config --apply-suggested` validates before writing the user-local config. Pass `--shared` to intentionally write `hy-workflow.json`. Malformed JSON, invalid field types, unsafe branch/path characters, unknown flags, or missing values return a structured nonzero result without writing. Suggested shell commands quote dynamic values.
 
-The MCP tool surface is canonical in src/commands/catalog.ts and registered by src/server.ts. The current tools are:
+Root `codelint.json`, `doclint.json`, and `docs-gardener.json` remain legacy compatibility artifacts. Where an older CLI requires them, hy-workflow materializes them only for the command and restores the previous project state.
 
-- `hy_init`
-- `hy_read_docs`
-- `hy_plan`
-- `hy_approve`
-- `hy_branch`
-- `hy_edit`
-- `hy_sync_docs`
-- `hy_verify`
-- `hy_amend_plan`
-- `hy_commit`
-- `hy_ci`
-- `hy_merge`
-- `hy_chain`
-- `hy_reset`
-- `hy_status`
+## MCP tools
 
-Contract lint checks that README.md, docs/tools.md, this CLI document, src/server.ts, and tests all agree on this tool surface.
+The MCP surface is canonical in `src/commands/catalog.ts` and registered by `src/server.ts`:
+
+- `hy_init`, `hy_read_docs`, `hy_plan`, `hy_approve`
+- `hy_branch`, `hy_edit`, `hy_sync_docs`, `hy_verify`, `hy_amend_plan`
+- `hy_commit`, `hy_ci`, `hy_merge`, `hy_chain`, `hy_reset`, `hy_status`
+
+Contract lint checks that README, tool docs, server registration, and tests agree on this surface.

@@ -104,8 +104,8 @@ The workflow must continue to reject:
 
 Artifact boundaries stay central:
 
-- tracked project artifacts: `.github/`, `AGENTS.md`, `.gitignore`, `hy-workflow.json`;
-- local/runtime/client artifacts: `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, `codelint.json`, `doclint.json`, `docs-gardener.json`.
+- default setup/unset/hy_init: zero project and `.git` changes; config/state/cache stay in OS user directories;
+- explicit shared artifacts: `hy-workflow.json` and `.github/workflows/hy-workflow.yml`; legacy local/runtime/client artifacts stay untracked.
 
 ## Documentation Model
 

@@ -30,8 +30,8 @@ for (const lifecycle of ["prepare", "install", "postinstall"]) {
   assert(pkg.scripts?.[lifecycle] === undefined, `${lifecycle} must not build during npm install`);
 }
 
-// files must include dist, docs, setup, setup.ps1, README.md
-const requiredFiles = ["dist", "docs", "setup", "setup.ps1", "README.md"];
+// files include compiled runtime, docs, shared templates, and README; platform scripts are gone
+const requiredFiles = ["dist", "docs", "templates", "README.md"];
 for (const file of requiredFiles) {
   assert(pkg.files?.includes(file), `package.json files must include ${file}`);
 }
@@ -51,6 +51,8 @@ assert(trackedDist.length === 0, `dist files must not be tracked by git, found $
 const forbidden = [".hy/", ".opencode/", ".codex/", "test/", "src/", "codelint.json", "doclint.json", "docs-gardener.json"];
 const packFiles = npmPackDryRun(process.cwd());
 assert(packFiles.includes("dist/server.js"), "npm pack must include the compiled CLI entrypoint");
+assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must include the explicit shared-mode workflow template");
+assert(!packFiles.includes("setup") && !packFiles.includes("setup.ps1"), "npm pack must not include removed platform installers");
 for (const file of packFiles) {
   for (const prefix of forbidden) {
     assert(!file.startsWith(prefix), `npm pack must not include ${file}`);

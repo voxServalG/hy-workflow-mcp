@@ -94,7 +94,7 @@ Agents should handle tool results in this order:
 
 Happy-path tools should omit `stop_here` unless the workflow requires user review. Non-happy paths should set `requires_user` and `stop_here` with `display` plus `recovery`. Examples include plan approval, setup refresh, CI failure, CI timeout, permission failures, and GitHub/API errors.
 
-Terminal CLI commands follow the same contract when `--json` is passed. For example, `hy-workflow config --check --json` returns one JSON envelope with `ok`, `display`, `hint`, `issues`, `suggestedCommand`, and `recovery`. It does not return prose that agents must scrape.
+Terminal CLI commands follow the same contract when `--json` is passed. For example, `hy-workflow config --check --json` returns one JSON envelope with `ok`, `display`, `hint`, `issues`, `suggestedCommand`, and `recovery`. `hy-workflow setup --yes --clients ... --json` and `hy-workflow unset --yes --clients ... --json` likewise emit one machine-readable result; unattended calls must supply the noninteractive choices explicitly. These commands do not return prose that agents must scrape.
 
 ## Examples
 

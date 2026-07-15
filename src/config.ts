@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { codeExtOr, formatCodeExt, normalizeCodeExt, type CodeExt, validateCodeExt } from "./code_ext.js";
+import { atomicWriteJson, projectPaths } from "./runtime/user-paths.js";
 
 export type ProjectKind = "python" | "typescript" | "unknown" | "mixed";
 
@@ -44,6 +45,8 @@ export type ConfigCheckResult = {
   changed?: string[];
   preserved?: Record<string, string[]>;
   dryRun?: boolean;
+  source?: string;
+  candidate?: JsonObject;
 };
 
 type ConfigArgs = {
@@ -51,6 +54,7 @@ type ConfigArgs = {
   json: boolean;
   dryRun: boolean;
   applySuggested: boolean;
+  shared: boolean;
   explicit: Partial<ConfigSuggestion>;
   errors: string[];
 };
@@ -83,6 +87,24 @@ function readJsonFile(root: string, rel: string): JsonRead {
   } catch (error: any) {
     return { value: null, issue: jsonIssue(rel, error?.message ?? String(error)) };
   }
+}
+
+function readJsonPath(filePath: string, label = filePath): JsonRead {
+  if (!fs.existsSync(filePath)) return { value: null, issue: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { value: null, issue: jsonIssue(label, "top-level value must be an object") };
+    }
+    return { value: parsed as JsonObject, issue: null };
+  } catch (error: any) {
+    return { value: null, issue: jsonIssue(label, error?.message ?? String(error)) };
+  }
+}
+
+export function effectiveConfigPath(root: string): string {
+  const shared = path.join(root, UNIFIED_CONFIG_FILE);
+  return fs.existsSync(shared) ? shared : projectPaths(root).config;
 }
 
 function readJson(root: string, rel: string): JsonObject | null {
@@ -337,7 +359,8 @@ export function ensureConfigDefaults(root: string, options: { dryRun?: boolean }
 }
 
 export function readUnifiedConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject | null {
-  const unifiedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
+  const source = effectiveConfigPath(root);
+  const unifiedRead = readJsonPath(source, source === path.join(root, UNIFIED_CONFIG_FILE) ? UNIFIED_CONFIG_FILE : "local project config");
   if (!unifiedRead.value) return null;
   const unified = normalizedUnified(unifiedRead.value, suggestion);
   if (validateUnifiedConfig(root, unifiedRead.value, unified, { checkExists: false }).length) return null;
@@ -390,8 +413,12 @@ function preservedKeys(before: JsonObject | null, after: JsonObject): string[] {
 }
 
 export function applyConfig(root: string, suggestion: ConfigSuggestion, options: { preserveExisting: boolean; dryRun: boolean; mode?: string }): ConfigCheckResult {
+  const targetPath = options.mode === "shared" ? path.join(root, UNIFIED_CONFIG_FILE) : projectPaths(root).config;
+  const targetLabel = options.mode === "shared" ? UNIFIED_CONFIG_FILE : targetPath;
+  const effectiveRead = readJsonPath(targetPath, targetLabel);
+  const sharedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
   const reads = {
-    [UNIFIED_CONFIG_FILE]: readJsonFile(root, UNIFIED_CONFIG_FILE),
+    [UNIFIED_CONFIG_FILE]: effectiveRead.value || effectiveRead.issue ? effectiveRead : sharedRead,
     "codelint.json": readJsonFile(root, "codelint.json"),
     "doclint.json": readJsonFile(root, "doclint.json"),
     "docs-gardener.json": readJsonFile(root, "docs-gardener.json"),
@@ -424,7 +451,10 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
     const next = after[file as keyof typeof after];
     if (JSON.stringify(prev) !== JSON.stringify(next)) changed.push(file);
     preserved[file] = preservedKeys(prev, next);
-    if (!options.dryRun) writeJson(root, file, next);
+    if (!options.dryRun) {
+      if (options.mode === "shared") writeJson(root, file, next);
+      else atomicWriteJson(targetPath, next);
+    }
   }
   const result = options.dryRun ? configResult(root, suggestion, [], [], false) : checkConfig(root, suggestion);
   return {
@@ -432,9 +462,11 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
     changed,
     preserved,
     dryRun: options.dryRun,
+    source: targetPath,
+    candidate: unified,
     display: {
       title: options.dryRun ? "Config dry run complete" : result.ok ? "Config updated" : "Config update needs attention",
-      body: `${options.dryRun ? "Would update" : "Updated"} ${changed.length ? changed.join(", ") : "no config files"} while preserving unknown fields in ${UNIFIED_CONFIG_FILE}.`,
+      body: (options.dryRun ? "Would update " : "Updated ") + (changed.length ? targetPath : "no config files") + " while preserving unknown fields.",
     },
     hint: result.ok ? "Rerun hy_init after applying config changes so setup artifacts and workflow state can be validated." : result.hint,
   };
@@ -611,7 +643,9 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const project = detectProject(root);
   const issues: string[] = [];
   const drift: ConfigDrift[] = [];
-  const unifiedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
+  const source = effectiveConfigPath(root);
+  const sourceLabel = source === path.join(root, UNIFIED_CONFIG_FILE) ? UNIFIED_CONFIG_FILE : "local project config";
+  const unifiedRead = readJsonPath(source, sourceLabel);
   const codelintRead = readJsonFile(root, "codelint.json");
   const doclintRead = readJsonFile(root, "doclint.json");
   const gardenerRead = readJsonFile(root, "docs-gardener.json");
@@ -621,7 +655,7 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const gardener = gardenerRead.value;
 
   if (unifiedRead.issue) issues.push(unifiedRead.issue);
-  if (!unifiedRaw && !unifiedRead.issue) issues.push(`Missing ${UNIFIED_CONFIG_FILE}`);
+  if (!unifiedRaw && !unifiedRead.issue) issues.push("Missing project config: " + source);
   if (!unifiedRaw) {
     for (const issue of [codelintRead.issue, doclintRead.issue, gardenerRead.issue]) {
       if (issue) issues.push(issue);
@@ -648,7 +682,7 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
     projectConfig.docsDir,
   );
   const ambiguous = (project.kind === "mixed" || project.kind === "unknown") && !explicitConfigReady;
-  return configResult(root, suggestion, [...new Set(issues)], drift, ambiguous);
+  return { ...configResult(root, suggestion, [...new Set(issues)], drift, ambiguous), source, candidate: unified };
 }
 
 function quoteArg(value: string): string {
@@ -674,7 +708,7 @@ function parseList(value: string | undefined): string[] | undefined {
 }
 
 function parseArgs(argv: string[]): ConfigArgs {
-  const args: ConfigArgs = { mode: "check", json: false, dryRun: false, applySuggested: false, explicit: {}, errors: [] };
+  const args: ConfigArgs = { mode: "check", json: false, dryRun: false, applySuggested: false, shared: false, explicit: {}, errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = (flag: string): string | undefined => {
@@ -690,6 +724,7 @@ function parseArgs(argv: string[]): ConfigArgs {
     else if (arg === "--json") args.json = true;
     else if (arg === "--check") args.mode = "check";
     else if (arg === "--dry-run") args.dryRun = true;
+    else if (arg === "--shared") args.shared = true;
     else if (arg === "--apply" || arg === "--apply-suggested") { args.mode = "apply"; args.applySuggested = true; }
     else if (arg === "--python") args.explicit.codeExt = ".py";
     else if (arg === "--typescript") args.explicit.codeExt = ".ts";
@@ -726,14 +761,15 @@ export function configHelp(): string {
     "",
     "Usage:",
     "  hy-workflow                 Start MCP stdio server",
-    "  hy-workflow setup           Deploy or refresh project bootstrap artifacts",
+    "  hy-workflow setup           Configure MCP clients and local project state",
+    "  hy-workflow unset           Remove the local project deployment",
     "  hy-workflow --version       Show the installed package version",
     "  hy-workflow --help          Show this help",
     "  hy-workflow config --check --json",
     "  hy-workflow config --apply-suggested --json",
     "  hy-workflow config --python --code-dirs src,test --docs-dir docs --base-branch dev --json",
     "",
-    `${UNIFIED_CONFIG_FILE} is the source of truth. codelint.json, doclint.json, and docs-gardener.json are runtime compatibility artifacts and should not be tracked.`,
+    "Config is stored in the OS user config directory by default. Pass --shared to write hy-workflow.json.",
     "Config commands emit a single JSON envelope when --json is passed.",
   ].join("\n");
 }
@@ -746,7 +782,7 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
   const result = args.errors.length
     ? configResult(root, suggestion, args.errors, [], false)
     : args.mode === "apply"
-      ? applyConfig(root, suggestion, { preserveExisting: !args.applySuggested && Object.keys(args.explicit).length === 0, dryRun: args.dryRun })
+      ? applyConfig(root, suggestion, { preserveExisting: !args.applySuggested && Object.keys(args.explicit).length === 0, dryRun: args.dryRun, mode: args.shared ? "shared" : "local" })
       : checkConfig(root, suggestion);
   return { exitCode: result.ok ? 0 : 1, stdout: args.json ? JSON.stringify(result, null, 2) + "\n" : `${result.display.title}
 ${result.display.body}

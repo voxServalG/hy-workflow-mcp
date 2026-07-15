@@ -8,16 +8,18 @@ hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在
 
 ## 安装与部署
 
-像 Codex CLI 一样先全局安装两个 scoped npm 包，再进入项目根目录运行 setup：
+先从 npm 全局安装两个 scoped 包，再进入任意 Git 项目根目录运行统一 setup TUI：
 
 ```bash
 npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 hy-workflow setup
 ```
 
-国内网络需要镜像时，安装命令可追加 `--registry=https://registry.npmmirror.com`。更新时重跑同一条 `npm install -g` 命令，再运行 `hy-workflow setup`。需要 Node.js >= 18；Windows 运行 setup 还需要 Git for Windows 的 `bash`。
+国内网络需要镜像时，安装命令可追加 `--registry=https://registry.npmmirror.com`。更新时重跑同一条 npm 安装命令，再运行 `hy-workflow setup`。只要求 Node.js >= 18；同一个 Node CLI 支持 Windows、macOS 和 Linux，不再依赖 Bash 或 PowerShell 安装脚本。
 
-脚本会部署或更新项目 bootstrap 产物，然后输出一段 setup prompt。把这段 prompt 原样交给开发 agent，agent 会完成项目级 MCP 配置和 `hy_init`。
+TUI 会提前检测 Codex、Claude Code、OpenCode，供用户多选，然后完成安装或更新。默认是本机模式：项目配置、deployment、workflow state、scope lock 和 DocsGraph cache 全部写入 OS 用户目录，项目工作树和 `.git` 保持零改动。任何时候可运行 `hy-workflow unset` 解除当前项目；只有最后一个已登记项目且用户明确选择时，才移除 hy-workflow 所拥有的全局 MCP 配置。
+
+CI 或自动化可使用 `hy-workflow setup --yes --clients codex,claude,opencode --json`；预览用 `--dry-run`。只有明确需要团队共享配置时才选 `--shared`，此模式允许写入 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`。
 
 Codex CLI 项目配置的期望态是直接运行已安装命令：
 
@@ -39,7 +41,7 @@ tool_timeout_sec = 300
 首次接入项目时：
 
 ```text
-setup → agent receives setup prompt → hy_init → hy_plan
+setup TUI → restart client/MCP session → hy_init → hy_plan
 ```
 
 后续每个代码或文档任务都走同一个闭环：
@@ -83,7 +85,7 @@ docs-gardener mcp
 
 ## 产物边界
 
-`hy-workflow.json` 是人工维护的唯一项目配置源头。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
+本机模式的项目配置位于 OS 用户配置目录；共享模式的 `hy-workflow.json` 是仓库内人工维护的配置源，并优先于本机配置。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
 
 项目内产物分三类：
 
@@ -91,17 +93,17 @@ docs-gardener mcp
 
 | 类别 | 产物 | 规则 |
 | --- | --- | --- |
-| tracked project artifacts | `.github/`、`AGENTS.md`、`.gitignore`、`hy-workflow.json` | 应提交，代表项目协作契约 |
-| compatibility artifacts | `codelint.json`、`doclint.json`、`docs-gardener.json` | 由 `hy-workflow.json` 派生，setup / verify 按需维护，不作为人工配置源头 |
-| local/runtime/client artifacts | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、MCP 客户端本地配置 | 不应提交，只属于本地运行环境 |
+| default local artifacts | OS 用户目录中的 config/state/cache、客户端用户级 MCP 配置 | setup、unset、hy_init 默认只改这些位置 |
+| explicit shared artifacts | `hy-workflow.json`、`.github/workflows/hy-workflow.yml` | 仅 `setup --shared` 写入；需要团队共享时才提交 |
+| legacy/compatibility artifacts | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 不由默认 setup 创建，不应提交；旧数据只迁移读取、不自动删除 |
 
-如果 setup 造成 tracked artifact drift，应单独创建 setup artifact sync PR，不要混入无关功能、修复或文档任务。
+本机模式不应产生 tracked diff。显式 shared 模式造成的仓库变化应单独创建 setup artifact sync PR，不要混入无关任务。
 
 ## 工具
 
 | Tool | 作用 |
 | --- | --- |
-| `hy_init` | 校验 setup 产物，写入或更新 workflow 规则，初始化状态 |
+| `hy_init` | 校验用户目录中的 deployment/config，初始化外置状态；不写项目或 `.git` |
 | `hy_status` | 查看当前 workflow phase |
 | `hy_read_docs` | 在 plan、approve、edit 后读取文档并做事实对齐 |
 | `hy_plan` | 生成 PlanDoc，声明 scope、边界、验证、风险和取舍 |
@@ -119,7 +121,7 @@ docs-gardener mcp
 
 ## 验证
 
-`hy_verify` 包含本地任务 gate；完整 lint 由 GitHub Actions/setup workflow 执行：
+`hy_verify` 包含本地任务 gate；采用 shared 模式的项目可由显式部署的 GitHub Actions workflow 执行完整 lint：
 
 ```text
 CI lint  → doclint + codelint + workflow-contract lint

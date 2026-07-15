@@ -13,6 +13,7 @@ import { handleApprove } from "../../src/tools/approve.js";
 import { OUTPUT_CONTROL_FIELDS } from "../../src/output/contract.js";
 import { computePlanHash, writeState } from "../../src/state.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
+import { useRuntimeHome } from "../helpers/runtime-home.js";
 
 function baseState(phase: WorkflowState["phase"]): WorkflowState {
   return {
@@ -59,6 +60,7 @@ function run(cmd: string, root: string): void {
 }
 
 const originalCwd = cwd();
+const runtimeHome = useRuntimeHome("hy-envelope-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-envelope-"));
 
 try {
@@ -171,6 +173,12 @@ try {
   assertEnvelope("hy_status", statusResult);
   if (!statusResult.capabilities?.git || !statusResult.capabilities?.gh) {
     throw new Error("hy_status should expose startup git/gh capabilities");
+  }
+  if (!statusResult.localArtifacts?.every((item: string) => item.startsWith(runtimeHome))) {
+    throw new Error(`hy_status should report identity-scoped user directories, got ${JSON.stringify(statusResult.localArtifacts)}`);
+  }
+  if (!statusResult.runtimePaths?.workflowState?.startsWith(runtimeHome) || statusResult.localArtifacts.includes(".hy/")) {
+    throw new Error(`hy_status must not advertise project-local runtime state, got ${JSON.stringify(statusResult.runtimePaths)}`);
   }
 } finally {
   chdir(originalCwd);

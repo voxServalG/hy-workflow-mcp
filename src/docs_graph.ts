@@ -1,9 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import { execSync } from "node:child_process";
 import { projectRoot, type DocsGraph, type DocsGraphEntry, type DocsGraphLink } from "./state.js";
 import { DOC_EXTENSIONS, isDocumentPath, pathInsideDocs, relativeInside, relativeToDocs, resolveDocsDir } from "./docs_paths.js";
+import { atomicWriteJson, projectPaths } from "./runtime/user-paths.js";
+import { resolveGitPrivatePath } from "./runtime/project.js";
 
 const GRAPH_DIGEST_VERSION = "docs-graph-v2";
 
@@ -21,18 +22,12 @@ function graphDigestFromFileShas(items: string[]): string {
   return shortHash(`${GRAPH_DIGEST_VERSION}|${items.join("|")}`);
 }
 
-function gitPrivatePath(root: string, relativePath: string): string {
-  try {
-    const resolved = execSync(`git rev-parse --git-path ${relativePath}`, { cwd: root })
-      .toString().trim();
-    return path.isAbsolute(resolved) ? resolved : path.join(root, resolved);
-  } catch {
-    return path.join(root, ".git", relativePath);
-  }
+function graphPath(root: string): string {
+  return projectPaths(root).docsGraph;
 }
 
-function graphPath(root: string): string {
-  return gitPrivatePath(root, path.join("hy-workflow", "docs-graph.json"));
+function legacyGraphPath(root: string): string {
+  return resolveGitPrivatePath(root, path.join("hy-workflow", "docs-graph.json"));
 }
 
 function normalizeLink(
@@ -359,17 +354,17 @@ function detectEntryPoints(files: string[]): string[] {
 // ── Persist / Load ──────────────────────────────────────────
 
 export function saveDocsGraph(root: string, graph: DocsGraph): void {
-  const p = graphPath(root);
-  const dir = path.dirname(p);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(graph, null, 2) + "\n", "utf-8");
+  atomicWriteJson(graphPath(root), graph);
 }
 
 export function loadDocsGraph(root: string): DocsGraph | null {
   const p = graphPath(root);
-  if (!fs.existsSync(p)) return null;
+  const source = fs.existsSync(p) ? p : legacyGraphPath(root);
+  if (!fs.existsSync(source)) return null;
   try {
-    return JSON.parse(fs.readFileSync(p, "utf-8")) as DocsGraph;
+    const graph = JSON.parse(fs.readFileSync(source, "utf-8")) as DocsGraph;
+    if (source !== p) saveDocsGraph(root, graph);
+    return graph;
   } catch {
     return null;
   }
