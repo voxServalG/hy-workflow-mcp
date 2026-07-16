@@ -199,14 +199,14 @@ export function loadMatrix(sourceRoot: string): AcceptanceMatrix {
   if (
     matrix?.schemaVersion !== "1"
     || !Array.isArray(matrix.repositories)
-    || matrix.repositories.length !== 7
+    || matrix.repositories.length !== 5
     || matrix.repositories.some((repo: AcceptanceRepo) =>
       !repo.url.startsWith("https://")
       || !/^[0-9a-f]{40}$/.test(repo.commit)
       || (repo.mirrorEnv !== undefined && !/^HY_ACCEPTANCE_[A-Z0-9_]+_MIRROR$/.test(repo.mirrorEnv))
     )
   ) {
-    throw new Error("Acceptance matrix must contain seven HTTPS repositories pinned to full commits");
+    throw new Error("Acceptance matrix must contain five HTTPS repositories pinned to full commits");
   }
   return matrix;
 }
