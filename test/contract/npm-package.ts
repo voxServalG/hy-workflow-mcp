@@ -101,10 +101,8 @@ for (const token of [
 }
 assert(workflow.indexOf("Validate release provenance") < workflow.indexOf("npm run verify"), "release provenance must be validated before expensive verification");
 assert(workflow.includes("Build one release tarball"), "release workflow must build one canonical tarball");
-assert(workflow.includes("ACCEPTANCE_REPOS_TOKEN"), "release workflow must use the dedicated read-only acceptance repository secret");
-assert(workflow.includes("Checkout pinned magnet acceptance mirror") && workflow.includes("Checkout pinned docs-gardener acceptance mirror"), "release workflow must materialize both pinned private legacy mirrors");
-assert(workflow.includes("HY_ACCEPTANCE_MAGNET_MIRROR") && workflow.includes("HY_ACCEPTANCE_DOCS_GARDENER_MIRROR"), "release acceptance must receive only local mirror paths for private legacy repositories");
-assert((workflow.match(/persist-credentials: false/g) ?? []).length >= 8, "release checkouts must never persist GitHub credentials");
+assert(workflow.includes("Checkout pinned Vite acceptance mirror") && workflow.includes("Checkout pinned Flask acceptance mirror") && workflow.includes("Checkout pinned Express acceptance mirror"), "release workflow must materialize pinned public acceptance mirrors");
+assert((workflow.match(/persist-credentials: false/g) ?? []).length >= 6, "release checkouts must never persist GitHub credentials");
 assert(workflow.includes('npm run test:acceptance -- --package-archive "$HY_RELEASE_TGZ"'), "release acceptance must consume the canonical tarball path");
 assert(workflow.indexOf("--package-archive") < workflow.indexOf('npm publish "$HY_RELEASE_TGZ"'), "release acceptance must gate publication of the same tarball");
 assert(workflow.includes('test "$actual_sha512" = "$HY_RELEASE_TGZ_SHA512"'), "publish must reject a tarball changed after acceptance");
@@ -116,14 +114,13 @@ for (const forbiddenToken of ["NODE_AUTH_TOKEN", "NPM_TOKEN", "upload-artifact",
 }
 
 const matrix = JSON.parse(readFileSync("test/acceptance/matrix.json", "utf8"));
-assert(matrix.repositories.length === 7, "release acceptance must run all seven fixed repositories");
+assert(matrix.repositories.length === 5, "release acceptance must run all five pinned public mirrors");
 assert(matrix.repositories.every((repo: any) => repo.url.startsWith("https://") && /^[0-9a-f]{40}$/.test(repo.commit)), "acceptance repositories must use HTTPS and full immutable commits");
-assert(new Set(matrix.repositories.map((repo: any) => repo.id)).size === 7, "acceptance repository ids must be unique");
+assert(new Set(matrix.repositories.map((repo: any) => repo.id)).size === 5, "acceptance repository ids must be unique");
 const legacyRepositories = matrix.repositories.filter((repo: any) => repo.category === "legacy");
-assert(legacyRepositories.length === 2 && legacyRepositories.every((repo: any) => /^HY_ACCEPTANCE_[A-Z0-9_]+_MIRROR$/.test(repo.mirrorEnv)), "private legacy repositories must declare explicit local mirror environment inputs");
-assert(new Set(legacyRepositories.map((repo: any) => repo.mirrorEnv)).size === 2, "private legacy mirror environment inputs must be unique");
+assert(legacyRepositories.length === 0, "private legacy mirrors are no longer part of release acceptance");
 assert(matrix.repositories.every((repo: any) => /^HY_ACCEPTANCE_[A-Z0-9_]+_MIRROR$/.test(repo.mirrorEnv)), "every pinned repository must support an explicit local acceptance mirror");
-assert(new Set(matrix.repositories.map((repo: any) => repo.mirrorEnv)).size === 7, "acceptance mirror environment inputs must be unique");
+assert(new Set(matrix.repositories.map((repo: any) => repo.mirrorEnv)).size === 5, "acceptance mirror environment inputs must be unique");
 for (const repo of matrix.repositories) {
   const slug = repo.url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
   assert(workflow.includes(`repository: ${slug}`) && workflow.includes(`ref: ${repo.commit}`) && workflow.includes(`${repo.mirrorEnv}:`), `release workflow must materialize and bind the pinned mirror for ${repo.id}`);

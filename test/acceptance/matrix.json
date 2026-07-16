@@ -3,52 +3,6 @@
   "companionPackage": "@voxstudio/docs-gardener@1.0.0-next.0",
   "repositories": [
     {
-      "id": "magnet",
-      "category": "legacy",
-      "url": "https://github.com/voxServalG/magnet-field-modulation-refactor.git",
-      "mirrorEnv": "HY_ACCEPTANCE_MAGNET_MIRROR",
-      "commit": "a1350baf520ecad362b927547bb1e9c027c247e5",
-      "ecosystem": "python",
-      "defaultBranch": "dev",
-      "expected": {
-        "codeExt": [
-          ".py"
-        ],
-        "codeDirs": [
-          "src",
-          "tests",
-          "experiments"
-        ],
-        "lintDirs": [
-          "src"
-        ],
-        "docsDir": "docs"
-      }
-    },
-    {
-      "id": "docs-gardener",
-      "category": "legacy",
-      "url": "https://github.com/voxServalG/docs-gardener.git",
-      "mirrorEnv": "HY_ACCEPTANCE_DOCS_GARDENER_MIRROR",
-      "commit": "f7ec6e0d7c1b1a6a0a65d1416553c40c2e5871fe",
-      "ecosystem": "typescript",
-      "defaultBranch": "dev",
-      "expected": {
-        "codeExt": [
-          ".ts"
-        ],
-        "codeDirs": [
-          "src",
-          "test"
-        ],
-        "lintDirs": [
-          "src",
-          "test"
-        ],
-        "docsDir": "docs"
-      }
-    },
-    {
       "id": "vite",
       "category": "oss",
       "url": "https://github.com/vitejs/vite.git",

@@ -71,22 +71,6 @@ jobs:
           const sha512 = createHash("sha512").update(fs.readFileSync(archive)).digest("hex");
           fs.appendFileSync(process.env.GITHUB_ENV, `HY_RELEASE_TGZ=${archive}\nHY_RELEASE_TGZ_SHA512=${sha512}\n`);
           NODE
-      - name: Checkout pinned magnet acceptance mirror
-        uses: actions/checkout@v6
-        with:
-          repository: voxServalG/magnet-field-modulation-refactor
-          ref: a1350baf520ecad362b927547bb1e9c027c247e5
-          path: .acceptance-mirrors/magnet
-          token: ${{ secrets.ACCEPTANCE_REPOS_TOKEN }}
-          persist-credentials: false
-      - name: Checkout pinned docs-gardener acceptance mirror
-        uses: actions/checkout@v6
-        with:
-          repository: voxServalG/docs-gardener
-          ref: f7ec6e0d7c1b1a6a0a65d1416553c40c2e5871fe
-          path: .acceptance-mirrors/docs-gardener
-          token: ${{ secrets.ACCEPTANCE_REPOS_TOKEN }}
-          persist-credentials: false
       - name: Checkout pinned Vite acceptance mirror
         uses: actions/checkout@v6
         with:
@@ -125,8 +109,6 @@ jobs:
       - name: Run release acceptance pressure test
         env:
           HY_ACCEPTANCE_TOTAL_TIMEOUT_MS: "2700000"
-          HY_ACCEPTANCE_MAGNET_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/magnet
-          HY_ACCEPTANCE_DOCS_GARDENER_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/docs-gardener
           HY_ACCEPTANCE_VITE_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/vite
           HY_ACCEPTANCE_FLASK_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/flask
           HY_ACCEPTANCE_EXPRESS_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/express

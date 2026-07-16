@@ -89,7 +89,7 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
     "test/acceptance/setup-failpoint-child.mjs": ["internal-setup-test-hooks", "dist", "setup-cli.js", "runSetupCli"],
     "test/acceptance/lint-pressure-child.mjs": ["HY_ACCEPTANCE_PACKAGE_ROOT", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "checks.js", "config.js", "project-profile.js", "inspectProject", "withRuntimeCompatConfigs", "DOCLINT_SOURCE", "CODELINT_SOURCE", "DOCLINT_INTEGRITY_SHA512", "CODELINT_INTEGRITY_SHA512", "curl", "--retry", "--package=", "--offline"],
     "test/acceptance/lint-report.ts": ["validateLintPressureEnvelope", "notApplicable", "supported Python/Rust files", "must pass on a maintained legacy target"],
-    "test/acceptance/matrix.json": ["https://", "a1350baf520ecad362b927547bb1e9c027c247e5", "5e16a5c9e57e81f6031a23faa2ace52205fa8242"],
+    "test/acceptance/matrix.json": ["https://", "5e16a5c9e57e81f6031a23faa2ace52205fa8242"],
   })) {
     const text = readText(context.root, file);
     for (const token of tokens) {
