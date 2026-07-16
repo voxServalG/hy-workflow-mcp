@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, WorkflowState } from "./state.js";
@@ -20,23 +20,198 @@ export interface CheckResult {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-interface ExecResult {
+export interface ExecResult {
   ok: boolean;
   stdout: string;
   stderr: string;
   status: number | null;
+  timedOut: boolean;
+  timeoutMs: number;
+  durationMs: number;
 }
 
-const CHECK_COMMAND_TIMEOUT_MS = 300_000;
+const CHECK_COMMAND_TIMEOUT_MS = 90_000;
+const CHECK_TEST_TIMEOUT_MS = 1_200_000;
+const CHECK_PACK_TIMEOUT_MS = 300_000;
+const ACCEPTANCE_TOTAL_TIMEOUT_MS = 2_700_000;
+const ACCEPTANCE_CLEANUP_ALLOWANCE_MS = 120_000;
+const CHECK_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
+
+export type CheckCommand = string | { file: string; args: string[] };
+
+const CHECK_COMMAND_SUPERVISOR = String.raw`
+const { spawn } = require("node:child_process");
+const payload = JSON.parse(Buffer.from(process.argv[1], "base64").toString("utf8"));
+const started = Date.now();
+let child;
+let stdout = "";
+let stderr = "";
+let spawnError = "";
+let timedOut = false;
+let settled = false;
+let timeoutTimer;
+let forceTimer;
+
+function emit(status, signal) {
+  if (settled) return;
+  settled = true;
+  if (timeoutTimer) clearTimeout(timeoutTimer);
+  if (forceTimer) clearTimeout(forceTimer);
+  process.stdout.write(JSON.stringify({
+    status: timedOut ? null : status,
+    signal: signal || null,
+    stdout,
+    stderr,
+    error: spawnError,
+    timedOut,
+    durationMs: Date.now() - started,
+  }));
+}
+
+function terminateTree(signal) {
+  if (!child || !child.pid) return;
+  if (process.platform !== "win32") {
+    try { process.kill(-child.pid, signal); }
+    catch {
+      try { child.kill(signal); } catch {}
+    }
+    return;
+  }
+  const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  killer.once("error", () => {
+    try { child.kill("SIGKILL"); } catch {}
+  });
+}
+
+function shutdown(signal) {
+  timedOut = true;
+  terminateTree("SIGKILL");
+  setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 5_000).unref();
+}
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+try {
+  const structured = payload.kind === "file";
+  child = spawn(structured ? payload.file : payload.command, structured ? payload.args : [], {
+    cwd: payload.cwd || undefined,
+    env: process.env,
+    detached: process.platform !== "win32",
+    shell: !structured,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  child.once("error", error => {
+    spawnError = error && error.message ? error.message : String(error);
+    if (!child.pid) emit(null, null);
+  });
+  child.once("close", (status, signal) => emit(status, signal));
+  timeoutTimer = setTimeout(() => {
+    timedOut = true;
+    terminateTree("SIGTERM");
+    forceTimer = setTimeout(() => terminateTree("SIGKILL"), 2_000);
+  }, payload.timeoutMs);
+} catch (error) {
+  spawnError = error && error.message ? error.message : String(error);
+  emit(null, null);
+}
+`;
+
+function positiveMilliseconds(value: unknown): number | null {
+  const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
+export function checkCommandTimeoutMs(command: string): number {
+  if (/\b(?:npm\s+run\s+test:acceptance|test\/acceptance\/runner)\b/.test(command)) {
+    const configured = positiveMilliseconds(process.env.HY_ACCEPTANCE_TOTAL_TIMEOUT_MS) ?? ACCEPTANCE_TOTAL_TIMEOUT_MS;
+    return Math.max(ACCEPTANCE_TOTAL_TIMEOUT_MS, configured) + ACCEPTANCE_CLEANUP_ALLOWANCE_MS;
+  }
+  if (/\bnpm\s+(?:run\s+)?(?:test(?::(?:unit|e2e|contract|windows))?|verify)\b/.test(command)) {
+    return CHECK_TEST_TIMEOUT_MS;
+  }
+  if (/\bnpm\s+pack\b/.test(command)) return CHECK_PACK_TIMEOUT_MS;
+  return CHECK_COMMAND_TIMEOUT_MS;
+}
+
+export function runCheckCommand(command: CheckCommand, cwd?: string, timeoutMs?: number, env?: NodeJS.ProcessEnv): ExecResult {
+  const effectiveTimeoutMs = timeoutMs ?? (typeof command === "string" ? checkCommandTimeoutMs(command) : CHECK_COMMAND_TIMEOUT_MS);
+  const payload = typeof command === "string"
+    ? { kind: "shell", command, cwd, timeoutMs: effectiveTimeoutMs }
+    : { kind: "file", file: command.file, args: command.args, cwd, timeoutMs: effectiveTimeoutMs };
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  const started = Date.now();
+  const supervisor = spawnSync(process.execPath, ["-e", CHECK_COMMAND_SUPERVISOR, encoded], {
+    encoding: "utf8",
+    env: env ?? process.env,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: CHECK_OUTPUT_LIMIT_BYTES,
+  });
+  const durationMs = Date.now() - started;
+  if (supervisor.error || supervisor.status !== 0) {
+    return {
+      ok: false,
+      stdout: supervisor.stdout?.trim() ?? "",
+      stderr: (supervisor.stderr?.trim() || supervisor.error?.message || `check command supervisor exited ${supervisor.status}`),
+      status: null,
+      timedOut: false,
+      timeoutMs: effectiveTimeoutMs,
+      durationMs,
+    };
+  }
+  try {
+    const result = JSON.parse(supervisor.stdout || "{}");
+    const timedOut = result.timedOut === true;
+    const status = timedOut ? null : (typeof result.status === "number" ? result.status : null);
+    const timeoutDetail = timedOut ? `timed out after ${effectiveTimeoutMs}ms` : "";
+    const stderr = [result.stderr, result.error, timeoutDetail].filter(Boolean).join("; ").trim();
+    return {
+      ok: !timedOut && !result.error && status === 0,
+      stdout: typeof result.stdout === "string" ? result.stdout.trim() : "",
+      stderr,
+      status,
+      timedOut,
+      timeoutMs: effectiveTimeoutMs,
+      durationMs: typeof result.durationMs === "number" ? result.durationMs : durationMs,
+    };
+  } catch (error: any) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: `Could not parse check command supervisor result: ${error?.message ?? String(error)}; ${supervisor.stdout?.slice(-2_000) ?? ""}`,
+      status: null,
+      timedOut: false,
+      timeoutMs: effectiveTimeoutMs,
+      durationMs,
+    };
+  }
+}
+
+export const DOCLINT_SOURCE = "https://codeload.github.com/voxServalG/doclint/tar.gz/20793b8a4e1bcd79556d2cede0973cabe97f1ae4";
+export const CODELINT_SOURCE = "https://codeload.github.com/voxServalG/codelint/tar.gz/aaaa065160b019f8e2a9d8eff456633dfa4b6d9b";
+export const DOCLINT_INTEGRITY_SHA512 = "a2f8ce4406763d7476e39da1834b9a3c10f05041999dc80448f44abab7f9c24589b8e8e549c23d1a0c3f7bcb80fc929200a214f71196723c030d3e3550457bb9";
+export const CODELINT_INTEGRITY_SHA512 = "cff92af13e10b3c59fbd39a1ddddeb923f38701b47c4e2ff05b5acba6d9f78d9dd296b75815e945df9e6995bb0fb47d147f687ee5fb249c128c2502d6520726f";
 
 function execOr(cmd: string, cwd?: string): ExecResult {
-  try {
-    const stdout = execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe","pipe","pipe"], timeout: CHECK_COMMAND_TIMEOUT_MS });
-    return { ok: true, stdout: stdout.trim(), stderr: "", status: 0 };
-  } catch (e: any) {
-    const status = typeof e.status === "number" ? e.status : null;
-    return { ok: false, stdout: e.stdout?.trim() ?? "", stderr: e.stderr?.trim() ?? e.message ?? "", status };
-  }
+  return runCheckCommand(cmd, cwd);
+}
+
+function execWithOneRetry(cmd: string, cwd?: string): ExecResult {
+  const first = execOr(cmd, cwd);
+  if (first.ok) return first;
+  const second = execOr(cmd, cwd);
+  return second.ok
+    ? second
+    : { ...second, stderr: `attempt 1: ${first.stderr || first.stdout}; attempt 2: ${second.stderr || second.stdout}` };
 }
 
 function ok(title: string, layer: string, detail = "", hard = true): CheckResult {
@@ -51,6 +226,7 @@ function unique(values: string[]): string[] {
 }
 
 function formatExit(r: ExecResult): string {
+  if (r.timedOut) return `timeout after ${r.timeoutMs}ms`;
   return r.status === null ? "unknown exit" : `exit ${r.status}`;
 }
 
@@ -89,6 +265,13 @@ function nestedNumber(report: any, key: string): number | null {
   );
 }
 
+function lintFileCount(report: any): number | null {
+  return nestedNumber(report, "files")
+    ?? nestedNumber(report, "total_files")
+    ?? nestedNumber(report, "totalFiles")
+    ?? nestedNumber(report, "total");
+}
+
 function countDetail(errors: number, warnings: number, files: number, failed: number): string {
   return `${errors} errors, ${warnings} warnings (${files} files, ${failed} failed)`;
 }
@@ -97,15 +280,17 @@ export function parseDocLintReport(report: any): CheckResult {
   const failed = nestedNumber(report, "failed");
   const errors = nestedNumber(report, "errors");
   const warnings = nestedNumber(report, "warnings") ?? 0;
-  const files = nestedNumber(report, "files") ?? nestedNumber(report, "total") ?? 0;
+  const files = lintFileCount(report);
 
-  if (failed === null && errors === null && typeof report?.ok !== "boolean") {
-    return fail("doclint", "lint", "Could not understand doclint JSON report", true);
+  if (errors === null || failed === null || files === null) {
+    return fail("doclint", "lint", "doclint JSON report is missing errors, failed, or files counts", true);
   }
 
-  const effectiveErrors = errors ?? failed ?? 0;
-  const effectiveFailed = failed ?? effectiveErrors;
-  const passed = report?.ok === false ? false : effectiveErrors === 0 && effectiveFailed === 0;
+  if (files <= 0) return fail("doclint", "lint", `doclint scanned ${files} files; refusing a zero-file pass`, true);
+
+  const effectiveErrors = errors;
+  const effectiveFailed = failed;
+  const passed = report?.ok === true && effectiveErrors === 0 && effectiveFailed === 0;
   const detail = countDetail(effectiveErrors, warnings, files, effectiveFailed);
   return passed
     ? ok("doclint", "lint", detail)
@@ -116,15 +301,19 @@ export function parseCodeLintReport(report: any): CheckResult {
   const failed = nestedNumber(report, "failed");
   const errors = nestedNumber(report, "errors");
   const warnings = nestedNumber(report, "warnings") ?? 0;
-  const files = nestedNumber(report, "files") ?? nestedNumber(report, "total") ?? 0;
+  const files = lintFileCount(report);
 
-  if (failed === null && errors === null && typeof report?.ok !== "boolean") {
-    return fail("codelint", "lint", "Could not understand codelint JSON report", true);
+  if (errors === null || files === null) {
+    return fail("codelint", "lint", "codelint JSON report is missing errors or files counts", true);
   }
 
-  const effectiveErrors = errors ?? failed ?? 0;
+  if (files <= 0) return fail("codelint", "lint", `codelint scanned ${files} files; refusing a zero-file pass`, true);
+
+  const effectiveErrors = errors;
   const effectiveFailed = failed ?? effectiveErrors;
-  const passed = report?.ok === false ? false : effectiveErrors === 0 && effectiveFailed === 0;
+  // codelint's native JSON contract predates the shared `ok` envelope. A
+  // complete count report is authoritative, but an explicit false must fail.
+  const passed = report?.ok !== false && effectiveErrors === 0 && effectiveFailed === 0;
   const detail = countDetail(effectiveErrors, warnings, files, effectiveFailed);
   return passed
     ? ok("codelint", "lint", detail)
@@ -132,7 +321,7 @@ export function parseCodeLintReport(report: any): CheckResult {
 }
 
 export function runDocLint(root: string): CheckResult[] {
-  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes git+https://github.com/voxServalG/doclint.git lint --json", root));
+  const r = withRuntimeCompatConfigs(root, () => execWithOneRetry(`npx --yes --package=${DOCLINT_SOURCE} doclint lint --json`, root));
   if (!r.ok) {
     return [fail("doclint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "doclint command failed"}`, true)];
   }
@@ -145,7 +334,7 @@ export function runDocLint(root: string): CheckResult[] {
 }
 
 export function runCodeLint(root: string): CheckResult[] {
-  const r = withRuntimeCompatConfigs(root, () => execOr("npx --yes git+https://github.com/voxServalG/codelint.git check --json", root));
+  const r = withRuntimeCompatConfigs(root, () => execWithOneRetry(`npx --yes --package=${CODELINT_SOURCE} codelint check --json`, root));
   if (!r.ok) {
     return [fail("codelint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "codelint command failed"}`, true)];
   }
@@ -193,10 +382,6 @@ function hasTsCompileConfig(root: string): boolean {
   return fs.existsSync(path.join(root, "tsconfig.json"));
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
 function walkFiles(root: string, dir: string, allowedExts: Set<string>): string[] {
   const base = path.resolve(root, dir);
   if (!fs.existsSync(base) || !fs.statSync(base).isDirectory()) return [];
@@ -221,8 +406,7 @@ function pythonFiles(root: string, codeDirs: string[], exts: string[]): string[]
 
 function runPythonCompile(root: string, files: string[]): CheckResult {
   if (!files.length) return ok("compile: python", "compile", "No Python files found in configured codeDirs", false);
-  const command = `${findPython()} -m py_compile ${files.map(shellQuote).join(" ")}`;
-  const r = execOr(command, root);
+  const r = runCheckCommand({ file: findPython(), args: ["-m", "py_compile", ...files] }, root);
   return r.ok
     ? ok("compile: python", "compile", `${files.length} Python file(s) compiled`)
     : fail("compile: python", "compile", `${formatExit(r)}: ${r.stderr || r.stdout || "Python compile failed"}`, true);

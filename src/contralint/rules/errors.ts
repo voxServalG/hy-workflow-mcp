@@ -3,7 +3,7 @@ import { ERROR_ENVELOPE_FIELDS } from "../../output/contract.js";
 import { readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
-const REQUIRED_TYPES = ["validation", "workflow_state", "scope", "docs", "verification", "config", "io", "internal"];
+const REQUIRED_TYPES = ["validation", "workflow_state", "scope", "docs", "verification", "config", "setup", "io", "internal"];
 
 export function checkErrorContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];

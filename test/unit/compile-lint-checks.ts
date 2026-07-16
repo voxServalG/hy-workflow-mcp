@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCodeLintReport, parseDocLintReport, runBoundaryCheck, runCompile } from "../../src/checks.js";
+import { checkCommandTimeoutMs, parseCodeLintReport, parseDocLintReport, runBoundaryCheck, runCheckCommand, runCompile } from "../../src/checks.js";
 import type { PlanDoc } from "../../src/state.js";
 
 function assert(condition: unknown, message: string): void {
@@ -36,6 +36,36 @@ function installFakeTsc(root: string): void {
 
 function git(root: string, args: string[]): void {
   execFileSync("git", args, { cwd: root, stdio: "ignore" });
+}
+
+function wait(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+{
+  const root = tempRoot("hy-check-supervisor-");
+  const ready = join(root, "ready.txt");
+  const marker = join(root, "escaped-child.txt");
+  write(root, "tree.mjs", `
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const [ready, marker] = process.argv.slice(2);
+const grandchild = spawn(process.execPath, ["-e", "const fs=require('node:fs');const marker=process.argv[1];setTimeout(()=>fs.writeFileSync(marker,'escaped'),3000);setTimeout(()=>process.exit(0),5000)", marker], { stdio: "ignore" });
+writeFileSync(ready, String(grandchild.pid));
+setTimeout(() => process.exit(0), 6000);
+`);
+  const timed = runCheckCommand({ file: process.execPath, args: [join(root, "tree.mjs"), ready, marker] }, root, 1_500);
+  assert(!timed.ok && timed.timedOut && timed.status === null, `timed command must return a timeout envelope, got ${JSON.stringify(timed)}`);
+  assert(timed.durationMs < 10_000, `timed command cleanup exceeded its bounded allowance: ${JSON.stringify(timed)}`);
+  assert(existsSync(ready), "process-tree fixture did not start its grandchild before timeout");
+  wait(3_300);
+  assert(!existsSync(marker), "check timeout killed only the parent and allowed a grandchild to escape");
+
+  const passed = runCheckCommand({ file: process.execPath, args: ["-e", "process.stdout.write('ok')"] }, root, 5_000);
+  assert(passed.ok && passed.status === 0 && passed.stdout === "ok", `supervisor changed successful exit semantics: ${JSON.stringify(passed)}`);
+  const failed = runCheckCommand({ file: process.execPath, args: ["-e", "process.exit(7)"] }, root, 5_000);
+  assert(!failed.ok && !failed.timedOut && failed.status === 7, `supervisor changed nonzero exit semantics: ${JSON.stringify(failed)}`);
+  assert(checkCommandTimeoutMs("npm run test:acceptance") >= 2_820_000, "formal acceptance timeout must exceed its 45-minute internal budget");
 }
 
 {
@@ -97,6 +127,20 @@ function git(root: string, args: string[]): void {
   assert(!result.passed, `codelint nested ok=false report should fail, got ${JSON.stringify(result)}`);
   assert(result.detail.includes("4 errors") && result.detail.includes("3 warnings") && result.detail.includes("8 files"), `codelint nested detail should include numeric string counts, got ${JSON.stringify(result)}`);
   assert(!result.detail.includes("undefined"), `codelint detail must not contain undefined, got ${result.detail}`);
+}
+
+{
+  const result = parseCodeLintReport({ errors: 0, warnings: 0, total_files: 3 });
+  assert(result.passed && result.detail.includes("3 files"), `codelint should accept its native total_files field, got ${JSON.stringify(result)}`);
+}
+
+for (const report of [
+  { ok: true, errors: 0, total_files: 0 },
+  { ok: true, errors: 0 },
+  { ok: true, total_files: 2 },
+]) {
+  const strict = parseCodeLintReport(report);
+  assert(!strict.passed && strict.hard, `codelint must fail closed for missing/zero scan counts: ${JSON.stringify(report)}`);
 }
 
 {

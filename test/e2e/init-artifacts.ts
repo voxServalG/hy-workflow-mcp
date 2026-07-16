@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { SETUP_VERSION } from "../../src/bootstrap.js";
 import { ensureConfigDefaults } from "../../src/config.js";
 import { writeDeployment } from "../../src/runtime/deployment.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
+import { sharedArtifactEvidence, SHARED_PROJECT_FILES } from "../../src/setup/shared.js";
 import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, initArtifactGuidance, trackedLocalArtifactDiagnostics } from "../../src/tools/init.js";
 
 function assert(condition: unknown, message: string): void {
@@ -23,13 +24,40 @@ function project(prefix: string): string {
   git(root, ["config", "user.name", "Test"]);
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(join(root, "docs"), { recursive: true });
+  mkdirSync(join(root, ".github", "workflows"), { recursive: true });
   writeFileSync(join(root, "src", "index.ts"), "export {};\n");
-  writeFileSync(join(root, "docs", "index.md"), "# Docs\n");
+  writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nMaintained project facts and verification expectations.\n");
+  writeFileSync(join(root, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\non: [push]\njobs: {}\n");
   writeFileSync(join(root, "README.md"), "# Test\n");
   writeFileSync(join(root, "package.json"), "{}\n");
   git(root, ["add", "."]);
   git(root, ["commit", "-m", "init"]);
   return root;
+}
+
+const toolBin = mkdtempSync(join(tmpdir(), "hy-init-live-tools-"));
+function liveTool(command: string): string {
+  const executable = join(toolBin, process.platform === "win32" ? `${command}.cmd` : command);
+  writeFileSync(executable, process.platform === "win32" ? "@echo 1.0.0\r\n" : "#!/usr/bin/env sh\nprintf '1.0.0\\n'\n", "utf-8");
+  if (process.platform !== "win32") chmodSync(executable, 0o755);
+  return executable;
+}
+const hyExecutable = liveTool("hy-workflow");
+const docsExecutable = liveTool("docs-gardener");
+process.env.PATH = `${toolBin}${delimiter}${process.env.PATH ?? ""}`;
+
+function deployment(root: string, setupVersion: string, mode: "local" | "shared"): void {
+  writeDeployment(root, {
+    setupVersion,
+    mode,
+    clients: [],
+    projectFiles: [...SHARED_PROJECT_FILES],
+    tools: {
+      "hy-workflow": { command: "hy-workflow", executable: hyExecutable, version: "1.0.0", catalogHash: "test-hy" },
+      "docs-gardener": { command: "docs-gardener", executable: docsExecutable, version: "1.0.0", catalogHash: "test-docs" },
+    },
+    artifacts: sharedArtifactEvidence(root),
+  });
 }
 
 const runtimeHome = mkdtempSync(join(tmpdir(), "hy-init-runtime-"));
@@ -57,17 +85,17 @@ writeFileSync(legacyConfigPath, JSON.stringify({
   doclint: { maxLines: 200 },
   docsGardener: { catalogs: {} },
 }, null, 2) + "\n");
-writeDeployment(legacyOnlyRoot, { setupVersion: SETUP_VERSION, mode: "local", clients: [] });
+deployment(legacyOnlyRoot, SETUP_VERSION, "local");
 assert(!harnessArtifactStatus(legacyOnlyRoot).ready, "legacy user config plus deployment must not bypass the required shared project config");
 ensureConfigDefaults(legacyOnlyRoot);
 assert(existsSync(join(legacyOnlyRoot, "hy-workflow.json")), "legacy config migration should create the canonical root config");
 assert(!harnessArtifactStatus(legacyOnlyRoot).ready, "migrating config must not make a legacy local-mode deployment current");
-writeDeployment(legacyOnlyRoot, { setupVersion: SETUP_VERSION, mode: "shared", clients: [] });
+deployment(legacyOnlyRoot, SETUP_VERSION, "shared");
 assert(harnessArtifactStatus(legacyOnlyRoot).ready, "rerunning setup with the single shared deployment should make the migrated project ready");
 
 const readyRoot = project("hy-init-ready-");
 ensureConfigDefaults(readyRoot);
-writeDeployment(readyRoot, { setupVersion: SETUP_VERSION, mode: "shared", clients: [] });
+deployment(readyRoot, SETUP_VERSION, "shared");
 assert(harnessArtifactStatus(readyRoot).ready, "shared config and deployment should satisfy init prerequisites");
 const before = git(readyRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
 const oldCwd = process.cwd();
@@ -86,7 +114,7 @@ const incompleteRoot = project("hy-init-incomplete-");
 writeFileSync(join(incompleteRoot, "hy-workflow.json"), JSON.stringify({
   project: { baseBranch: "main", docsDir: "docs" },
 }, null, 2) + "\n");
-writeDeployment(incompleteRoot, { setupVersion: SETUP_VERSION, mode: "shared", clients: [] });
+deployment(incompleteRoot, SETUP_VERSION, "shared");
 try {
   process.chdir(incompleteRoot);
   const result = await handleInit();
@@ -109,7 +137,7 @@ assert(initArtifactGuidance(tracked).body.includes("separate cleanup change"), "
 
 const outdatedRoot = project("hy-init-outdated-");
 ensureConfigDefaults(outdatedRoot);
-writeDeployment(outdatedRoot, { setupVersion: "0.0.0", mode: "shared", clients: [] });
+deployment(outdatedRoot, "0.0.0", "shared");
 try {
   process.chdir(outdatedRoot);
   const result = await handleInit();

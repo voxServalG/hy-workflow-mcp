@@ -13,31 +13,134 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-      - name: Use an OIDC-capable npm CLI
-        run: npm install --global npm@latest
-      - run: npm ci
-      - run: npm run verify
-      - name: Validate release tag
+      - name: Validate release provenance
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: >-
-          node --input-type=module -e 'import fs from "node:fs";
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
           const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-          if (process.env.RELEASE_TAG !== "v" + pkg.version)
-          throw new Error("release tag must equal v" + pkg.version);'
-      - name: Preview npm tarball
-        run: npm pack --dry-run --json
-      - name: Publish directly to npm
+          const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+          const match = typeof pkg.version === "string" ? semver.exec(pkg.version) : null;
+          if (!match) throw new Error("package.json version must be valid semver");
+          if (process.env.RELEASE_TAG !== "v" + pkg.version) throw new Error("release tag must equal v" + pkg.version);
+          const packageIsPrerelease = match[4] !== undefined;
+          const releaseIsPrerelease = process.env.IS_PRERELEASE === "true";
+          if (packageIsPrerelease !== releaseIsPrerelease) {
+            throw new Error("package semver prerelease state must match GitHub release.prerelease");
+          }
+          NODE
+          tag_commit="$(git rev-parse --verify "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse --verify HEAD^{commit})"
+          test "$tag_commit" = "$head_commit"
+          git rev-parse --verify refs/remotes/origin/main^{commit}
+          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main
+      - name: Use an OIDC-capable npm CLI
+        run: npm install --global npm@11.13.0
+      - run: npm ci
+      - run: npm run verify
+      - name: Build one release tarball
+        run: |
+          release_dir="$RUNNER_TEMP/hy-workflow-release"
+          pack_report="$RUNNER_TEMP/hy-workflow-pack.json"
+          mkdir -p "$release_dir"
+          npm pack --json --pack-destination "$release_dir" > "$pack_report"
+          RELEASE_DIR="$release_dir" PACK_REPORT="$pack_report" node --input-type=module <<'NODE'
+          import { createHash } from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const report = JSON.parse(fs.readFileSync(process.env.PACK_REPORT, "utf8"));
+          if (!Array.isArray(report) || report.length !== 1 || typeof report[0]?.filename !== "string") {
+            throw new Error("npm pack must produce exactly one release tarball");
+          }
+          const releaseDir = fs.realpathSync(process.env.RELEASE_DIR);
+          const archive = fs.realpathSync(path.join(releaseDir, report[0].filename));
+          const relative = path.relative(releaseDir, archive);
+          if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !archive.endsWith(".tgz")) {
+            throw new Error("npm pack returned an invalid release tarball path");
+          }
+          const sha512 = createHash("sha512").update(fs.readFileSync(archive)).digest("hex");
+          fs.appendFileSync(process.env.GITHUB_ENV, `HY_RELEASE_TGZ=${archive}\nHY_RELEASE_TGZ_SHA512=${sha512}\n`);
+          NODE
+      - name: Checkout pinned magnet acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: voxServalG/magnet-field-modulation-refactor
+          ref: a1350baf520ecad362b927547bb1e9c027c247e5
+          path: .acceptance-mirrors/magnet
+          token: ${{ secrets.ACCEPTANCE_REPOS_TOKEN }}
+          persist-credentials: false
+      - name: Checkout pinned docs-gardener acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: voxServalG/docs-gardener
+          ref: f7ec6e0d7c1b1a6a0a65d1416553c40c2e5871fe
+          path: .acceptance-mirrors/docs-gardener
+          token: ${{ secrets.ACCEPTANCE_REPOS_TOKEN }}
+          persist-credentials: false
+      - name: Checkout pinned Vite acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: vitejs/vite
+          ref: b59a73f76f5557492d83d097bb33b3dd02f27d51
+          path: .acceptance-mirrors/vite
+          persist-credentials: false
+      - name: Checkout pinned Flask acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: pallets/flask
+          ref: 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81
+          path: .acceptance-mirrors/flask
+          persist-credentials: false
+      - name: Checkout pinned Express acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: expressjs/express
+          ref: ae6dd37680e3a00618d6c8a3e522f0ee4eeba1a4
+          path: .acceptance-mirrors/express
+          persist-credentials: false
+      - name: Checkout pinned gh-cli acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: cli/cli
+          ref: c14cbaa24a75272958161751240fd538a68e6c04
+          path: .acceptance-mirrors/gh-cli
+          persist-credentials: false
+      - name: Checkout pinned ripgrep acceptance mirror
+        uses: actions/checkout@v6
+        with:
+          repository: BurntSushi/ripgrep
+          ref: 5e16a5c9e57e81f6031a23faa2ace52205fa8242
+          path: .acceptance-mirrors/ripgrep
+          persist-credentials: false
+      - name: Run release acceptance pressure test
+        env:
+          HY_ACCEPTANCE_TOTAL_TIMEOUT_MS: "2700000"
+          HY_ACCEPTANCE_MAGNET_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/magnet
+          HY_ACCEPTANCE_DOCS_GARDENER_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/docs-gardener
+          HY_ACCEPTANCE_VITE_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/vite
+          HY_ACCEPTANCE_FLASK_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/flask
+          HY_ACCEPTANCE_EXPRESS_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/express
+          HY_ACCEPTANCE_GH_CLI_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/gh-cli
+          HY_ACCEPTANCE_RIPGREP_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/ripgrep
+        run: npm run test:acceptance -- --package-archive "$HY_RELEASE_TGZ"
+      - name: Publish the accepted tarball directly to npm
         env:
           IS_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
+          actual_sha512="$(node --input-type=module -e 'import { createHash } from "node:crypto"; import fs from "node:fs"; process.stdout.write(createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$HY_RELEASE_TGZ")"
+          test "$actual_sha512" = "$HY_RELEASE_TGZ_SHA512"
           if [ "$IS_PRERELEASE" = "true" ]; then
-            npm publish --access public --tag next
+            npm publish "$HY_RELEASE_TGZ" --access public --tag next
           else
-            npm publish --access public --tag latest
+            npm publish "$HY_RELEASE_TGZ" --access public --tag latest
           fi

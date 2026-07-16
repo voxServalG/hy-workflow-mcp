@@ -8,7 +8,8 @@
     "hy-workflow": "dist/server.js"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "npm run clean && tsc",
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
     "lint:contract": "npm run build && npm run lint:contract:built",
@@ -17,6 +18,8 @@
     "test:unit": "npm run test:run -- test/unit",
     "test:e2e": "npm run test:run -- test/e2e",
     "test:contract": "npm run test:run -- test/contract",
+    "test:acceptance": "npx tsx test/acceptance/runner.ts --profile release",
+    "test:windows": "node scripts/windows-smoke.mjs",
     "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
     "verify": "npm run build && npm test",
     "prepack": "npm run build",
@@ -58,6 +61,7 @@
     "dist",
     "docs",
     "templates",
+    "AGENTS.md",
     "README.md"
   ]
 }

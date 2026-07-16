@@ -1,4 +1,5 @@
 <!-- hy-workflow-rules -->
+<!-- hy-workflow-rules-version: 2026.07.16.1 -->
 
 ## hy-workflow 硬性流程
 

@@ -9,9 +9,9 @@ description: Operate the hy-workflow MCP safely in this repository.
 
 Use this workflow order for ordinary development: hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_ci -> hy_merge -> hy_chain -> hy_reset.
 
-For first setup, run the `hy-workflow setup` TUI, review and commit its only two repository artifacts (`hy-workflow.json` and `.github/workflows/hy-workflow.yml`), restart the client, then run hy_init before planning. Deployment, state, scope, DocsGraph, and client config stay in OS user directories. `hy-workflow unset` removes the local deployment but never deletes the two team files. Do not call later workflow tools out of order.
+For first setup, run the TUI and inspect its Git-tracked/manifests/base-ref project evidence, multi-extension directories, native `ci.commands`, client effective scopes, and artifact diff. Unknown/material-mixed/low-confidence profiles, empty docs, missing refs, unsafe CI inference, or drift require explicit recovery/confirmation. Commit only `hy-workflow.json` and `.github/workflows/hy-workflow.yml`, restart the client, then run hy_init; deployment/state/cache/client config remain external and unset never deletes team files.
 
-The documentation gates are mandatory and indivisible: hy_read_docs(before_plan) before hy_plan, hy_read_docs(before_approve) after explicit user approval but before hy_approve, and hy_read_docs(after_edit) followed by hy_sync_docs before hy_verify. The generated CI workflow must run doclint and codelint. hy_ci must fail closed when no effective checks are reported; only successful checks permit merge. A repository administrator, not setup, makes the Verify check required in GitHub rulesets or branch protection.
+Documentation gates are mandatory and indivisible. Reads are task-ranked and budgeted; follow `pagination.nextCursor` when `hasMore`, while workflow state stores metadata/digests rather than excerpts. Empty/no-fact docs or stale managed rules fail closed. Generated Verify runs confirmed `ci.commands`, then pinned doclint/codelint; missing commands, zero scans, timeout, no checks or non-success checks block merge. An administrator, not setup, makes Verify required.
 
 ## Tools
 

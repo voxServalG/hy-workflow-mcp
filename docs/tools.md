@@ -7,7 +7,7 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 | Tool | Phase 进入要求 | 参数 | 转换到 | 只读? |
 |------|---------------|------|--------|-------|
 | `hy_init`   | init | — | plan | 否 |
-| `hy_read_docs` | plan, approve, edit, verify | `{stage, task?}` | plan / approve / edit | 否 |
+| `hy_read_docs` | plan, approve, edit, verify | `{stage, task?, cursor?}` | plan / approve / edit | 否 |
 | `hy_plan`   | plan | `{task}` | plan (返回 next=approve) | 否 |
 | `hy_approve` | plan, approve | `{approved: string, note: string}` | branch (批准) / plan (驳回) | 否 |
 | `hy_branch` | approve, branch | `{category, topic}` | edit | 否 |
@@ -24,14 +24,16 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-验证 OS 用户目录中的 deployment 和根 `hy-workflow.json`，并把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
+验证 schema-3 deployment 的版本、direct-bin/MCP catalog 证据和两个团队 artifact hash，并检查根 `hy-workflow.json`、`.github/workflows/hy-workflow.yml`、可解析的 `project.baseBranch` 与非空文档事实，然后把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [], allowedTools: ["hy_read_docs", "hy_status"] }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 是唯一有效项目配置源。MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input. 根配置必须显式包含 runtime 必填字段，默认推断不能让缺项通过 `hy_init`。只有外置 deployment 满足 setup gate；含 mode 的旧 manifest 或当前版本的项目内 legacy stamp 都不能绕过。缺少 deployment/root config 或版本过期时，agent 必须停下并请用户运行 `hy-workflow setup`。
+`hy-workflow.json` 是唯一有效项目配置源。根配置必须显式包含 runtime 必填字段；默认推断、含 mode 的旧 manifest、项目内 legacy stamp 或 compatibility JSON 都不能绕过。缺少/漂移的团队 artifact、缺失 ref、空文档、无实质事实或过期 managed AGENTS version 都返回结构化 stop envelope，agent 必须请用户修复或重新运行 setup。
+
+MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input.
 
 旧 local/runtime artifacts 已被跟踪时仍返回诊断，但不会自动删除或改写。
 
@@ -39,19 +41,19 @@ Artifact contract: setup 固定且只维护 `hy-workflow.json` 和 `.github/work
 
 ## Session setup check
 
-MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state 中该项目的 `deployment.json`。deployment 缺失或版本落后时返回完整 stop envelope 和 setup refresh 指引。runtime 不会自行运行 setup 或启动 TUI；用户需在终端运行 setup 并重启 agent/MCP session。
+MCP runtime 每次处理任意 `hy_*` tool 前都会检查 identity-scoped `deployment.json` 的 schema/version、两条 direct tool evidence、MCP catalog hash 和两个团队 artifact SHA/size；还会确认记录的 executable 仍存在、当前 PATH 解析到同一路径、且该文件的 `--version` 与 deployment evidence 一致。这个轻量 live check 不递归启动 MCP handshake。缺失、卸载、PATH 替换、版本替换、版本落后、tool mismatch 或 artifact drift 均 stop。runtime 不会自行运行 setup 或启动 TUI；用户需在终端修复后重启 agent/MCP session。
 
 ## Config CLI
 
-`hy-workflow config --check --json` 会只读检查项目语言、目录和根 `hy-workflow.json`；异常时输出结构化 issues 并非零退出。`config --apply --json` 只覆盖显式字段并保留其余现有配置；`config --apply-suggested --json` 会应用完整检测建议。两者都在校验后写根配置。运行旧 doclint/codelint/docs-gardener CLI 时才临时生成根目录兼容 JSON，执行后恢复项目原状且不提交。
+`hy-workflow config --check --json` 会只读检查 tracked files、manifests、origin HEAD/current/conventional refs、语言扩展、真实目录 casing 和根配置；mixed、unknown、非 conventional branch 或其他低置信 Git 推断必须显式确认。`project.codeExt` 可保留多扩展；可选 `ci.commands` 必须是已确认的非空单行数组，preserve-first apply 不改写人工值。compatibility JSON 仍只在旧 CLI 运行期临时生成并恢复。
 
 ## hy_read_docs
 
-自动读取 `hy-workflow.json` 的 `project.docsDir`，使用文档引用图（DocsGraph）驱动渐进式读取。`before_plan` 在 `hy_plan` 前建立规划事实基线，必须传 `task`；`before_approve` 在用户批准 PlanDoc 后、`hy_approve` 前产出 agent 侧文档审计；`after_edit` 在实现编辑后、`hy_sync_docs` 前审计当前实现 diff 与文档同步需求。三者都是自动 gate，不新增人类审核。
+自动读取 `project.docsDir`，使用 DocsGraph 和 task relevance 建立有界事实页。`before_plan` 必须传 `task`；`before_approve` 审计 PlanDoc；`after_edit` 审计实现 diff。结果最多 12 files、48,000 chars、每文件 12,000 chars并报告 token estimate；`pagination.hasMore/nextCursor` 可继续同一 stage/task，三者仍是自动 gate。
 
-读取行为从 docsDir 入口沿 Markdown 引用图做 task-driven BFS。DocsGraph 持久化在 OS 用户 cache 的 identity-scoped `docs-graph.json`；内容或解析语义变化时重建。越界路径、外部 URL、代码块链接和 docsDir 外目标不会进入图，`AGENTS.md` 与 docs README 仍可作为 supplemental entry points。
+DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 docsDir 根部大小写无关的 `index`/`README`（含 RST），再按 task 排序。`node_modules`、examples、fixtures、generated、build/vendor 等目录，越界目标、外链和代码块链接均排除；managed AGENTS block 必须含当前 `hy-workflow-rules-version`。
 
-成功写入 `WorkflowState.documentReads`，失败仅在文档目录缺失、阶段错误或无可读文档时阻断。`documentReadHealth` 会把已有读取结果标记为 `missing`、`current` 或 `stale`；PlanDoc hash、实现 digest 不匹配，或 `before_approve` 发现文档 digest / DocsGraph digest 相对 `before_plan` 已变化时，`hy_status` 会通过 `blockedBy` 和 `staleDocumentReads` 指出需要重跑或重建 PlanDoc 的下游 gate；before_plan task 文案不一致只作为诊断信息。
+返回 envelope 含有界 excerpts，但 `WorkflowState.documentReads` 只持久化 path/bytes/chars/SHA/truncation、budget、pagination 和 digest，不保存正文。空目录、只有空壳文件、零实质事实、过期 managed rules、阶段错误都会 fail closed；`documentReadHealth` 继续用 PlanDoc/DocsGraph/实现 digest 派生 `missing/current/stale`。
 
 ## hy_plan
 
@@ -138,7 +140,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前，都会检查 OS 用户 state �
 
 ## hy_ci
 
-通过已安装且已认证的 `gh pr view` 在每次 polling 的同一响应中读取 `state`、`baseRefName`、`headRefName`、`headRefOid`、`isCrossRepository` 和 `statusCheckRollup`。活跃 workflow 必须有 matching recovery record，origin 必须仍解析到记录中的 repository，PR tuple 也必须精确匹配；`GH_REPO` 与 `GH_HOST` 会被忽略。`data.executor` 报告本次 `gh` 能力。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
+通过已安装且已认证的 `gh pr view` 读取 `state`、`baseRefName`、`headRefName`、`headRefOid` 和 `isCrossRepository`，再通过 `gh pr checks --json name,workflow,bucket,state,link` 获取结构化 checks。名字本身不构成信任：所需 `Verify` 必须恰好有一个来自 `hy-workflow`，其 link 必须属于当前 origin 的 Actions run；随后 `gh api` 还要证明该 run 的 `path` 是 `.github/workflows/hy-workflow.yml`、`head_sha` 等于 recovery commit、`event` 是 `pull_request`，且 repository 与 origin 一致。push 事件的同名 check 不是 required provenance，但仍是 effective check，非绿色时同样阻断。第三方同名、foreign workflow、缺失或多个 provenance-valid Verify 都 fail closed。活跃 workflow 必须有 matching recovery record，origin 和 PR tuple 必须精确匹配；`GH_REPO` 与 `GH_HOST` 会被忽略。`data.executor` 报告本次 `gh` 能力。`WorkflowState.prNumber` 必须是正整数；损坏或被注入字符串的运行态会被结构化拒绝，不会传给 `gh`。pending/unknown 时在工具内部 bounded polling，默认最多 600 秒、间隔 10 秒；可传 `timeoutSeconds` / `intervalSeconds` 覆盖。
 
 - **进入 Phase**: `ci`, `edit`
 - **全绿后转换到**: `merge`
