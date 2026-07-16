@@ -11,6 +11,13 @@ export function executableInvocation(executable: string, args: string[], platfor
     : { command: executable, args };
 }
 
+export function selectExecutableCandidate(output: string, platform: NodeJS.Platform = process.platform): string | null {
+  const candidates = output.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  if (platform !== "win32") return candidates[0] ?? null;
+  const supported = new Set([".com", ".exe", ".bat", ".cmd"]);
+  return candidates.find(candidate => supported.has(path.win32.extname(candidate).toLowerCase())) ?? null;
+}
+
 export function resolveExecutable(name: string): string | null {
   try {
     const locator = process.platform === "win32" ? "where.exe" : "which";
@@ -19,7 +26,7 @@ export function resolveExecutable(name: string): string | null {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
     });
-    return output.split(/\r?\n/).map(value => value.trim()).find(Boolean) ?? null;
+    return selectExecutableCandidate(output);
   } catch {
     return null;
   }

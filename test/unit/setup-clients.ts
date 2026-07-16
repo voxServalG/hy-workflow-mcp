@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { createCodexAdapter } from "../../src/setup/clients/codex.js";
 import { createOpenCodeAdapter } from "../../src/setup/clients/opencode.js";
 import { createClaudeAdapter, parseClaudeGet, parseClaudeScope } from "../../src/setup/clients/claude.js";
-import { definitionEquals, executableInvocation, normalizeDefinition } from "../../src/setup/clients/index.js";
+import { definitionEquals, executableInvocation, normalizeDefinition, selectExecutableCandidate } from "../../src/setup/clients/index.js";
 import { MCP_DEFINITIONS } from "../../src/setup/types.js";
 
 function assert(condition: unknown, message: string): void {
@@ -29,6 +29,15 @@ assert(parseClaudeScope("Command: hy-workflow\nArgs:") === "unknown", "Claude ou
 const windowsShim = executableInvocation("C:\\Users\\test\\AppData\\Roaming\\npm\\hy-workflow.cmd", ["--version"], "win32");
 assert(windowsShim.command === (process.env.ComSpec ?? "cmd.exe"), "Windows .cmd shims must run through cmd.exe");
 assert(windowsShim.args.join("|") === "/d|/s|/c|C:\\Users\\test\\AppData\\Roaming\\npm\\hy-workflow.cmd|--version", "Windows .cmd shims must preserve the executable and arguments");
+const extensionlessWindowsShim = "C:\\first.dir\\codex";
+const windowsCandidates = [extensionlessWindowsShim, extensionlessWindowsShim + ".PS1", extensionlessWindowsShim + ".CMD", "D:\\later\\codex.EXE"].join("\r\n");
+assert(selectExecutableCandidate(windowsCandidates, "win32") === extensionlessWindowsShim + ".CMD", "Windows executable discovery must skip extensionless and PowerShell npm shims while preserving where.exe order");
+assert(selectExecutableCandidate([extensionlessWindowsShim, extensionlessWindowsShim + ".ps1"].join("\r\n"), "win32") === null, "Windows executable discovery must fail closed when where.exe returns no directly supported candidate");
+for (const extension of [".COM", ".exe", ".Bat", ".cmd"]) {
+  const candidate = "C:\\tools\\codex" + extension;
+  assert(selectExecutableCandidate(candidate + "\r\n", "win32") === candidate, "Windows executable discovery must accept " + extension + " case-insensitively");
+}
+assert(selectExecutableCandidate("/first/codex\n/second/codex\n", "linux") === "/first/codex", "POSIX executable discovery must preserve locator order");
 
 if (process.platform !== "win32") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "hy-opencode-client-"));

@@ -34,6 +34,23 @@ if (process.platform !== "win32") {
     `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(server)} "$@"`,
     "",
   ].join("\n"), { mode: 0o755 });
+  const fakeMcpServer = path.resolve("test/helpers/fake-mcp-server.mjs");
+  const docsGardener = path.join(bin, "docs-gardener");
+  const docsGardenerTools = JSON.stringify([
+    "garden-fix",
+    "garden-grow",
+    "garden-polish",
+    "garden-scan",
+    "garden-scan-hard",
+    "garden-scan-soft",
+  ]);
+  fs.writeFileSync(docsGardener, [
+    "#!/bin/sh",
+    'if [ "$1" = "--version" ]; then echo docs-gardener-test; exit 0; fi',
+    'if [ "$1" != "mcp" ]; then echo "expected docs-gardener mcp" >&2; exit 64; fi',
+    "FAKE_MCP_TOOLS=" + JSON.stringify(docsGardenerTools) + " exec " + JSON.stringify(process.execPath) + " " + JSON.stringify(fakeMcpServer),
+    "",
+  ].join("\n"), { mode: 0o755 });
   const env = {
     ...process.env,
     HOME: home,
@@ -56,6 +73,9 @@ if (process.platform !== "win32") {
   assert(result.status === 0, `non-interactive dry-run should succeed: ${result.stderr || result.stdout}`);
   const payload = JSON.parse(result.stdout);
   assert(payload.ok && payload.dryRun && payload.mode === "shared", "non-interactive JSON should expose the single shared mode");
+  assert(payload.tools?.["docs-gardener"]?.version === "docs-gardener-test", "non-interactive setup must inspect the isolated docs-gardener version");
+  assert(fs.realpathSync(payload.tools["docs-gardener"].executable) === fs.realpathSync(docsGardener), "non-interactive setup must not depend on a developer-machine docs-gardener binary");
+  assert(/^[0-9a-f]{64}$/.test(payload.tools["docs-gardener"].catalogHash), "non-interactive setup must complete the docs-gardener MCP catalog handshake");
   assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "non-interactive dry-run should report both planned team artifacts");
   assert(gitStatus(root) === before, "non-interactive dry-run must not touch the project");
   assert(fs.readFileSync(inheritedCodexConfig, "utf8") === poisonConfig, "non-interactive dry-run must not read or rewrite inherited Codex config");

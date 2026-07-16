@@ -55,6 +55,7 @@ for (const test of [
   "test/unit/compile-lint-checks.ts",
   "test/unit/project-profile.ts",
   "test/unit/doclint-output.ts",
+  "test/unit/setup-clients.ts",
   "test/e2e/setup-project-artifacts.ts",
   "test/contract/npm-release-provenance.ts",
 ]) {
@@ -147,8 +148,13 @@ try {
     setup = runJson("installed setup", process.execPath, setupArgs, { cwd: project, env, timeout: 120_000 });
   } catch (error) {
     const codexFixture = join(env.CODEX_HOME, "config.toml");
-    if (existsSync(codexFixture)) error.message += `\nCodex fixture after failure:\n${readFileSync(codexFixture, "utf8")}`;
-    throw error;
+    const fixture = existsSync(codexFixture) ? readFileSync(codexFixture, "utf8") : "<absent>";
+    const message = [
+      error instanceof Error ? error.message : String(error),
+      "Codex fixture after failure:",
+      fixture,
+    ].join("\n");
+    throw new Error(message, { cause: error });
   }
   assert(setup.ok === true, "installed setup did not return ok=true");
   assert(readFileSync(join(project, "hy-workflow.json"), "utf8") === configText, "setup rewrote the explicit shared config");
