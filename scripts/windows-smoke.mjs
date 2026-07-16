@@ -18,7 +18,12 @@ import { runCheckCommand } from "../dist/checks.js";
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const tsxCli = require.resolve("tsx/cli");
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath || !existsSync(npmExecPath)) {
+  throw new Error("Windows smoke must be run via npm run test:windows so npm_execpath resolves npm-cli.js");
+}
+const npmCommand = process.execPath;
+const npmCommandPrefix = [npmExecPath];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -42,6 +47,9 @@ function runJson(label, command, args, options = {}) {
   try { return JSON.parse(output); }
   catch { throw new Error(`${label} returned invalid JSON:\n${output.slice(-8_000)}`); }
 }
+
+const npmVersion = run("npm CLI", npmCommand, [...npmCommandPrefix, "--version"], { timeout: 30_000 });
+assert(/^\d+\.\d+\.\d+/.test(npmVersion), `npm CLI returned an invalid version: ${npmVersion}`);
 
 for (const test of [
   "test/unit/compile-lint-checks.ts",
@@ -99,14 +107,14 @@ try {
     writeFileSync(join(stubBin, "codex.cmd"), `@echo off\r\n"${process.execPath}" "${stubTarget}" %*\r\n`, "utf8");
   } else chmodSync(stubTarget, 0o755);
 
-  const packReport = runJson("npm pack", npmCommand, ["pack", "--json", "--pack-destination", packDir], { env, timeout: 300_000 });
+  const packReport = runJson("npm pack", npmCommand, [...npmCommandPrefix, "pack", "--json", "--pack-destination", packDir], { env, timeout: 300_000 });
   assert(Array.isArray(packReport) && packReport.length === 1 && typeof packReport[0]?.filename === "string", "npm pack must produce exactly one tarball");
   const archive = join(packDir, packReport[0].filename);
   assert(existsSync(archive), "npm pack report points to a missing tarball");
   run("global tarball install", npmCommand, [
-    "install", "--global", archive, "@voxstudio/docs-gardener@1.0.0-next.0", "--no-audit", "--no-fund",
+    ...npmCommandPrefix, "install", "--global", archive, "@voxstudio/docs-gardener@1.0.0-next.0", "--no-audit", "--no-fund",
   ], { env, timeout: 300_000 });
-  const globalRoot = run("npm global root", npmCommand, ["root", "--global"], { env, timeout: 30_000 });
+  const globalRoot = run("npm global root", npmCommand, [...npmCommandPrefix, "root", "--global"], { env, timeout: 30_000 });
   const installedServer = join(globalRoot, "@voxstudio", "hy-workflow", "dist", "server.js");
   const installedBin = process.platform === "win32" ? join(prefix, "hy-workflow.cmd") : join(prefix, "bin", "hy-workflow");
   assert(existsSync(installedServer) && existsSync(installedBin), "global tarball install did not expose the compiled server and bin");

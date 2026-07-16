@@ -61,6 +61,8 @@ const windowsSmoke = readFileSync("scripts/windows-smoke.mjs", "utf8");
 for (const token of ["npm pack", "@voxstudio/docs-gardener@1.0.0-next.0", "installed setup", "repeated installed setup", "installed unset", "projectFilesChanged", "codelint.json"]) {
   assert(windowsSmoke.includes(token), `Windows smoke is missing installed-package lifecycle evidence: ${token}`);
 }
+assert(windowsSmoke.includes("process.env.npm_execpath") && windowsSmoke.includes("const npmCommand = process.execPath") && windowsSmoke.includes("npmCommandPrefix"), "Windows smoke must invoke npm-cli.js through the native Node executable and structured argv");
+assert(!windowsSmoke.includes('"npm.cmd"'), "Windows smoke must not pass npm.cmd to the shell-free structured supervisor");
 
 // dist must not be tracked by git
 const tracked = execSync("git ls-files", { cwd: process.cwd(), encoding: "utf-8", stdio: ["pipe","pipe","pipe"] }).trim().split("\n").filter(Boolean);
