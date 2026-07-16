@@ -5,8 +5,9 @@ import { projectRoot, type DocsGraph, type DocsGraphEntry, type DocsGraphLink } 
 import { DOC_EXTENSIONS, isDocumentPath, pathInsideDocs, relativeInside, relativeToDocs, resolveDocsDir } from "./docs_paths.js";
 import { atomicWriteJson, projectPaths } from "./runtime/user-paths.js";
 import { resolveGitPrivatePath } from "./runtime/project.js";
+import { shouldIgnoreDocumentPath } from "./policy/docs.js";
 
-const GRAPH_DIGEST_VERSION = "docs-graph-v2";
+const GRAPH_DIGEST_VERSION = "docs-graph-v3";
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -100,10 +101,13 @@ function listDocFiles(root: string, docsDir: string): string[] {
   const walk = (current: string) => {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       if (entry.name.startsWith(".")) continue;
+      if (entry.isSymbolicLink()) continue;
       const full = path.join(current, entry.name);
+      const relative = path.relative(root, full).split(path.sep).join("/");
+      if (shouldIgnoreDocumentPath(relative)) continue;
       if (entry.isDirectory()) { walk(full); continue; }
       if (!isDocumentPath(entry.name)) continue;
-      files.push(path.relative(root, full).split(path.sep).join("/"));
+      files.push(relative);
     }
   };
   walk(docsRoot);
@@ -326,7 +330,7 @@ export function buildDocsGraph(root: string, docsDir: string): DocsGraph {
   }
 
   // Determine entry points
-  const entryPoints = detectEntryPoints(files);
+  const entryPoints = detectEntryPoints(files, docsDir);
 
   // Graph digest
   const digestPayload = Object.keys(entries).sort().map(k => `${k}:${entries[k].sha256}`);
@@ -339,16 +343,22 @@ export function buildDocsGraph(root: string, docsDir: string): DocsGraph {
 
 // ── Entry point detection ───────────────────────────────────
 
-function detectEntryPoints(files: string[]): string[] {
-  const mdFiles = files.filter(f => f.endsWith(".md"));
-  // Prefer docs/index.md, then docs/README.md, then alphabetical first
-  for (const candidate of ["index.md", "README.md"]) {
-    const match = mdFiles.find(f => path.basename(f).toLowerCase() === candidate.toLowerCase());
-    if (match) return [match];
+function detectEntryPoints(files: string[], docsDir: string): string[] {
+  const prefix = docsDir === "." ? "" : `${docsDir.replace(/\/$/, "")}/`;
+  const rootFiles = files.filter(file => {
+    const relative = prefix && file.startsWith(prefix) ? file.slice(prefix.length) : file;
+    return !relative.includes("/");
+  });
+  const preferred: string[] = [];
+  for (const stem of ["index", "readme"]) {
+    for (const ext of [".md", ".mdx", ".rst", ".txt"]) {
+      const match = rootFiles.find(file => path.basename(file).toLowerCase() === `${stem}${ext}`);
+      if (match && !preferred.includes(match)) preferred.push(match);
+    }
   }
-  if (mdFiles.length > 0) return [mdFiles[0]];
-  // No .md files — fallback to flat: return all files (works like old behavior)
-  return files;
+  if (preferred.length) return preferred;
+  if (rootFiles.length) return [rootFiles.sort()[0]];
+  return files.length ? [files[0]] : [];
 }
 
 // ── Persist / Load ──────────────────────────────────────────
@@ -526,6 +536,10 @@ export function incrementalUpdate(
 
   for (const cf of changedFiles) {
     if (!pathInsideDocs(root, graph.docsDir, cf)) continue;
+    if (shouldIgnoreDocumentPath(cf) || !isDocumentPath(cf)) {
+      delete updated.entries[cf];
+      continue;
+    }
     const fullPath = path.join(root, cf);
     if (!fs.existsSync(fullPath)) {
       // File deleted
@@ -601,7 +615,7 @@ export function incrementalUpdate(
   updated.digest = graphDigestFromFileShas(digestPayload);
 
   // Re-detect entry points (docs might have been deleted)
-  updated.entryPoints = detectEntryPoints(paths);
+  updated.entryPoints = detectEntryPoints(paths, graph.docsDir);
 
   saveDocsGraph(root, updated);
   return updated;

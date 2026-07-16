@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createHash } from "node:crypto";
 import {
   assertPhase,
   computePlanHash,
@@ -15,24 +14,13 @@ import {
 import {
   ensureGraph,
   traverseByTask,
-  buildDocsGraph,
-  loadDocsGraph,
 } from "../docs_graph.js";
 import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { resolveDocsDir } from "../docs_paths.js";
 import { requireRuntimeConfig } from "../config.js";
-
-function sha256(value: string): string {
-  const hash = createHash("sha256");
-  hash.update(value);
-  return hash.digest("hex");
-}
-
-function shortHash(value: string): string {
-  return sha256(value).slice(0, 12);
-}
+import { inspectDocumentation, selectDocumentPage } from "../policy/docs.js";
 
 function readDocsDir(root: string): string {
   return requireRuntimeConfig(root).project.docsDir as string;
@@ -85,7 +73,8 @@ function buildFindings(
 function buildSnapshot(
   stage: DocumentReadStage,
   task: string,
-  planHash: string | null
+  planHash: string | null,
+  cursor?: string,
 ): DocumentReadSnapshot | ToolResult {
   const root = projectRoot();
   const nextPhase = documentReadPhase(stage);
@@ -123,48 +112,75 @@ function buildSnapshot(
   const graph = ensureGraph(root, docsDir);
   const docsGraphDigest = graph.digest;
 
-  // Run task-driven traversal
-  const extraEntryPoints: string[] = [];
-  // Always include README.md and AGENTS.md as supplemental entry points
-  const readmePath = path.join(docsDir, "README.md").split(path.sep).join("/");
-  const agentsPath = "AGENTS.md";
-  if (fs.existsSync(path.join(root, readmePath))) extraEntryPoints.push(readmePath);
-  if (fs.existsSync(path.join(root, agentsPath))) extraEntryPoints.push(agentsPath);
-
-  const traversal = traverseByTask(root, graph, task, extraEntryPoints);
-
-  // Read traversed files
-  const files: DocumentReadFile[] = traversal.read.map(rel => {
-    const full = path.join(root, rel);
-    if (!fs.existsSync(full)) return null;
-    const raw = fs.readFileSync(full, "utf-8");
-    return {
-      path: rel,
-      bytes: Buffer.byteLength(raw, "utf-8"),
-      sha256: sha256(raw),
-      content: raw,
-      truncated: false, // no truncation — we only read matched docs
-    };
-  }).filter(Boolean) as DocumentReadFile[];
-
-  // Fallback: no files matched via traversal? Use entry points directly
-  if (files.length === 0) {
-    for (const ep of graph.entryPoints) {
-      const full = path.join(root, ep);
-      if (fs.existsSync(full)) {
-        const raw = fs.readFileSync(full, "utf-8");
-        files.push({
-          path: ep,
-          bytes: Buffer.byteLength(raw, "utf-8"),
-          sha256: sha256(raw),
-          content: raw,
-          truncated: false,
-        });
-      }
-    }
+  const graphFiles = Object.keys(graph.entries);
+  const configuredFacts = graphFiles.filter(file => file.toLowerCase() !== "agents.md");
+  const docsInspection = inspectDocumentation(root, configuredFacts, { includeAgents: false });
+  const agentsFile = path.join(root, "AGENTS.md");
+  const agentsPath = (() => {
+    try { return fs.lstatSync(agentsFile).isFile() && !fs.lstatSync(agentsFile).isSymbolicLink() ? "AGENTS.md" : null; }
+    catch { return null; }
+  })();
+  const agentsInspection = agentsPath ? inspectDocumentation(root, [agentsPath]) : { substantiveFiles: [], issues: [] };
+  const blockingIssue = [...docsInspection.issues, ...agentsInspection.issues]
+    .find(issue => issue.code === "DOCS_EMPTY" || issue.code === "DOCS_NO_FACTS" || issue.code === "STALE_MANAGED_AGENTS");
+  if (blockingIssue) {
+    return toolResult(nextPhase, {
+      error: {
+        type: "docs",
+        subtype: blockingIssue.code === "STALE_MANAGED_AGENTS" ? "docs_stale" : "docs_missing",
+        code: blockingIssue.code,
+        message: blockingIssue.message,
+        detail: { docsDir, file: blockingIssue.file ?? null },
+        retryable: false,
+      },
+      display: { title: "Documentation facts required", body: `${blockingIssue.message}\n\n${blockingIssue.recovery}` },
+      hint: blockingIssue.recovery,
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_read_docs", "hy_status"],
+    });
   }
 
-  const findings = buildFindings(stage, files, task, planHash, graph, traversal.read);
+  // Run task-driven traversal
+  const extraEntryPoints: string[] = [];
+  // Include root README/index variants and managed AGENTS as supplemental entry points.
+  for (const entry of fs.readdirSync(docsRoot, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^(readme|index)\.(md|mdx|rst|txt)$/i.test(entry.name)) continue;
+    extraEntryPoints.push(path.relative(root, path.join(docsRoot, entry.name)).split(path.sep).join("/"));
+  }
+  if (agentsPath) extraEntryPoints.push(agentsPath);
+
+  const traversal = traverseByTask(root, graph, task, extraEntryPoints);
+  const candidates = [...new Set([...traversal.read, ...graph.entryPoints, ...graphFiles, ...extraEntryPoints])];
+  let page;
+  try {
+    page = selectDocumentPage(root, candidates, task, [...graph.entryPoints, ...extraEntryPoints], graph.digest, cursor);
+  } catch (error: any) {
+    return toolResult(nextPhase, {
+      error: { type: "docs", subtype: "docs_stale", code: "DOCS_CURSOR_INVALID", message: error?.message ?? String(error), retryable: true },
+      hint: "Discard the stale cursor and restart hy_read_docs without a cursor so facts are read from the current DocsGraph.",
+      requires_user: false,
+      stop_here: true,
+      allowedTools: ["hy_read_docs", "hy_status"],
+    });
+  }
+  const files: DocumentReadFile[] = page.files;
+  if (!files.length) {
+    return toolResult(nextPhase, {
+      error: { type: "docs", subtype: "docs_missing", code: "DOCS_NO_FACTS", message: "No relevant substantive document facts fit the configured read policy.", retryable: false },
+      hint: "Add a maintained README/index and task-relevant documentation before planning.",
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_read_docs", "hy_status"],
+    });
+  }
+
+  const traversalRoots = files.map(file => file.path);
+  const findings = [
+    ...buildFindings(stage, files, task, planHash, graph, traversalRoots),
+    `Document budget: ${page.budget.selectedFiles}/${page.budget.maxFiles} files, ${page.budget.selectedChars}/${page.budget.maxChars} chars, estimated ${page.budget.estimatedTokens}/${page.budget.estimatedMaxTokens} tokens.`,
+    ...(page.pagination.hasMore ? [`More relevant documents are available; continue with cursor ${page.pagination.nextCursor}.`] : []),
+  ];
   return {
     stage,
     purpose: stage === "before_plan"
@@ -176,16 +192,28 @@ function buildSnapshot(
     task,
     planHash,
     docsDir,
-    digest: shortHash(JSON.stringify(files.map(f => ({ path: f.path, sha256: f.sha256 })))),
+    digest: graph.digest,
     files,
     findings,
     docsGraphDigest,
     entryPoints: traversal.entryPoints,
-    traversalRoots: traversal.read,
+    traversalRoots,
+    budget: page.budget,
+    pagination: page.pagination,
   };
 }
 
-export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: string }): Promise<ToolResult> {
+function withoutDocumentContents(snapshot: DocumentReadSnapshot): DocumentReadSnapshot {
+  return {
+    ...snapshot,
+    files: snapshot.files.map(file => {
+      const { content: _content, ...metadata } = file;
+      return metadata;
+    }),
+  };
+}
+
+export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: string; cursor?: string }): Promise<ToolResult> {
   const state = readState();
   const stage = args.stage;
 
@@ -207,13 +235,13 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
         allowedTools: ["hy_read_docs", "hy_status"],
       });
     }
-    const snapshot = buildSnapshot(stage, task, null);
+    const snapshot = buildSnapshot(stage, task, null, args.cursor);
     if ("next" in snapshot) return snapshot;
     const next = {
       ...state,
       documentReads: {
         ...(state.documentReads ?? {}),
-        beforePlan: snapshot,
+        beforePlan: withoutDocumentContents(snapshot),
         beforeApprove: null,
       },
     };
@@ -242,7 +270,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
         allowedTools: ["hy_status"],
       });
     }
-    const snapshot = buildSnapshot(stage, state.plan.task, planHash);
+    const snapshot = buildSnapshot(stage, state.plan.task, planHash, args.cursor);
     if ("next" in snapshot) return snapshot;
     const manifest = buildImplementationManifest(projectRoot());
     const auditedSnapshot: DocumentReadSnapshot = {
@@ -254,7 +282,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       ...state,
       documentReads: {
         ...(state.documentReads ?? {}),
-        afterEdit: auditedSnapshot,
+        afterEdit: withoutDocumentContents(auditedSnapshot),
       },
       syncDocs: null,
     });
@@ -283,7 +311,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     });
   }
 
-  const snapshot = buildSnapshot(stage, state.plan.task, planHash);
+  const snapshot = buildSnapshot(stage, state.plan.task, planHash, args.cursor);
   if ("next" in snapshot) return snapshot;
   const beforePlan = state.documentReads?.beforePlan ?? null;
   const changedSinceBaseline = Boolean(beforePlan && (beforePlan.digest !== snapshot.digest || beforePlan.docsGraphDigest !== snapshot.docsGraphDigest));
@@ -295,7 +323,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     ...state,
     documentReads: {
       ...(state.documentReads ?? {}),
-      beforeApprove: auditedSnapshot,
+      beforeApprove: withoutDocumentContents(auditedSnapshot),
     },
   });
 

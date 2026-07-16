@@ -1,7 +1,7 @@
 import { documentReadHealth, legacyRuntimeDiagnostics, projectRoot, readState } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { initArtifactGuidance } from "./init.js";
-import { checkSetupStamp } from "../bootstrap.js";
+import { checkSetupStamp, readSetupStamp } from "../bootstrap.js";
 import { getStartupExecutorCapabilities } from "../executors.js";
 import { projectPaths } from "../runtime/user-paths.js";
 
@@ -10,6 +10,8 @@ export async function handleStatus(): Promise<ToolResult> {
   const legacyDiagnostics = legacyRuntimeDiagnostics();
   const artifactGuidance = initArtifactGuidance();
   const setupUpdateCheck = checkSetupStamp();
+  let deployment: ReturnType<typeof readSetupStamp> = null;
+  try { deployment = readSetupStamp(); } catch {}
   const paths = projectPaths(projectRoot());
   const health = documentReadHealth(state);
   const needsBeforePlan = state.phase === "plan" && !state.plan;
@@ -44,6 +46,12 @@ export async function handleStatus(): Promise<ToolResult> {
       docsGraph: paths.docsGraph,
     },
     setupUpdateCheck,
+    deploymentHealth: deployment ? {
+      schemaVersion: deployment.schemaVersion,
+      setupVersion: deployment.setupVersion,
+      tools: deployment.tools,
+      artifacts: deployment.artifacts,
+    } : null,
     capabilities: getStartupExecutorCapabilities(),
     pendingAmendment: state.pendingAmendment ?? undefined,
     implementationManifest: state.implementationManifest ?? undefined,

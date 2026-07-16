@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: Verify
@@ -12,29 +15,132 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      - name: Install Node dependencies
-        if: ${{ hashFiles('package.json') != '' && (hashFiles('package-lock.json') != '' || hashFiles('npm-shrinkwrap.json') != '') }}
-        run: npm ci
-      - name: Run package CI scripts
-        if: ${{ hashFiles('package.json') != '' && (hashFiles('package-lock.json') != '' || hashFiles('npm-shrinkwrap.json') != '') }}
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        if: ${{ hashFiles('pyproject.toml', 'setup.py', 'setup.cfg', 'requirements*.txt') != '' }}
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-go@v5
+        if: ${{ hashFiles('go.mod') != '' }}
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ hashFiles('bun.lock', 'bun.lockb') != '' }}
+
+      - name: Run native project CI
+        shell: bash
+        timeout-minutes: 30
         run: |
+          set -euo pipefail
           node <<'NODE'
-          const fs = require('fs');
-          const cp = require('child_process');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const scripts = pkg.scripts || {};
+          const cp = require('node:child_process');
+          const fs = require('node:fs');
+
+          const exists = file => fs.existsSync(file);
+          const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
           const run = (label, command) => {
             console.log('::group::' + label);
-            cp.execSync(command, { stdio: 'inherit' });
+            const result = cp.spawnSync(command, {
+              shell: true,
+              stdio: 'inherit',
+              timeout: 900_000,
+              env: process.env,
+            });
             console.log('::endgroup::');
+            if (result.error) throw result.error;
+            if (result.signal) throw new Error(label + ' terminated by ' + result.signal);
+            if (result.status !== 0) throw new Error(label + ' failed with exit ' + result.status);
           };
-          if (scripts.build) run('build', 'npm run build');
-          if (scripts['lint:contract']) run('lint:contract', 'npm run lint:contract');
-          if (scripts.test) run('test', 'npm test');
+
+          const config = readJson('hy-workflow.json');
+          const explicit = config?.ci?.commands;
+          if (explicit !== undefined) {
+            if (!Array.isArray(explicit) || explicit.length === 0 || explicit.some(command => typeof command !== 'string' || !command.trim())) {
+              throw new Error('hy-workflow.json ci.commands must be a non-empty string array');
+            }
+            explicit.forEach((command, index) => run('ci.commands[' + index + ']', command));
+            process.exit(0);
+          }
+
+          const commands = [];
+          const checks = [];
+          const ecosystems = [];
+          const add = (label, command, verifies = false) => {
+            if (!commands.some(item => item.command === command)) commands.push({ label, command });
+            if (verifies) checks.push(command);
+          };
+
+          if (exists('package.json')) {
+            ecosystems.push('javascript');
+            const pkg = readJson('package.json');
+            const scripts = pkg.scripts || {};
+            const packageManager = typeof pkg.packageManager === 'string' ? pkg.packageManager : '';
+            let runner;
+            if (exists('pnpm-lock.yaml') || packageManager.startsWith('pnpm@')) {
+              add('enable corepack', 'corepack enable');
+              add('install pnpm dependencies', 'pnpm install --frozen-lockfile');
+              runner = name => 'pnpm run ' + name;
+            } else if (exists('yarn.lock') || packageManager.startsWith('yarn@')) {
+              add('enable corepack', 'corepack enable');
+              const yarnV1 = /^yarn@1(?:\.|$)/.test(packageManager) || (!packageManager && !exists('.yarnrc.yml'));
+              add('install yarn dependencies', yarnV1 ? 'yarn install --frozen-lockfile' : 'yarn install --immutable');
+              runner = name => 'yarn run ' + name;
+            } else if (exists('bun.lock') || exists('bun.lockb') || packageManager.startsWith('bun@')) {
+              add('install bun dependencies', 'bun install --frozen-lockfile');
+              runner = name => 'bun run ' + name;
+            } else {
+              if (!exists('package-lock.json') && !exists('npm-shrinkwrap.json')) {
+                throw new Error('npm fallback requires package-lock.json or npm-shrinkwrap.json; set ci.commands explicitly');
+              }
+              add('install npm dependencies', 'npm ci');
+              runner = name => 'npm run ' + name;
+            }
+            // Canonical examples: npm run build and npm test.
+            const standardChecks = ['build', 'typecheck', 'check', 'lint', 'test'];
+            for (const name of standardChecks) {
+              if (typeof scripts[name] === 'string' && scripts[name].trim()) add('run package ' + name, runner(name), true);
+            }
+            if (!standardChecks.some(name => typeof scripts[name] === 'string' && scripts[name].trim())) {
+              throw new Error('package.json has no standard build, typecheck, check, lint, or test script; set ci.commands explicitly');
+            }
+          }
+
+          const pythonProject = ['pyproject.toml', 'setup.py', 'setup.cfg'].some(exists)
+            || fs.readdirSync('.').some(name => /^requirements.*\.txt$/.test(name));
+          if (pythonProject) {
+            ecosystems.push('python');
+            if (exists('requirements.txt')) add('install Python requirements', 'python -m pip install -r requirements.txt');
+            if (exists('pyproject.toml') || exists('setup.py') || exists('setup.cfg')) add('install Python project', 'python -m pip install -e .');
+            if (exists('tests') || exists('test')) {
+              add('run Python tests', 'python -m pytest', true);
+            } else {
+              throw new Error('Python project has no tests directory; set ci.commands explicitly');
+            }
+          }
+
+          if (exists('go.mod')) {
+            ecosystems.push('go');
+            add('run Go tests', 'go test ./...', true);
+          }
+
+          if (exists('Cargo.toml')) {
+            ecosystems.push('rust');
+            add('run Rust tests', exists('Cargo.lock') ? 'cargo test --workspace --all-targets --locked' : 'cargo test --workspace --all-targets', true);
+          }
+
+          if (ecosystems.length === 0) {
+            throw new Error('No supported project ecosystem detected; set hy-workflow.json ci.commands explicitly');
+          }
+          if (checks.length === 0) {
+            throw new Error('No native verification command detected; set hy-workflow.json ci.commands explicitly');
+          }
+          for (const item of commands) run(item.label, item.command);
           NODE
+
       - name: Run doclint and codelint
         shell: bash
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           compat_files=(codelint.json doclint.json docs-gardener.json)
@@ -74,20 +180,34 @@ jobs:
           run_lint() {
             local label="$1"
             local source="$2"
-            local command="$3"
-            local report="$RUNNER_TEMP/${label}-report.json"
-            local status
-            set +e
-            npx --yes "$source" "$command" --json > "$report"
-            status=$?
-            set -e
+            local binary="$3"
+            local command="$4"
+            local report="$RUNNER_TEMP/$label-report.json"
+            local error_log="$RUNNER_TEMP/$label-error.log"
+            local status=1
+            local attempt
+            for attempt in 1 2; do
+              set +e
+              timeout --signal=TERM 75s npx --yes --package="$source" "$binary" "$command" --json > "$report" 2> "$error_log"
+              status=$?
+              set -e
+              if [ "$status" -eq 0 ]; then
+                break
+              fi
+              if [ "$attempt" -lt 2 ]; then
+                echo "::warning::$label attempt $attempt failed with exit $status; retrying once"
+                sleep "$attempt"
+              fi
+            done
             if [ "$status" -ne 0 ]; then
-              echo "::error::${label} command failed with exit ${status}"
+              echo "::error::$label command failed with exit $status"
+              cat "$error_log"
               cat "$report"
               return "$status"
             fi
 
             LINT_LABEL="$label" REPORT_PATH="$report" node <<'NODE'
+          const cp = require('child_process');
           const fs = require('fs');
           const label = process.env.LINT_LABEL;
           const reportPath = process.env.REPORT_PATH;
@@ -95,11 +215,11 @@ jobs:
           try {
             report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
           } catch {
-            console.error(`::error::${label} returned invalid JSON`);
+            console.error('::error::' + label + ' returned invalid JSON');
             process.exit(1);
           }
           if (!report || typeof report !== 'object' || Array.isArray(report)) {
-            console.error(`::error::${label} returned an invalid JSON report`);
+            console.error('::error::' + label + ' returned an invalid JSON report');
             process.exit(1);
           }
           const numberFrom = (...values) => {
@@ -119,14 +239,61 @@ jobs:
           );
           const errors = nestedNumber('errors');
           const failed = nestedNumber('failed');
-          const invalid = typeof report.ok !== 'boolean' && errors === null && failed === null;
-          if (invalid || report.ok === false || (errors !== null && (errors < 0 || errors > 0)) || (failed !== null && (failed < 0 || failed > 0))) {
-            console.error(`::error::${label} failed: ${JSON.stringify({ ok: report.ok, errors, failed })}`);
+          const files = numberFrom(
+            nestedNumber('files'), nestedNumber('total_files'),
+            nestedNumber('totalFiles'), nestedNumber('total'),
+          );
+          const config = JSON.parse(fs.readFileSync('hy-workflow.json', 'utf8'));
+          const list = value => Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+          const configuredExt = new Set(list(config?.project?.codeExt).map(value => String(value).toLowerCase()));
+          const lintDirs = list(config?.codelint?.lintDirs ?? config?.project?.codeDirs).map(value => String(value).replace(/^\.\//, '').replace(/\/$/, ''));
+          const matchesDir = file => lintDirs.some(dir => dir === '.' || file === dir || file.startsWith(dir + '/'));
+          const extension = file => /(?:^|\/)(?:[^/]+)(\.[^./]+)$/.exec(file)?.[1]?.toLowerCase() ?? '';
+          const tracked = cp.execFileSync('git', ['ls-files', '-z', '--cached'], { encoding: 'utf8' }).split('\0').filter(Boolean);
+          const configuredFiles = tracked.filter(file => matchesDir(file) && configuredExt.has(extension(file)));
+          const codelintExt = new Set(['.py', '.pyw', '.pyi', '.rs']);
+          const supportedFiles = configuredFiles.filter(file => codelintExt.has(extension(file)));
+          const notApplicable = label === 'codelint' && supportedFiles.length === 0;
+          const missingRequiredCount = errors === null || files === null || (label === 'doclint' && failed === null);
+          const failedCount = failed ?? errors;
+          const invalidOk = label === 'doclint'
+            ? report.ok !== true
+            : report.ok !== undefined && report.ok !== true;
+          const invalidScan = label === 'doclint'
+            ? files !== null && files <= 0
+            : configuredFiles.length <= 0 || (notApplicable ? files !== 0 : files !== null && files <= 0);
+          if (
+            missingRequiredCount
+            || invalidScan
+            || invalidOk
+            || errors < 0
+            || errors > 0
+            || failedCount < 0
+            || failedCount > 0
+          ) {
+            console.error('::error::' + label + ' failed: ' + JSON.stringify({ ok: report.ok, errors, failed, files, notApplicable, projectFiles: configuredFiles.length, supportedFiles: supportedFiles.length }));
             process.exit(1);
           }
-          console.log(`${label}: ${JSON.stringify({ ok: report.ok, errors, failed })}`);
+          console.log(label + ': ' + JSON.stringify({ ok: report.ok, errors, failed, files, notApplicable, projectFiles: configuredFiles.length, supportedFiles: supportedFiles.length }));
           NODE
           }
 
-          run_lint doclint git+https://github.com/voxServalG/doclint.git lint
-          run_lint codelint git+https://github.com/voxServalG/codelint.git check
+          run_lint doclint https://codeload.github.com/voxServalG/doclint/tar.gz/20793b8a4e1bcd79556d2cede0973cabe97f1ae4 doclint lint
+          run_lint codelint https://codeload.github.com/voxServalG/codelint/tar.gz/aaaa065160b019f8e2a9d8eff456633dfa4b6d9b codelint check
+
+  windows-smoke:
+    name: Windows Smoke
+    if: ${{ github.repository == 'voxServalG/hy-workflow-mcp' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies on Windows
+        run: npm ci
+      - name: Build on Windows
+        run: npm run build
+      - name: Run Windows-safe tests and installed package smoke
+        run: npm run test:windows

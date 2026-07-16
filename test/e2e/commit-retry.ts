@@ -111,7 +111,31 @@ fi
 if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
   oid="$(git rev-parse HEAD)"
   if [ "$HY_TEST_PR_SCENARIO" = "ci-stale" ]; then oid="0000000000000000000000000000000000000000"; fi
-  printf '{"state":"OPEN","baseRefName":"main","headRefName":"feat/retry","headRefOid":"%s","isCrossRepository":false,"statusCheckRollup":[{"name":"Verify","conclusion":"SUCCESS"}]}' "$oid"
+  printf '{"state":"OPEN","baseRefName":"main","headRefName":"feat/retry","headRefOid":"%s","isCrossRepository":false}' "$oid"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
+  if [ "$HY_TEST_PR_SCENARIO" = "ci-duplicate" ]; then
+    printf '[{"name":"Verify","workflow":"hy-workflow","bucket":"pass","state":"SUCCESS","link":"https://github.com/o/r/actions/runs/900/job/901"},{"name":"Verify","workflow":"hy-workflow","bucket":"pass","state":"SUCCESS","link":"https://github.com/o/r/actions/runs/900/job/902"}]'
+  elif [ "$HY_TEST_PR_SCENARIO" = "ci-pr-plus-push" ]; then
+    printf '[{"name":"Verify","workflow":"hy-workflow","bucket":"pass","state":"SUCCESS","link":"https://github.com/o/r/actions/runs/900/job/901"},{"name":"Verify","workflow":"hy-workflow","bucket":"pass","state":"SUCCESS","link":"https://github.com/o/r/actions/runs/910/job/911"}]'
+  else
+    printf '[{"name":"Verify","workflow":"hy-workflow","bucket":"pass","state":"SUCCESS","link":"https://github.com/o/r/actions/runs/900/job/901"}]'
+  fi
+  exit 0
+fi
+if [ "$1" = "api" ]; then
+  oid="$(git rev-parse HEAD)"
+  run_id=900
+  event=pull_request
+  case "$4" in
+    */910) run_id=910; event=push ;;
+  esac
+  workflow_path=".github/workflows/hy-workflow.yml"
+  if [ "$HY_TEST_PR_SCENARIO" = "ci-workflow-ref" ]; then workflow_path=".github/workflows/hy-workflow.yml@refs/pull/190/merge"; fi
+  if [ "$HY_TEST_PR_SCENARIO" = "ci-workflow-branch" ]; then workflow_path=".github/workflows/hy-workflow.yml@dev"; fi
+  if [ "$HY_TEST_PR_SCENARIO" = "ci-wrong-workflow" ]; then workflow_path=".github/workflows/spoof.yml@dev"; fi
+  printf '{"id":%s,"name":"hy-workflow","path":"%s","head_sha":"%s","event":"%s","repository":{"full_name":"o/r"}}' "$run_id" "$workflow_path" "$oid" "$event"
   exit 0
 fi
 if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "merge" ]; then exit 0; fi
@@ -293,12 +317,30 @@ exec "${realGit}" "$@"
 
   const ci = checkCi(workflowRoot, 190);
   assert(ci.ok && ci.allGreen, `CI must accept only the still-matching verified PR head: ${JSON.stringify(ci)}`);
+  resetScenario("ci-workflow-ref");
+  const workflowRef = checkCi(workflowRoot, 190);
+  assert(workflowRef.ok && workflowRef.allGreen, `CI must accept GitHub's workflow path with a pull-request ref suffix: ${JSON.stringify(workflowRef)}`);
+  resetScenario("ci-workflow-branch");
+  const workflowBranch = checkCi(workflowRoot, 190);
+  assert(workflowBranch.ok && workflowBranch.allGreen, `CI must accept GitHub's workflow path with a branch suffix: ${JSON.stringify(workflowBranch)}`);
+  resetScenario("ci-pr-plus-push");
+  const prAndPush = checkCi(workflowRoot, 190);
+  assert(prAndPush.ok && prAndPush.allGreen && prAndPush.checks.filter(check => check.provenanceVerified).length === 1, `one pull_request Verify plus one green push Verify must pass with exactly one required provenance run: ${JSON.stringify(prAndPush)}`);
+  resetScenario("ci-wrong-workflow");
+  const wrongWorkflow = checkCi(workflowRoot, 190);
+  assert(wrongWorkflow.ok && wrongWorkflow.requiredCheckMissing && !wrongWorkflow.allGreen, `a same-name workflow at another path must fail closed: ${JSON.stringify(wrongWorkflow)}`);
+  resetScenario("ci-duplicate");
+  const duplicateVerify = checkCi(workflowRoot, 190);
+  assert(duplicateVerify.ok && duplicateVerify.requiredCheckAmbiguous && !duplicateVerify.allGreen, `duplicate trusted Verify checks must fail closed: ${JSON.stringify(duplicateVerify)}`);
+  process.env.HY_TEST_PR_SCENARIO = "workflow-retry";
   const merge = mergePr(workflowRoot, 190);
   assert(merge.ok, `merge should succeed only with the persisted verified commit: ${JSON.stringify(merge)}`);
   const lifecycleCalls = calls();
   const viewCalls = lifecycleCalls.filter(line => line.startsWith("pr view "));
+  const checksCalls = lifecycleCalls.filter(line => line.startsWith("pr checks "));
   const mergeCall = lifecycleCalls.find(line => line.startsWith("pr merge ")) ?? "";
   assert(viewCalls.length >= 2 && viewCalls.every(line => line.includes("--repo github.com/o/r") && line.includes("headRefOid") && line.endsWith("GH_REPO=unset|GH_HOST=unset")), `CI and merge must re-read the exact PR identity: ${JSON.stringify(viewCalls)}`);
+  assert(checksCalls.length >= 1 && checksCalls.every(line => line.includes("--repo github.com/o/r") && line.includes("name,workflow,bucket,state,link")), `CI must query structured workflow provenance fields: ${JSON.stringify(checksCalls)}`);
   assert(mergeCall.includes(`--match-head-commit ${committedHead}`) && mergeCall.includes("--repo github.com/o/r") && mergeCall.endsWith("GH_REPO=unset|GH_HOST=unset"), `merge must bind the verified commit and origin: ${mergeCall}`);
 
   resetScenario("ci-stale");

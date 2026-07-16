@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 export const DOC_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".rst"]);
@@ -34,6 +35,17 @@ export function resolveDocsDir(root: string, configuredDocsDir: string): DocsDir
 
   const docsRoot = path.resolve(root, raw);
   if (!isInsidePath(root, docsRoot)) return { ok: false, error: `project.docsDir escapes the project root: ${configuredDocsDir}` };
+  if (fs.existsSync(docsRoot)) {
+    try {
+      const canonicalRoot = fs.realpathSync(root);
+      const canonicalDocsRoot = fs.realpathSync(docsRoot);
+      if (!isInsidePath(canonicalRoot, canonicalDocsRoot)) {
+        return { ok: false, error: `project.docsDir resolves outside the project root through a symbolic link: ${configuredDocsDir}` };
+      }
+    } catch (error: any) {
+      return { ok: false, error: `project.docsDir cannot be resolved safely: ${error?.message ?? String(error)}` };
+    }
+  }
   const relative = path.relative(root, docsRoot);
   const docsDir = relative ? slashPath(relative) : ".";
   return { ok: true, docsDir, docsRoot };

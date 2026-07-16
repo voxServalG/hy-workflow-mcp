@@ -45,19 +45,27 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
   if (!result.ok) return toolResult("ci", { error: result.error, data: { executor: result.executor }, checks: result.checks, requires_user: true, stop_here: true, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });
 
   if (result.noChecks || result.noEffectiveChecks) {
-    const reason = result.noChecks ? "No CI checks were reported" : "All reported CI checks were skipped or neutral";
+    const reason = result.noChecks
+      ? "No CI checks were reported"
+      : result.requiredCheckAmbiguous
+        ? "Multiple provenance-verified Verify checks were reported"
+      : result.requiredCheckMissing
+        ? "No Verify check from the bound hy-workflow Actions run was reported"
+        : "The required Verify check was skipped or neutral";
     return toolResult("ci", {
       data: { executor: result.executor },
       allGreen: false,
       noChecks: Boolean(result.noChecks),
       noEffectiveChecks: Boolean(result.noEffectiveChecks),
+      requiredCheckMissing: Boolean(result.requiredCheckMissing),
+      requiredCheckAmbiguous: Boolean(result.requiredCheckAmbiguous),
       checks: result.checks,
       error: {
         type: "workflow_state",
         subtype: "invalid_phase",
         code: "CI_CHECKS_REQUIRED",
         message: `${reason} for PR #${state.prNumber}; merge is blocked.`,
-        hint: "Ensure the repository workflow runs for every pull request and required checks report SUCCESS, then retry hy_ci.",
+        hint: "Ensure exactly one .github/workflows/hy-workflow.yml Actions run for the verified PR commit reports Verify as SUCCESS, then retry hy_ci.",
         retryable: true,
       },
       requires_user: true,
@@ -66,10 +74,10 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
         title: "CI checks required",
         body: `${reason} for PR #${state.prNumber}. hy_ci will not advance to merge.`,
       },
-      hint: "Fix or enable the PR checks, then retry hy_ci. Do not merge without a successful effective check.",
+      hint: "Fix or enable the required Verify check, then retry hy_ci. Do not merge without Verify SUCCESS.",
       recovery: {
         tool: "hy_ci",
-        instruction: "Ensure at least one non-skipped, non-neutral PR check completes successfully, then rerun hy_ci.",
+        instruction: "Ensure the required Verify check completes successfully, then rerun hy_ci.",
       },
       allowedTools: ["hy_ci", "hy_status"],
       blockedTools: ["hy_merge", "hy_chain"],
@@ -132,11 +140,11 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
     checks: result.checks,
     display: {
       title: "CI passed",
-      body: `All CI checks passed for PR #${state.prNumber}.`,
+      body: `The required Verify check and all effective CI checks passed for PR #${state.prNumber}.`,
     },
     hint: "Continue to hy_merge. The approved workflow does not stop after CI success.",
     allowedTools: ["hy_merge", "hy_status"],
     blockedTools: ["hy_chain"],
-    message: "All CI checks passed. Ready to merge.",
+    message: "Required Verify and all effective CI checks passed. Ready to merge.",
   });
 }

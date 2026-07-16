@@ -29,9 +29,13 @@ Layer 7: tests
 └── plan.verify.tests 命令逐条执行，actual exit 必须精确等于 expected_exit
 ```
 
+## Command budget and cleanup
+
+Verify commands run through a synchronous cross-platform supervisor rather than a direct shell timeout. Ordinary commands receive 90 seconds, `npm pack` receives 5 minutes, and the normal unit/e2e/contract/Windows/verify suites receive 20 minutes. `npm run test:acceptance` receives the larger of its configured internal budget and the mandatory 45-minute release budget, plus 2 minutes for cleanup. A timeout is reported explicitly instead of as an unknown exit. Before returning, the supervisor terminates the complete detached process group on POSIX or uses `taskkill /T /F` on Windows, so a timed-out npm shell cannot leave descendants mutating `dist/` or holding the worktree. Structured compile invocations such as Python `py_compile` use executable plus argv rather than shell quoting.
+
 ## CI evidence gate
 
-GitHub workflow 从根 `hy-workflow.json` 读取团队规则，只在 runner 执行兼容 CLI 时临时生成 `doclint.json`、`codelint.json` 和 `docs-gardener.json`，结束后恢复项目状态；这些 compatibility artifacts 不提交。`hy_ci` 只有在至少一个非 skipped/neutral check 实际成功且所有有效 checks 全绿时才进入 merge。没有 checks 或只有 skipped/neutral checks 时返回 `CI_CHECKS_REQUIRED` 并保持在 `ci`，不能作为跳过 CI 的成功路径。
+GitHub workflow 从根 `hy-workflow.json` 读取已确认的 `ci.commands` 并按顺序执行完整原生项目检查，再临时生成 compatibility JSON 运行固定版本 doclint/codelint。缺少/空命令、未知且无法安全推断的生态、命令或 lint 超时/失败、lint 报告扫描零文件、materialization/cleanup 失败均 fail closed；临时 JSON 必须恢复且不提交。`hy_ci` 只有至少一个有效 check 且全部成功才进入 merge，没有 checks 或只有 skipped/neutral 时返回 `CI_CHECKS_REQUIRED`。
 
 setup 负责生成 workflow，但不修改 GitHub 管理配置。仓库管理员必须在 ruleset 或 branch protection 中把 workflow 的 Verify check 设为 required，才能在平台层阻止绕过。
 

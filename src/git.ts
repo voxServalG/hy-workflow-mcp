@@ -669,11 +669,11 @@ export function createPr(root: string, title: string, body: string, baseBranch: 
   }
 }
 
-type InspectedPr = Record<string, unknown> & { statusCheckRollup?: unknown };
+type InspectedPr = Record<string, unknown>;
 type InspectPrResult = { ok: true; data: InspectedPr } | { ok: false; error: GitOperationError };
 
 function inspectPr(root: string, prNumber: number, repoArgs: string[]): InspectPrResult {
-  const result = run("gh", ["pr", "view", String(prNumber), ...repoArgs, "--json", "state,baseRefName,headRefName,headRefOid,isCrossRepository,statusCheckRollup"], root);
+  const result = run("gh", ["pr", "view", String(prNumber), ...repoArgs, "--json", "state,baseRefName,headRefName,headRefOid,isCrossRepository"], root);
   if (!result.ok) {
     return { ok: false, error: error("io", "io_failure", "CI_QUERY_FAILED", `Could not inspect PR #${prNumber}.`, "Resolve the GitHub CLI or API failure, then retry.", { prNumber }, result.stderr) };
   }
@@ -737,7 +737,146 @@ export function mergePr(root: string, prNumber: unknown): { ok: boolean; error?:
   return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGreen: boolean; noChecks?: boolean; noEffectiveChecks?: boolean; checks: Array<{ name: string; conclusion: string }>; error?: unknown; executor?: ExecutorCapability } {
+export type CiCheck = {
+  name: string;
+  conclusion: string;
+  workflow: string;
+  link: string;
+  provenanceVerified: boolean;
+  provenanceDetail?: string;
+};
+
+export function isVerifyCheckIdentity(name: unknown): name is string {
+  if (typeof name !== "string") return false;
+  const normalized = name.trim().replace(/\s+/g, " ");
+  return normalized === "Verify";
+}
+
+export function classifyVerifyChecks(checks: CiCheck[]): { candidates: CiCheck[]; required: CiCheck[]; effective: CiCheck[]; rollupEffective: CiCheck[]; allGreen: boolean } {
+  const candidates = checks.filter(check => isVerifyCheckIdentity(check.name));
+  const required = candidates.filter(check => check.provenanceVerified);
+  const effective = required.filter(check => check.conclusion !== "SKIPPED" && check.conclusion !== "NEUTRAL");
+  const rollupEffective = checks.filter(check => check.conclusion !== "SKIPPED" && check.conclusion !== "NEUTRAL");
+  const allGreen = required.length === 1
+    && effective.length === 1
+    && effective.every(check => check.conclusion === "SUCCESS")
+    && rollupEffective.every(check => check.conclusion === "SUCCESS");
+  return { candidates, required, effective, rollupEffective, allGreen };
+}
+
+function queryCiChecks(root: string, prNumber: number, repoArgs: string[]): { ok: true; checks: CiCheck[] } | { ok: false; error: GitOperationError } {
+  const result = run("gh", ["pr", "checks", String(prNumber), ...repoArgs, "--json", "name,workflow,bucket,state,link"], root);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch (caught: any) {
+    return {
+      ok: false,
+      error: error(
+        "io",
+        "io_failure",
+        "CI_QUERY_FAILED",
+        "Could not read structured checks for PR #" + prNumber + ".",
+        "Update or repair gh so its pr checks JSON fields name,workflow,bucket,state,link are available, then retry hy_ci.",
+        { prNumber },
+        result.stderr || caught?.message || String(caught),
+      ),
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return { ok: false, error: error("io", "io_failure", "CI_QUERY_INVALID", "GitHub CLI returned an invalid checks list.", "Repair or update gh, then retry hy_ci.", { prNumber }) };
+  }
+  const checks = parsed.map((value: any): CiCheck => {
+    const bucket = typeof value?.bucket === "string" ? value.bucket.toLowerCase() : "";
+    const state = typeof value?.state === "string" ? value.state.toUpperCase() : "UNKNOWN";
+    const conclusion = bucket === "pass"
+      ? "SUCCESS"
+      : bucket === "fail"
+        ? (["FAILURE", "TIMED_OUT", "ACTION_REQUIRED"].includes(state) ? state : "FAILURE")
+        : bucket === "cancel"
+          ? "CANCELLED"
+          : bucket === "skipping"
+            ? (state === "NEUTRAL" ? "NEUTRAL" : "SKIPPED")
+            : bucket === "pending" ? "PENDING" : "UNKNOWN";
+    return {
+      name: typeof value?.name === "string" ? value.name.trim() : "",
+      conclusion,
+      workflow: typeof value?.workflow === "string" ? value.workflow.trim() : "",
+      link: typeof value?.link === "string" ? value.link.trim() : "",
+      provenanceVerified: false,
+    };
+  });
+  return { ok: true, checks };
+}
+
+function actionsRunId(link: string, repository: string): string | null {
+  const [host, owner, name] = repository.split("/");
+  if (!host || !owner || !name) return null;
+  try {
+    const parsed = new URL(link);
+    if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== host.toLowerCase()) return null;
+    const parts = parsed.pathname.split("/").filter(Boolean).map(value => decodeURIComponent(value));
+    if (
+      parts.length < 5
+      || parts[0].toLowerCase() !== owner.toLowerCase()
+      || parts[1].toLowerCase() !== name.toLowerCase()
+      || parts[2] !== "actions"
+      || parts[3] !== "runs"
+      || !/^\d+$/.test(parts[4])
+      || (parts.length > 5 && !(parts.length === 7 && parts[5] === "job" && /^\d+$/.test(parts[6])))
+    ) return null;
+    return parts[4];
+  } catch {
+    return null;
+  }
+}
+
+function verifyActionsRun(
+  root: string,
+  repository: string,
+  runId: string,
+  expectedHeadOid: string,
+): { ok: true; trusted: boolean; detail: string } | { ok: false; error: GitOperationError } {
+  const [host, owner, name] = repository.split("/");
+  const result = run("gh", ["api", "--hostname", host, "repos/" + owner + "/" + name + "/actions/runs/" + runId], root);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: error("io", "io_failure", "CI_PROVENANCE_QUERY_FAILED", "Could not verify GitHub Actions run " + runId + ".", "Resolve the GitHub API failure, then retry hy_ci; do not merge based on an unverified check name.", { repository, runId }, result.stderr),
+    };
+  }
+  let data: any;
+  try { data = JSON.parse(result.stdout); }
+  catch (caught: any) {
+    return { ok: false, error: error("io", "io_failure", "CI_PROVENANCE_QUERY_INVALID", "GitHub Actions run " + runId + " returned invalid JSON.", "Repair or update gh, then retry hy_ci.", { repository, runId }, caught?.message ?? String(caught)) };
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { ok: false, error: error("io", "io_failure", "CI_PROVENANCE_QUERY_INVALID", "GitHub Actions run " + runId + " returned an invalid object.", "Repair or update gh, then retry hy_ci.", { repository, runId }) };
+  }
+  const expectedFullName = (owner + "/" + name).toLowerCase();
+  const expectedWorkflowPath = ".github/workflows/hy-workflow.yml";
+  const workflowPathMatches = data.path === expectedWorkflowPath || (
+    typeof data.path === "string"
+    && data.path.startsWith(expectedWorkflowPath + "@")
+    && data.path.length > expectedWorkflowPath.length + 1
+  );
+  const trusted = String(data.id) === runId
+    && data.name === "hy-workflow"
+    && workflowPathMatches
+    && data.head_sha === expectedHeadOid
+    && data.event === "pull_request"
+    && typeof data.repository?.full_name === "string"
+    && data.repository.full_name.toLowerCase() === expectedFullName;
+  return {
+    ok: true,
+    trusted,
+    detail: trusted
+      ? "actions run " + runId + " verified"
+      : "actions run " + runId + " did not match repository, workflow path, pull_request event, and verified head SHA",
+  };
+}
+
+export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGreen: boolean; noChecks?: boolean; noEffectiveChecks?: boolean; requiredCheckMissing?: boolean; requiredCheckAmbiguous?: boolean; checks: CiCheck[]; error?: unknown; executor?: ExecutorCapability } {
   const valid = validatePrNumber(prNumber);
   if (!valid.ok) return { ok: false, allGreen: false, checks: [], error: valid.error };
   const required = requireBoundGhExecutor();
@@ -756,25 +895,38 @@ export function checkCi(root: string, prNumber: unknown): { ok: boolean; allGree
     const identityError = validatePrIdentity(inspected.data, valid.value, recovery.record);
     if (identityError) return { ok: false, allGreen: false, checks: [], error: identityError, executor: required.executor };
   }
-  try {
-    const rollup = inspected.data.statusCheckRollup ?? [];
-    if (!Array.isArray(rollup)) throw new Error("statusCheckRollup must be an array");
-    const checks = rollup.map((c: any) => ({ name: c.name, conclusion: c.conclusion ?? "UNKNOWN" }));
-    if (checks.length === 0) return { ok: true, allGreen: false, noChecks: true, checks, executor: required.executor };
-    const relevant = checks.filter((c: any) => c.conclusion !== "SKIPPED" && c.conclusion !== "NEUTRAL");
-    if (relevant.length === 0) return { ok: true, allGreen: false, noEffectiveChecks: true, checks, executor: required.executor };
-    if (!recovery.required) return { ok: false, allGreen: false, checks, error: recovery.identityError, executor: required.executor };
-    const allGreen = relevant.every((c: any) => c.conclusion === "SUCCESS");
-    return { ok: true, allGreen, checks, executor: required.executor };
-  } catch (caught: any) {
-    return {
-      ok: false,
-      allGreen: false,
-      checks: [],
-      error: error("io", "io_failure", "CI_QUERY_INVALID", "Could not parse the PR check rollup.", "Repair or update gh, then retry hy_ci.", { prNumber: valid.value }, caught?.message ?? String(caught)),
-      executor: required.executor,
-    };
+  const queried = queryCiChecks(root, valid.value, repoArgs);
+  if (!queried.ok) return { ok: false, allGreen: false, checks: [], error: queried.error, executor: required.executor };
+  const checks = queried.checks;
+  if (checks.length === 0) return { ok: true, allGreen: false, noChecks: true, checks, executor: required.executor };
+  const preliminary = checks.filter(check => isVerifyCheckIdentity(check.name) && check.workflow === "hy-workflow");
+  if (preliminary.length && !recovery.required) {
+    return { ok: false, allGreen: false, checks, error: recovery.identityError, executor: required.executor };
   }
+  if (recovery.required) {
+    const cache = new Map<string, { trusted: boolean; detail: string }>();
+    for (const check of preliminary) {
+      const runId = actionsRunId(check.link, recovery.record.repository);
+      if (!runId) {
+        check.provenanceDetail = "check link is not a run/job URL in the bound origin repository";
+        continue;
+      }
+      let provenance = cache.get(runId);
+      if (!provenance) {
+        const verified = verifyActionsRun(root, recovery.record.repository, runId, recovery.record.commitOid);
+        if (!verified.ok) return { ok: false, allGreen: false, checks, error: verified.error, executor: required.executor };
+        provenance = { trusted: verified.trusted, detail: verified.detail };
+        cache.set(runId, provenance);
+      }
+      check.provenanceVerified = provenance.trusted;
+      check.provenanceDetail = provenance.detail;
+    }
+  }
+  const verify = classifyVerifyChecks(checks);
+  if (verify.required.length === 0) return { ok: true, allGreen: false, noEffectiveChecks: true, requiredCheckMissing: true, checks, executor: required.executor };
+  if (verify.required.length > 1) return { ok: true, allGreen: false, noEffectiveChecks: true, requiredCheckAmbiguous: true, checks, executor: required.executor };
+  if (verify.effective.length === 0) return { ok: true, allGreen: false, noEffectiveChecks: true, checks, executor: required.executor };
+  return { ok: true, allGreen: verify.allGreen, checks, executor: required.executor };
 }
 
 export function checkout(root: string, branch: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {

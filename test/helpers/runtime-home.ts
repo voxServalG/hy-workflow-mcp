@@ -19,9 +19,20 @@ export function makeGitProject(prefix = "hy-project-"): string {
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
   fs.writeFileSync(path.join(root, "src", "index.ts"), "export {};\n");
-  fs.writeFileSync(path.join(root, "docs", "index.md"), "# Docs\n");
+  fs.writeFileSync(path.join(root, "docs", "index.md"), "# Docs\n\nMaintained project facts and verification expectations.\n");
   fs.writeFileSync(path.join(root, "README.md"), "# Test\n");
-  fs.writeFileSync(path.join(root, "package.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
+    name: "hy-workflow-fixture",
+    version: "1.0.0",
+    scripts: { build: "node -e \"process.exit(0)\"", test: "node -e \"process.exit(0)\"" },
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(root, "package-lock.json"), JSON.stringify({
+    name: "hy-workflow-fixture",
+    version: "1.0.0",
+    lockfileVersion: 3,
+    requires: true,
+    packages: { "": { name: "hy-workflow-fixture", version: "1.0.0" } },
+  }, null, 2) + "\n");
   execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["commit", "-m", "init"], { cwd: root, stdio: "ignore" });
   return root;

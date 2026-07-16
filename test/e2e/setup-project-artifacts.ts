@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { executeSetup } from "../../src/setup/operations.js";
 import { readDeployment } from "../../src/runtime/deployment.js";
@@ -27,7 +28,7 @@ class MemoryClient implements ClientAdapter {
 }
 
 useRuntimeHome("hy-project-artifacts-runtime-");
-const options: SetupOptions = { action: "setup", mode: "shared", clients: ["claude"], language: "zh", yes: true, dryRun: false, json: true, removeGlobal: false };
+const options: SetupOptions = { action: "setup", mode: "shared", clients: ["claude"], language: "zh", yes: true, dryRun: false, json: true, removeGlobal: false, acceptCiCommands: true, ciCommands: ["npm ci", "npm run build", "npm run test"] };
 const expectedFiles = ".github/workflows/hy-workflow.yml,hy-workflow.json";
 
 const dryRoot = makeGitProject("hy-project-artifacts-dry-");
@@ -62,9 +63,22 @@ fs.writeFileSync(path.join(cloneRoot, ".github", "workflows", "hy-workflow.yml")
 execFileSync("git", ["add", "hy-workflow.json", ".github/workflows/hy-workflow.yml"], { cwd: cloneRoot });
 execFileSync("git", ["commit", "-m", "team setup"], { cwd: cloneRoot, stdio: "ignore" });
 const cloneClient = new MemoryClient();
-const upgraded = await executeSetup(cloneRoot, options, [cloneClient]);
+const clonePreview = await executeSetup(cloneRoot, { ...options, dryRun: true }, [cloneClient]);
+const cloneReview = clonePreview.artifactChanges?.filter(item => item.requiresAcceptance).map(({ file, beforeHash, afterHash }) => ({ file, beforeHash, afterHash }));
+const upgraded = await executeSetup(cloneRoot, { ...options, acceptArtifactChanges: true, reviewedArtifactChanges: cloneReview }, [cloneClient]);
 assert(upgraded.projectFilesChanged.join(",") === ".github/workflows/hy-workflow.yml", "a new clone without local deployment state should still upgrade the committed workflow");
 assert(JSON.parse(fs.readFileSync(path.join(cloneRoot, "hy-workflow.json"), "utf-8")).teamMetadata.owner === "docs", "setup should preserve unknown team config fields");
 assert(fs.readFileSync(path.join(cloneRoot, ".github", "workflows", "hy-workflow.yml"), "utf-8") === fs.readFileSync(path.resolve("templates/hy-workflow.yml"), "utf-8"), "setup should refresh the shared workflow from the packaged template");
+
+if (process.platform !== "win32") {
+  const symlinkRoot = makeGitProject("hy-project-artifacts-link-");
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "hy-project-artifacts-outside-"));
+  fs.symlinkSync(outside, path.join(symlinkRoot, ".github"), "dir");
+  const linkClient = new MemoryClient();
+  let linkCode = "";
+  try { await executeSetup(symlinkRoot, options, [linkClient]); } catch (error: any) { linkCode = error?.code; }
+  assert(linkCode === "SETUP_PROJECT_PATH_UNSAFE", "setup must reject a shared-artifact parent symlink");
+  assert(fs.readdirSync(outside).length === 0 && linkClient.values.size === 0, "rejected artifact symlink must not write outside the project or mutate clients");
+}
 
 console.log("setup-project-artifacts: fresh, dry-run, repeat, clone upgrade, and unset contracts pass");

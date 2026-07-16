@@ -5,6 +5,7 @@ export const ERROR_TYPES = [
   "docs",
   "verification",
   "config",
+  "setup",
   "io",
   "internal",
 ] as const;
@@ -30,6 +31,20 @@ export const ERROR_SUBTYPES = [
   "setup_artifacts_missing",
   "harness_missing",
   "config_invalid",
+  "preflight",
+  "client_missing",
+  "client_config",
+  "client_shadowed",
+  "binary_missing",
+  "handshake",
+  "lock_busy",
+  "registry",
+  "transaction",
+  "postcondition",
+  "artifact_drift",
+  "identity",
+  "ownership",
+  "unset",
   "artifact_tracked",
   "package_invalid",
   "io_failure",
@@ -45,4 +60,3 @@ export function isErrorType(value: unknown): value is ErrorType {
 export function isErrorSubtype(value: unknown): value is ErrorSubtype {
   return typeof value === "string" && (ERROR_SUBTYPES as readonly string[]).includes(value);
 }
-

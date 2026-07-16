@@ -26,14 +26,15 @@ import { handleChain } from "./tools/chain.js";
 import { handleStatus } from "./tools/status.js";
 import { handleReset } from "./tools/reset.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
-import { configHelp, runConfigCli } from "./config.js";
+import { configHelp, recoverRuntimeCompatConfigs, runConfigCli } from "./config.js";
+import { findProjectRoot } from "./runtime/project.js";
 import { assertCommandCatalogMatchesTools } from "./commands/catalog.js";
 import { runContractLint } from "./contralint/run.js";
 import { structuredError } from "./errs/structured.js";
 import { toolResult } from "./output/envelope.js";
-import { initializeExecutorCapabilities } from "./executors.js";
 import { PACKAGE_VERSION } from "./package-meta.js";
 import { runSetupCli } from "./setup-cli.js";
+import { runDoctorCli } from "./setup/doctor.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -144,12 +145,13 @@ const TOOLS = [
   },
   {
     name: "hy_read_docs",
-    description: "自动读取项目文档系统。before_plan 建立规划事实基线；before_approve 对当前 PlanDoc 做 agent 侧文档审计；after_edit 审计实现 diff 与文档同步需求。成功后不需要人类审核。",
+    description: "自动读取项目文档系统。before_plan 建立有预算的规划事实基线；before_approve 对当前 PlanDoc 做 agent 侧文档审计；after_edit 审计实现 diff 与文档同步需求。若返回 pagination.hasMore，可用 cursor 读取下一页补充事实；成功后不需要人类审核。",
     inputSchema: {
       type: "object",
       properties: {
         stage: { type: "string", enum: ["before_plan", "before_approve", "after_edit"], description: "文档读取阶段。before_plan 在 hy_plan 前调用；before_approve 在用户 approve 后、hy_approve 前调用；after_edit 在实现编辑后、hy_sync_docs 前调用。" },
         task: { type: "string", description: "before_plan 必填，用于把文档事实基线绑定到用户任务。" },
+        cursor: { type: "string", description: "可选的有界分页游标；仅用于读取同一阶段和任务的后续相关文档页。" },
       },
       required: ["stage"],
       additionalProperties: false,
@@ -370,6 +372,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const a = (args ?? {}) as Record<string, any>;
 
   try {
+    recoverRuntimeCompatConfigs(findProjectRoot());
     const setupGateResult = currentSetupGate()();
     if (setupGateResult) {
       return { content: [{ type: "text", text: JSON.stringify(setupGateResult, null, 2) }] };
@@ -432,6 +435,10 @@ async function main() {
     process.exitCode = await runSetupCli(argv.slice(1), argv[0]);
     return;
   }
+  if (argv[0] === "doctor") {
+    process.exitCode = await runDoctorCli(argv.slice(1));
+    return;
+  }
   if (argv[0] === "config") {
     const result = runConfigCli(argv.slice(1));
     process.stdout.write(result.stdout);
@@ -445,7 +452,6 @@ async function main() {
     return;
   }
 
-  initializeExecutorCapabilities();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`hy-workflow MCP v${PACKAGE_VERSION} running`);

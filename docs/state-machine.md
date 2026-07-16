@@ -6,7 +6,7 @@
 
 | # | Phase | 含义 |
 |---|-------|------|
-| 1 | `init` | 初始状态，等待 `hy_init` 验证 setup/bootstrap 产物 |
+| 1 | `init` | 等待 `hy_init` 验证 deployment/tool/artifact evidence、两个团队文件、base ref 与文档事实 readiness |
 | 2 | `plan` | 任务规划，先由 agent 自动执行 `hy_read_docs(before_plan)` 建立文档事实基线，再生成 PlanDoc |
 | 3 | `approve` | 用户审视 PlanDoc；用户批准后 agent 自动执行 `hy_read_docs(before_approve)` 做文档审计，再输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
@@ -60,11 +60,13 @@ hy_commit 在 push/PR API 失败 → commit（仅当完整验证快照、持久�
 
 `hy_read_docs` 不新增状态机 phase，而是在 `plan`、`approve` 和 `edit` phase 内作为自动 gate 运行。
 
+每次返回是 task-ranked 有界页：最多 12 files、48,000 chars、单文件 12,000 chars并带 token estimate；`pagination.nextCursor` 读取后续页。DocsGraph 全量 digest/link index 位于用户 cache，workflow state 的 `documentReads` 只保存 path/size/SHA/truncation/budget/pagination/digest，不保存返回 excerpts。空/无实质事实、过期 `hy-workflow-rules-version` 或零相关事实直接阻断对应 phase。
+
 - `before_plan`: 运行于 `plan` phase，记录用户 task 并写入 `documentReads.beforePlan`。`hy_plan` 缺少 baseline 时拒绝执行；baseline task 与 PlanDoc task 文案不一致时只给 warning，不阻断同一任务的自然改写。
 - `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。如果本次读取的文档 digest 或全量 DocsGraph digest 相对 `before_plan` 发生变化，snapshot 会记录 `changedSinceBaseline: true`，`documentReadHealth` 会将其标记为 stale，`hy_approve` 拒绝批准并要求重新生成 PlanDoc。
 - `after_edit`: 运行于 `edit` / `verify` phase，绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。`hy_verify` 缺少 current 审计时拒绝执行。
 
-`documentReadHealth` 从现有状态派生每个 gate 的 `missing` / `current` / `stale` 状态。PlanDoc hash、实现 digest 不匹配，或 before_approve 文档 digest / DocsGraph digest 相对 before_plan 已变化时，旧的下游 `documentReads` 不会被复用；before_plan task 文案不一致仅作为诊断信息；`hy_status` 会显示 `blockedBy`、`staleDocumentReads` 和下一步工具。`hy_plan` 写入新 PlanDoc 时会清空 downstream gate（`beforeApprove`、`afterEdit`、`syncDocs`），避免新 plan 继承旧审计。
+`documentReadHealth` 从 metadata 派生每个 gate 的 `missing/current/stale`。PlanDoc hash、实现 digest 或全量 DocsGraph digest 不匹配时，旧下游读取不能复用；before_plan task 文案不一致仅诊断。`hy_status` 显示阻塞和下一工具，`hy_plan` 清空 downstream gate，避免新计划继承旧审计。
 
 这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。`hy_plan` 进入 approve 前会拒绝 malformed PlanDoc、空 scope、越出项目根目录的任何 scope 路径，以及不存在的 `scope.changes` / `scope.delete` 路径；计划创建的文件必须放在 `scope.new_files`，可以在审批时尚不存在，但路径仍必须位于项目根内。`hy_amend_plan` 应用 pending amendment 时复用同一套路径与非空 scope 规则。
 

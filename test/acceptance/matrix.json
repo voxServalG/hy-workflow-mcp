@@ -1,0 +1,168 @@
+{
+  "schemaVersion": "1",
+  "companionPackage": "@voxstudio/docs-gardener@1.0.0-next.0",
+  "repositories": [
+    {
+      "id": "magnet",
+      "category": "legacy",
+      "url": "https://github.com/voxServalG/magnet-field-modulation-refactor.git",
+      "mirrorEnv": "HY_ACCEPTANCE_MAGNET_MIRROR",
+      "commit": "a1350baf520ecad362b927547bb1e9c027c247e5",
+      "ecosystem": "python",
+      "defaultBranch": "dev",
+      "expected": {
+        "codeExt": [
+          ".py"
+        ],
+        "codeDirs": [
+          "src",
+          "tests",
+          "experiments"
+        ],
+        "lintDirs": [
+          "src"
+        ],
+        "docsDir": "docs"
+      }
+    },
+    {
+      "id": "docs-gardener",
+      "category": "legacy",
+      "url": "https://github.com/voxServalG/docs-gardener.git",
+      "mirrorEnv": "HY_ACCEPTANCE_DOCS_GARDENER_MIRROR",
+      "commit": "f7ec6e0d7c1b1a6a0a65d1416553c40c2e5871fe",
+      "ecosystem": "typescript",
+      "defaultBranch": "dev",
+      "expected": {
+        "codeExt": [
+          ".ts"
+        ],
+        "codeDirs": [
+          "src",
+          "test"
+        ],
+        "lintDirs": [
+          "src",
+          "test"
+        ],
+        "docsDir": "docs"
+      }
+    },
+    {
+      "id": "vite",
+      "category": "oss",
+      "url": "https://github.com/vitejs/vite.git",
+      "mirrorEnv": "HY_ACCEPTANCE_VITE_MIRROR",
+      "commit": "b59a73f76f5557492d83d097bb33b3dd02f27d51",
+      "ecosystem": "typescript-pnpm",
+      "defaultBranch": "main",
+      "expected": {
+        "codeExt": [
+          ".ts"
+        ],
+        "codeDirs": [
+          "packages",
+          "scripts"
+        ],
+        "lintDirs": [
+          "packages",
+          "scripts"
+        ],
+        "docsDir": "docs"
+      }
+    },
+    {
+      "id": "flask",
+      "category": "oss",
+      "url": "https://github.com/pallets/flask.git",
+      "mirrorEnv": "HY_ACCEPTANCE_FLASK_MIRROR",
+      "commit": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+      "ecosystem": "python",
+      "defaultBranch": "main",
+      "expected": {
+        "codeExt": [
+          ".py"
+        ],
+        "codeDirs": [
+          "src",
+          "tests"
+        ],
+        "lintDirs": [
+          "src"
+        ],
+        "docsDir": "."
+      }
+    },
+    {
+      "id": "express",
+      "category": "oss",
+      "url": "https://github.com/expressjs/express.git",
+      "mirrorEnv": "HY_ACCEPTANCE_EXPRESS_MIRROR",
+      "commit": "ae6dd37680e3a00618d6c8a3e522f0ee4eeba1a4",
+      "ecosystem": "javascript",
+      "defaultBranch": "master",
+      "expected": {
+        "codeExt": [
+          ".js"
+        ],
+        "codeDirs": [
+          "lib",
+          "test"
+        ],
+        "lintDirs": [
+          "lib"
+        ],
+        "docsDir": "."
+      }
+    },
+    {
+      "id": "gh-cli",
+      "category": "oss",
+      "url": "https://github.com/cli/cli.git",
+      "mirrorEnv": "HY_ACCEPTANCE_GH_CLI_MIRROR",
+      "commit": "c14cbaa24a75272958161751240fd538a68e6c04",
+      "ecosystem": "go",
+      "defaultBranch": "trunk",
+      "expected": {
+        "codeExt": [
+          ".go"
+        ],
+        "codeDirs": [
+          "api",
+          "cmd",
+          "internal",
+          "pkg"
+        ],
+        "lintDirs": [
+          "api",
+          "cmd",
+          "internal",
+          "pkg"
+        ],
+        "docsDir": "docs"
+      }
+    },
+    {
+      "id": "ripgrep",
+      "category": "oss",
+      "url": "https://github.com/BurntSushi/ripgrep.git",
+      "mirrorEnv": "HY_ACCEPTANCE_RIPGREP_MIRROR",
+      "commit": "5e16a5c9e57e81f6031a23faa2ace52205fa8242",
+      "ecosystem": "rust",
+      "defaultBranch": "master",
+      "expected": {
+        "codeExt": [
+          ".rs"
+        ],
+        "codeDirs": [
+          "crates",
+          "tests"
+        ],
+        "lintDirs": [
+          "crates"
+        ],
+        "docsDir": "."
+      }
+    }
+  ]
+}

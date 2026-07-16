@@ -1,8 +1,10 @@
+import { spawn } from "node:child_process";
 import fsDefault, * as fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildSuggestedCommand, checkConfig, ensureConfigDefaults, readUnifiedConfig, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
+import { pathToFileURL } from "node:url";
+import { applyConfig, buildSuggestedCommand, checkConfig, ensureConfigDefaults, readUnifiedConfig, recoverRuntimeCompatConfigs, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 
 const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-runtime-"));
@@ -18,6 +20,7 @@ function tempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-"));
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "index.md"), "# Project facts\n", "utf-8");
   fs.writeFileSync(path.join(root, "pyproject.toml"), "[project]\nname='demo'\n", "utf-8");
   fs.writeFileSync(path.join(root, "src", "app.py"), "print('ok')\n", "utf-8");
   return root;
@@ -35,6 +38,7 @@ function configuredRoot(codeExt: string | string[], files: Record<string, string
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-custom-"));
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "index.md"), "# Project facts\n", "utf-8");
   for (const [file, content] of Object.entries(files)) {
     const full = path.join(root, file);
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -49,6 +53,40 @@ function configuredRoot(codeExt: string | string[], files: Record<string, string
   fs.writeFileSync(path.join(root, "hy-workflow.json"), JSON.stringify(unified, null, 2) + "\n", "utf-8");
   return root;
 }
+
+const atomicConfigRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const atomicConfigPath = path.join(atomicConfigRoot, "hy-workflow.json");
+if (process.platform !== "win32") fs.chmodSync(atomicConfigPath, 0o640);
+const atomicSuggestion = { codeExt: ".py" as const, codeDirs: ["src"], lintDirs: ["src"], docsDir: "docs", baseBranch: "main", maxCodeLines: 301, maxDocLines: 180, ciCommands: ["python -m pytest"] };
+applyConfig(atomicConfigRoot, atomicSuggestion, { preserveExisting: true, dryRun: false, overrides: { maxCodeLines: 301 } });
+if (process.platform !== "win32") assert((fs.statSync(atomicConfigPath).mode & 0o777) === 0o640, "atomic config replacement must preserve the existing mode");
+const atomicBeforeFailure = fs.readFileSync(atomicConfigPath, "utf-8");
+const originalAtomicWriteFileSync = fsDefault.writeFileSync;
+const atomicFailure = new Error("injected atomic config temp-write failure");
+let atomicFailureCaught: unknown;
+try {
+  (fsDefault as any).writeFileSync = (...args: any[]) => {
+    if (path.resolve(String(args[0])).startsWith(path.resolve(atomicConfigPath) + ".")) throw atomicFailure;
+    return (originalAtomicWriteFileSync as any)(...args);
+  };
+  syncBuiltinESMExports();
+  applyConfig(atomicConfigRoot, { ...atomicSuggestion, maxCodeLines: 302 }, { preserveExisting: true, dryRun: false, overrides: { maxCodeLines: 302 } });
+} catch (error) { atomicFailureCaught = error; }
+finally {
+  (fsDefault as any).writeFileSync = originalAtomicWriteFileSync;
+  syncBuiltinESMExports();
+}
+assert(atomicFailureCaught === atomicFailure, "atomic config temp-write failure must remain visible");
+assert(fs.readFileSync(atomicConfigPath, "utf-8") === atomicBeforeFailure, "failed config replacement must preserve the previous root config byte-for-byte");
+
+const nonDirectoryRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n", "not-a-directory": "file\n" });
+const nonDirectoryConfig = readJson(nonDirectoryRoot, "hy-workflow.json");
+nonDirectoryConfig.project.codeDirs = ["not-a-directory"];
+nonDirectoryConfig.codelint.lintDirs = ["not-a-directory"];
+fs.writeFileSync(path.join(nonDirectoryRoot, "hy-workflow.json"), JSON.stringify(nonDirectoryConfig, null, 2) + "\n");
+const nonDirectoryCheck = checkConfig(nonDirectoryRoot);
+assert(nonDirectoryCheck.issues.some(issue => issue.includes("project.codeDirs entry is not an existing directory")), "codeDirs must reject a regular file");
+assert(nonDirectoryCheck.issues.some(issue => issue.includes("codelint.lintDirs entry is not an existing directory")), "lintDirs must reject a regular file");
 
 const root = tempRoot();
 fs.writeFileSync(path.join(root, "codelint.json"), JSON.stringify({
@@ -100,6 +138,23 @@ assert(readJson(root, "codelint.json").codeExt === ".py", "setup defaults must n
 
 const check = checkConfig(root);
 assert(check.ok, `Python config should be consistent: ${check.issues.join(", ")}`);
+
+const ciRoot = configuredRoot(".ts", { "src/app.ts": "export {};\n" });
+const ciConfig = readJson(ciRoot, "hy-workflow.json");
+ciConfig.ci = { commands: ["npm ci", "npm test"], owner: "team" };
+fs.writeFileSync(path.join(ciRoot, "hy-workflow.json"), JSON.stringify(ciConfig, null, 2) + "\n", "utf-8");
+const ciApplied = ensureConfigDefaults(ciRoot);
+assert(ciApplied.ok, `confirmed ci.commands should validate: ${ciApplied.issues.join(", ")}`);
+assert(JSON.stringify(readJson(ciRoot, "hy-workflow.json").ci.commands) === JSON.stringify(["npm ci", "npm test"]), "config apply must preserve confirmed ci.commands");
+assert(readJson(ciRoot, "hy-workflow.json").ci.owner === "team", "config apply must preserve unknown ci fields");
+for (const commands of [[], "npm test", ["npm test\nrm -rf output"]]) {
+  const invalidCiRoot = configuredRoot(".ts", { "src/app.ts": "export {};\n" });
+  const invalidCi = readJson(invalidCiRoot, "hy-workflow.json");
+  invalidCi.ci = { commands };
+  fs.writeFileSync(path.join(invalidCiRoot, "hy-workflow.json"), JSON.stringify(invalidCi, null, 2) + "\n", "utf-8");
+  const invalidCiCheck = checkConfig(invalidCiRoot);
+  assert(!invalidCiCheck.ok && invalidCiCheck.issues.some(issue => issue.includes("ci.commands")), `invalid ci.commands must fail closed: ${JSON.stringify(commands)}`);
+}
 
 fs.writeFileSync(path.join(root, "doclint.json"), JSON.stringify({
   ...readJson(root, "doclint.json"),
@@ -285,6 +340,7 @@ assert(parsed.ok === true, "config CLI should emit ok envelope");
 assert(parsed.display?.title, "config CLI should emit display title");
 assert(exists(cliRoot, "hy-workflow.json"), "default config CLI should write the shared project config");
 assert(readJson(cliRoot, "hy-workflow.json").project.codeExt === ".py", "config CLI should write project settings to hy-workflow.json");
+if (process.platform !== "win32") assert((fs.statSync(path.join(cliRoot, "hy-workflow.json")).mode & 0o777) === 0o644, "new team config must use a commit-friendly 0644 mode");
 assert(!fs.existsSync(projectPaths(cliRoot).config), "config CLI should not create a new user-local project config");
 assert(!exists(cliRoot, "codelint.json"), "config CLI should not write root codelint compatibility file");
 assert(!exists(cliRoot, "doclint.json"), "config CLI should not write root doclint compatibility file");
@@ -306,6 +362,50 @@ withRuntimeCompatConfigs(staleCompatRoot, () => {
   assert(runtime.keep === true, "runtime compat should preserve unrelated existing compatibility fields while running");
 });
 assert(fs.readFileSync(path.join(staleCompatRoot, "codelint.json"), "utf-8") === staleCompatBefore, "runtime compat should restore stale existing codelint after run");
+
+const crashCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const crashOriginal = "{\n  \"owner\": \"before-crash\"\n}\n";
+const crashCodelint = path.join(crashCompatRoot, "codelint.json");
+fs.writeFileSync(crashCodelint, crashOriginal, { encoding: "utf-8", mode: 0o640 });
+const crashMarker = path.join(runtimeHome, `compat-crash-${Date.now()}.ready`);
+const configModule = pathToFileURL(path.resolve("src/config.ts")).href;
+const crashScript = [
+  `import fs from ${JSON.stringify("node:fs")};`,
+  `import { withRuntimeCompatConfigs } from ${JSON.stringify(configModule)};`,
+  `withRuntimeCompatConfigs(${JSON.stringify(crashCompatRoot)}, () => {`,
+  `  fs.writeFileSync(${JSON.stringify(crashMarker)}, "ready");`,
+  "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);",
+  "});",
+].join("\n");
+const crashChild = spawn(process.execPath, [path.resolve("node_modules/tsx/dist/cli.mjs"), "--eval", crashScript], {
+  cwd: path.resolve("."),
+  env: { ...process.env },
+  stdio: ["ignore", "pipe", "pipe"],
+  detached: process.platform !== "win32",
+});
+let crashOutput = "";
+crashChild.stdout.on("data", chunk => { crashOutput += chunk.toString(); });
+crashChild.stderr.on("data", chunk => { crashOutput += chunk.toString(); });
+let crashExited = false;
+crashChild.on("exit", () => { crashExited = true; });
+const crashClosed = new Promise<void>(resolve => crashChild.once("close", () => resolve()));
+try {
+  const crashDeadline = Date.now() + 8_000;
+  while (!fs.existsSync(crashMarker) && !crashExited && Date.now() < crashDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert(fs.existsSync(crashMarker), `compat crash helper did not materialize files: ${crashOutput}`);
+} finally {
+  if (!crashExited) {
+    if (process.platform === "win32") crashChild.kill("SIGKILL");
+    else process.kill(-crashChild.pid!, "SIGKILL");
+  }
+  await crashClosed;
+}
+assert(fs.existsSync(path.join(crashCompatRoot, "doclint.json")), "SIGKILL fixture must leave generated compat evidence before recovery");
+const crashRecovered = recoverRuntimeCompatConfigs(crashCompatRoot);
+assert(crashRecovered.recovered, "next invocation must consume the crash recovery journal");
+assert(fs.readFileSync(crashCodelint, "utf-8") === crashOriginal, "crash recovery must restore existing compat bytes");
+assert((fs.statSync(crashCodelint).mode & 0o777) === 0o640, "crash recovery must restore existing compat mode");
+assert(!exists(crashCompatRoot, "doclint.json") && !exists(crashCompatRoot, "docs-gardener.json"), "crash recovery must remove generated compat files");
 
 const callbackFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
 const callbackCodelintText = "{\n  \"owner\": \"existing\"\n}\n";
@@ -330,7 +430,7 @@ let materializeFailureCaught: unknown;
 let injectedFailure = false;
 try {
   (fsDefault as any).writeFileSync = (...args: any[]) => {
-    if (!injectedFailure && path.resolve(String(args[0])) === path.resolve(failingPath)) {
+    if (!injectedFailure && path.resolve(String(args[0])).startsWith(path.resolve(failingPath) + ".")) {
       injectedFailure = true;
       throw materializeFailure;
     }
@@ -355,7 +455,7 @@ let restoreWrites = 0;
 let restoreFailureCaught: unknown;
 try {
   (fsDefault as any).writeFileSync = (...args: any[]) => {
-    if (path.resolve(String(args[0])) === path.resolve(path.join(restoreFailureRoot, "codelint.json")) && ++restoreWrites === 2) throw restoreFailure;
+    if (path.resolve(String(args[0])).startsWith(path.resolve(path.join(restoreFailureRoot, "codelint.json")) + ".") && ++restoreWrites === 2) throw restoreFailure;
     return (originalWriteFileSync as any)(...args);
   };
   syncBuiltinESMExports();
@@ -366,8 +466,10 @@ try {
   (fsDefault as any).writeFileSync = originalWriteFileSync;
   syncBuiltinESMExports();
 }
-assert(restoreFailureCaught === restoreFailure, "a standalone restoration failure must be surfaced unchanged");
+assert((restoreFailureCaught as any)?.code === "RUNTIME_COMPAT_RECOVERY_REQUIRED", "a standalone restoration failure must retain a durable recovery gate");
 assert(!exists(restoreFailureRoot, "doclint.json") && !exists(restoreFailureRoot, "docs-gardener.json"), "one restoration failure must not prevent the other snapshots from being restored");
+assert(recoverRuntimeCompatConfigs(restoreFailureRoot).recovered, "retry after a transient restoration failure must consume the durable journal");
+assert(readJson(restoreFailureRoot, "codelint.json").owner === "original", "durable retry must restore the original codelint content");
 
 const combinedFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
 fs.writeFileSync(path.join(combinedFailureRoot, "codelint.json"), "{\n  \"owner\": \"original\"\n}\n", "utf-8");
@@ -377,7 +479,7 @@ let combinedWrites = 0;
 let combinedFailureCaught: unknown;
 try {
   (fsDefault as any).writeFileSync = (...args: any[]) => {
-    if (path.resolve(String(args[0])) === path.resolve(path.join(combinedFailureRoot, "codelint.json")) && ++combinedWrites === 2) throw combinedRestoreFailure;
+    if (path.resolve(String(args[0])).startsWith(path.resolve(path.join(combinedFailureRoot, "codelint.json")) + ".") && ++combinedWrites === 2) throw combinedRestoreFailure;
     return (originalWriteFileSync as any)(...args);
   };
   syncBuiltinESMExports();
@@ -389,8 +491,9 @@ try {
   syncBuiltinESMExports();
 }
 assert(combinedFailureCaught instanceof AggregateError, "operation plus restoration failure must use AggregateError");
-assert((combinedFailureCaught as AggregateError).errors[0] === operationFailure && (combinedFailureCaught as AggregateError).errors.includes(combinedRestoreFailure), "AggregateError must retain both the operation and restoration errors");
+assert((combinedFailureCaught as AggregateError).errors[0] === operationFailure && (combinedFailureCaught as AggregateError).errors.some((error: any) => error?.code === "RUNTIME_COMPAT_RECOVERY_REQUIRED"), "AggregateError must retain the operation and durable recovery error");
 assert(!exists(combinedFailureRoot, "doclint.json") && !exists(combinedFailureRoot, "docs-gardener.json"), "combined failure must still restore every unaffected snapshot");
+assert(recoverRuntimeCompatConfigs(combinedFailureRoot).recovered, "combined failure journal must be recoverable on the next invocation");
 
 const invalidCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
 fs.writeFileSync(path.join(invalidCompatRoot, "codelint.json"), "{ invalid compatibility json\n", "utf-8");
@@ -422,12 +525,14 @@ const invalidExplicitPayload = JSON.parse(invalidExplicitDocs.stdout);
 assert(invalidExplicitDocs.exitCode === 1 && invalidExplicitPayload.suggestedCommand.includes("--docs-dir existing-docs-dir"), "an explicit nonexistent docsDir must not be echoed into another guaranteed-failing recovery command");
 assert(!invalidExplicitPayload.suggestedCommand.includes("--docs-dir docs"), "recovery must not repeat the nonexistent explicit docsDir");
 fs.mkdirSync(path.join(noDocsRoot, "guide"));
+fs.writeFileSync(path.join(noDocsRoot, "guide", "index.md"), "# Guide\n", "utf-8");
 const explicitDocs = runConfigCli(["--apply", "--json", "--docs-dir", "guide"], noDocsRoot);
 assert(explicitDocs.exitCode === 0 && readJson(noDocsRoot, "hy-workflow.json").project.docsDir === "guide", "an explicit existing docsDir should recover setup");
 
 const caseRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-real-case-"));
 fs.mkdirSync(path.join(caseRoot, "Src"), { recursive: true });
 fs.mkdirSync(path.join(caseRoot, "Docs"), { recursive: true });
+fs.writeFileSync(path.join(caseRoot, "Docs", "index.md"), "# Docs\n", "utf-8");
 fs.writeFileSync(path.join(caseRoot, "package.json"), "{}\n", "utf-8");
 fs.writeFileSync(path.join(caseRoot, "tsconfig.json"), "{}\n", "utf-8");
 fs.writeFileSync(path.join(caseRoot, "Src", "index.ts"), "export {};\n", "utf-8");
@@ -441,6 +546,7 @@ if (process.platform !== "win32") {
   const symlinkRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-symlink-dirs-"));
   fs.mkdirSync(path.join(symlinkRoot, "real-src"));
   fs.mkdirSync(path.join(symlinkRoot, "real-docs"));
+  fs.writeFileSync(path.join(symlinkRoot, "real-docs", "index.md"), "# Docs\n", "utf-8");
   fs.symlinkSync("real-src", path.join(symlinkRoot, "Src"), "dir");
   fs.symlinkSync("real-docs", path.join(symlinkRoot, "Docs"), "dir");
   fs.writeFileSync(path.join(symlinkRoot, "package.json"), "{}\n", "utf-8");
@@ -451,6 +557,39 @@ if (process.platform !== "win32") {
   assert(symlinkDirs.exitCode === 0, `symlinked directory detection should succeed: ${symlinkDirsPayload.issues?.join(", ") ?? ""}`);
   assert(symlinkDirsPayload.suggestion.codeDirs.join(",") === "Src" && symlinkDirsPayload.suggestion.lintDirs.join(",") === "Src", "symlinked code directories must keep their entry casing");
   assert(symlinkDirsPayload.suggestion.docsDir === "Docs", "symlinked docs directories must remain valid and keep their entry casing");
+
+  const escapeRoot = tempRoot();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-outside-"));
+  fs.rmSync(path.join(escapeRoot, "docs"), { recursive: true });
+  fs.symlinkSync(outside, path.join(escapeRoot, "docs"), "dir");
+  fs.writeFileSync(path.join(escapeRoot, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: ".py", codeDirs: ["src"], docsDir: "docs" },
+    codelint: { lintDirs: ["src"] },
+  }, null, 2) + "\n");
+  const escapedDocs = checkConfig(escapeRoot);
+  assert(!escapedDocs.ok && escapedDocs.issues.some(issue => issue.includes("project.docsDir")), "docsDir symlink escaping the project must fail closed");
+
+  const linkedConfigRoot = tempRoot();
+  const outsideConfig = path.join(outside, "hy-workflow.json");
+  const outsideContent = JSON.stringify({ owner: "outside" }) + "\n";
+  fs.writeFileSync(outsideConfig, outsideContent);
+  fs.symlinkSync(outsideConfig, path.join(linkedConfigRoot, "hy-workflow.json"));
+  const linkedConfigCheck = checkConfig(linkedConfigRoot);
+  assert(!linkedConfigCheck.ok && linkedConfigCheck.issues.some(issue => issue.includes("normal file inside the project")), "root config symlink must be rejected");
+  const linkedConfigApply = runConfigCli(["--apply-suggested", "--json"], linkedConfigRoot);
+  assert(linkedConfigApply.exitCode === 1, "config apply must not follow a root config symlink");
+  assert(fs.readFileSync(outsideConfig, "utf-8") === outsideContent, "rejected config apply must not modify the symlink target");
+
+  const linkedCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+  const outsideCompat = path.join(outside, "codelint.json");
+  const outsideCompatContent = "{\"owner\":\"outside\"}\n";
+  fs.writeFileSync(outsideCompat, outsideCompatContent);
+  fs.symlinkSync(outsideCompat, path.join(linkedCompatRoot, "codelint.json"));
+  let linkedCompatError: any = null;
+  try { withRuntimeCompatConfigs(linkedCompatRoot, () => undefined); } catch (error) { linkedCompatError = error; }
+  assert(linkedCompatError?.code === "RUNTIME_COMPAT_PATH_UNSAFE", "runtime compat symlink must fail with a stable recovery code");
+  assert(fs.readFileSync(outsideCompat, "utf-8") === outsideCompatContent, "runtime compat rejection must not modify an external symlink target");
+  assert(!exists(linkedCompatRoot, "doclint.json") && !exists(linkedCompatRoot, "docs-gardener.json"), "runtime compat symlink rejection must occur before any project write");
 }
 
 const customDocsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-custom-docs-"));
@@ -468,6 +607,7 @@ const customDocsCheck = checkConfig(customDocsRoot);
 assert(!customDocsCheck.ok, "a missing custom docsDir should require recovery");
 assert(customDocsCheck.suggestedCommand === "hy-workflow config --apply --json --docs-dir existing-docs-dir", "existing config recovery should only request docsDir and preserve every other field");
 fs.mkdirSync(path.join(customDocsRoot, "handbook"));
+fs.writeFileSync(path.join(customDocsRoot, "handbook", "index.md"), "# Handbook\n", "utf-8");
 const customDocsApply = runConfigCli(["--apply", "--json", "--docs-dir", "handbook"], customDocsRoot);
 assert(customDocsApply.exitCode === 0, "preserving docsDir recovery should succeed");
 const customDocsAfter = readJson(customDocsRoot, "hy-workflow.json");
@@ -499,6 +639,7 @@ assert(commaCheck.ok, `.tksp,.ts comma config should be accepted: ${commaCheck.i
 const inferredTkspRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-infer-tksp-"));
 fs.mkdirSync(path.join(inferredTkspRoot, "src"), { recursive: true });
 fs.mkdirSync(path.join(inferredTkspRoot, "docs"), { recursive: true });
+fs.writeFileSync(path.join(inferredTkspRoot, "docs", "index.md"), "# Docs\n", "utf-8");
 fs.writeFileSync(path.join(inferredTkspRoot, "src", "main.tksp"), "module demo\n", "utf-8");
 const inferredTksp = runConfigCli(["--dry-run", "--json"], inferredTkspRoot);
 assert(JSON.parse(inferredTksp.stdout).suggestion.codeExt === ".tksp", "dry-run should suggest .tksp for tksp-only projects");

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 export type PackageJson = {
   name?: string;
@@ -12,6 +12,13 @@ export type PackageJson = {
   repository?: { type?: string; url?: string } | string;
   publishConfig?: { access?: string };
   engines?: { node?: string };
+};
+
+export type NpmPackEntry = {
+  filename?: string;
+  integrity?: string;
+  shasum?: string;
+  files?: Array<{ path?: string; size?: number; mode?: number }>;
 };
 
 export function readPackageJson(root: string): PackageJson {
@@ -38,7 +45,28 @@ export function parseNpmPackFiles(report: unknown): string[] {
   }).sort();
 }
 
+export function parseNpmPackEntries(report: unknown): NpmPackEntry[] {
+  const values = Array.isArray(report)
+    ? report
+    : report !== null && typeof report === "object"
+      ? Object.values(report as Record<string, unknown>)
+      : [];
+  return values.filter((entry): entry is NpmPackEntry => entry !== null && typeof entry === "object");
+}
+
+export function npmPackReport(root: string, dryRun = true, destination?: string): NpmPackEntry[] {
+  const args = ["pack", ...(dryRun ? ["--dry-run"] : []), "--json"];
+  if (destination) args.push("--pack-destination", path.resolve(destination));
+  const command = process.platform === "win32" ? "npm.cmd" : "npm";
+  const raw = execFileSync(command, args, {
+    cwd: root,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 180_000,
+  });
+  return parseNpmPackEntries(JSON.parse(raw));
+}
+
 export function npmPackDryRun(root: string): string[] {
-  const raw = execSync("npm pack --dry-run --json", { cwd: root, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 });
-  return parseNpmPackFiles(JSON.parse(raw));
+  return parseNpmPackFiles(npmPackReport(root));
 }

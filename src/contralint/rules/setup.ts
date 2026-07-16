@@ -37,7 +37,7 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
   if (prompts.includes("Choose deployment mode") || prompts.includes("选择部署模式")) {
     findings.push({ rule: "setup", severity: "hard_fail", message: "setup TUI must not offer a deployment-mode choice.", file: "src/setup/prompts.ts" });
   }
-  if (!operations.includes("writeSharedArtifacts(root, config, options.dryRun)") || operations.includes('options.mode === "shared"')) {
+  if (!operations.includes("writeSharedArtifacts(") || !operations.includes("SHARED_PROJECT_FILES") || operations.includes('options.mode === "shared"')) {
     findings.push({ rule: "setup", severity: "hard_fail", message: "setup must always maintain the shared config and workflow artifacts.", file: "src/setup/operations.ts" });
   }
   for (const client of ["codex", "claude", "opencode"]) {
@@ -53,27 +53,48 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
     findings.push({ rule: "setup", severity: "hard_fail", message: "Workflow must not use path filters that can suppress required checks.", file: "templates/hy-workflow.yml" });
   }
   for (const token of [
-    "hashFiles('package.json')",
-    "hashFiles('package-lock.json')",
     "npm ci",
+    "pnpm install --frozen-lockfile",
+    "yarn install --immutable",
+    "bun install --frozen-lockfile",
+    "python -m pytest",
+    "go test ./...",
+    "cargo test --workspace --all-targets",
+    "ci.commands",
     "npm run build",
     "npm test",
-    "git+https://github.com/voxServalG/doclint.git",
-    "git+https://github.com/voxServalG/codelint.git",
+    "https://codeload.github.com/voxServalG/doclint/tar.gz/20793b8a4e1bcd79556d2cede0973cabe97f1ae4",
+    "https://codeload.github.com/voxServalG/codelint/tar.gz/aaaa065160b019f8e2a9d8eff456633dfa4b6d9b",
+    'npx --yes --package="$source" "$binary" "$command" --json',
+    "timeout --signal=TERM 75s",
+    "retrying once",
     "status=$?",
     "JSON.parse",
-    "report.ok === false",
+    "const invalidOk = label === 'doclint'",
+    "report.ok !== undefined && report.ok !== true",
+    "permissions:\n  contents: read",
     "nestedNumber('errors')",
     "nestedNumber('failed')",
+    "nestedNumber('total_files')",
+    "files <= 0",
+    "configuredFiles.length <= 0",
+    "const notApplicable = label === 'codelint'",
     "compat_backup_dir=",
     "cp -a --",
     "trap restore_compat EXIT",
     "rm -rf -- \"$compat_backup_dir\"",
+    "name: Windows Smoke",
+    "if: ${{ github.repository == 'voxServalG/hy-workflow-mcp' }}",
+    "runs-on: windows-latest",
+    "npm run test:windows",
   ]) {
     if (!template.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `Workflow is missing strict CI contract token: ${token}.`, file: "templates/hy-workflow.yml" });
   }
-  for (const forbidden of ["github:voxServalG/", "|| true", "actions/upload-artifact"]) {
+  for (const forbidden of ["github:voxServalG/", "|| true", "actions/upload-artifact", "contents: write", "actions: write", "checks: write", "pull-requests: write", "id-token: write"]) {
     if (template.includes(forbidden)) findings.push({ rule: "setup", severity: "hard_fail", message: `Workflow contains forbidden fail-open or persisted-artifact token: ${forbidden}.`, file: "templates/hy-workflow.yml" });
+  }
+  if (template.includes("- uses: actions/setup-node@v4\n        if:")) {
+    findings.push({ rule: "setup", severity: "hard_fail", message: "setup-node must be unconditional because mandatory doclint/codelint run for every ecosystem.", file: "templates/hy-workflow.yml" });
   }
   for (const token of [
     "return path.join(root, UNIFIED_CONFIG_FILE)",

@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
 import type { ClientName } from "../runtime/deployment.js";
-import type { ClientDetection, SetupAction, SetupOptions } from "./types.js";
+import { SetupFailure, type ArtifactChange, type ClientDetection, type SetupAction, type SetupOptions } from "./types.js";
 
 type Copy = {
   title: string;
@@ -13,6 +13,13 @@ type Copy = {
   removeGlobal: string;
   confirm: string;
   cancelled: string;
+  detecting: string;
+  detected: string;
+  ciSuggested: string;
+  ciCustom: string;
+  acceptCi: string;
+  artifacts: string;
+  acceptArtifacts: string;
 };
 
 const COPY: Record<"zh" | "en", Copy> = {
@@ -27,6 +34,13 @@ const COPY: Record<"zh" | "en", Copy> = {
     removeGlobal: "若这是最后一个项目，同时移除全局 MCP 配置？",
     confirm: "确认执行？",
     cancelled: "已取消，未做任何改动。",
+    detecting: "正在检测客户端与有效配置…",
+    detected: "客户端检测完成",
+    ciSuggested: "检测到以下原生 CI 命令",
+    ciCustom: "未检测到可靠的原生 CI 命令。请输入一个已验证的 CI 命令",
+    acceptCi: "确认将这些命令写入 hy-workflow.json？",
+    artifacts: "现有团队产物将发生变化",
+    acceptArtifacts: "已审阅以上 diff，允许覆盖这些团队产物？",
   },
   en: {
     title: "hy-workflow setup and maintenance",
@@ -39,6 +53,13 @@ const COPY: Record<"zh" | "en", Copy> = {
     removeGlobal: "If this is the last project, also remove global MCP configuration?",
     confirm: "Proceed?",
     cancelled: "Cancelled. No changes were made.",
+    detecting: "Inspecting clients and effective configuration…",
+    detected: "Client inspection complete",
+    ciSuggested: "Detected native CI commands",
+    ciCustom: "No safe native CI command was detected. Enter one verified CI command",
+    acceptCi: "Write these commands to hy-workflow.json?",
+    artifacts: "Existing team artifacts would change",
+    acceptArtifacts: "I reviewed the diff and allow these team artifacts to be replaced",
   },
 };
 
@@ -51,8 +72,16 @@ function cancelled(value: unknown, message: string): boolean {
 export async function promptSetupOptions(
   invokedAction: SetupAction,
   detections: ClientDetection[],
+  context: {
+    introShown?: boolean;
+    ciCandidates?: string[];
+    hasCiCommands?: boolean;
+    artifactChanges?: ArtifactChange[];
+    artifactChangesForCi?: (commands?: string[]) => ArtifactChange[];
+    readinessIssues?: Array<{ code: string; message: string; recovery: string }>;
+  } = {},
 ): Promise<SetupOptions | null> {
-  p.intro(COPY.zh.title);
+  if (!context.introShown) p.intro(COPY.zh.title);
   const languageValue = await p.select({
     message: COPY.zh.language,
     options: [
@@ -79,22 +108,75 @@ export async function promptSetupOptions(
     action = actionValue as SetupAction;
   }
 
-  const installed = detections.filter(item => item.installed);
-  if (!installed.length) {
-    p.cancel(copy.noClients);
-    return null;
+  if (action === "setup" && context.readinessIssues?.length) {
+    p.note(context.readinessIssues.map(issue => `${issue.code}: ${issue.message}\n${issue.recovery}`).join("\n\n"), "Project readiness failed");
+    throw new SetupFailure(
+      "preflight",
+      "SETUP_PREFLIGHT_FAILED",
+      context.readinessIssues.map(issue => issue.message).join("; "),
+      context.readinessIssues[0].recovery,
+      { issues: context.readinessIssues },
+    );
   }
-  const clientValue = await p.multiselect({
-    message: copy.clients,
-    options: installed.map(item => ({
-      value: item.name,
-      label: item.name === "opencode" ? "OpenCode" : item.name === "claude" ? "Claude Code" : "Codex",
-      hint: [item.version, item.configured.length ? `MCP: ${item.configured.join(", ")}` : null].filter(Boolean).join(" · "),
-    })),
-    initialValues: installed.map(item => item.name),
-    required: true,
-  });
-  if (cancelled(clientValue, copy.cancelled)) return null;
+
+  const installed = detections.filter(item => item.installed);
+  if (action === "setup" && !installed.length) {
+    throw new SetupFailure(
+      "client_missing",
+      "SETUP_CLIENT_NOT_INSTALLED",
+      copy.noClients,
+      "Install Codex, Claude Code, or OpenCode, then rerun hy-workflow setup.",
+      { detections },
+    );
+  }
+  let clientValue: ClientName[] = [];
+  if (installed.length) {
+    const selected = await p.multiselect({
+      message: copy.clients,
+      options: installed.map(item => ({
+        value: item.name,
+        label: item.name === "opencode" ? "OpenCode" : item.name === "claude" ? "Claude Code" : "Codex",
+        hint: [item.version, item.configured.length ? `MCP: ${item.configured.join(", ")}` : null].filter(Boolean).join(" · "),
+      })),
+      initialValues: installed.map(item => item.name),
+      required: action === "setup",
+    });
+    if (cancelled(selected, copy.cancelled)) return null;
+    clientValue = selected as ClientName[];
+  }
+
+  let acceptCiCommands = false;
+  let ciCommands: string[] | undefined;
+  if (action === "setup" && !context.hasCiCommands) {
+    const candidates = context.ciCandidates ?? [];
+    if (candidates.length) {
+      p.note(candidates.map(command => `• ${command}`).join("\n"), copy.ciSuggested);
+      const accepted = await p.confirm({ message: copy.acceptCi, initialValue: true });
+      if (cancelled(accepted, copy.cancelled)) return null;
+      if (!accepted) { p.cancel(copy.cancelled); return null; }
+      acceptCiCommands = true;
+      ciCommands = [...candidates];
+    } else {
+      const custom = await p.text({ message: copy.ciCustom, placeholder: "npm test", validate: value => value?.trim() ? undefined : "A CI command is required" });
+      if (cancelled(custom, copy.cancelled)) return null;
+      ciCommands = [String(custom).trim()];
+    }
+  }
+
+  let acceptArtifactChanges = false;
+  let reviewedArtifactChanges: SetupOptions["reviewedArtifactChanges"];
+  const exactChanges = context.artifactChangesForCi
+    ? context.artifactChangesForCi(ciCommands)
+    : context.artifactChanges ?? [];
+  const drift = exactChanges.filter(item => item.requiresAcceptance);
+  if (action === "setup" && drift.length) {
+    p.note(drift.map(item => `${item.file} [${item.changeKind}]\n${item.diff}`).join("\n\n"), copy.artifacts);
+    const accepted = await p.confirm({ message: copy.acceptArtifacts, initialValue: false });
+    if (cancelled(accepted, copy.cancelled)) return null;
+    if (!accepted) { p.cancel(copy.cancelled); return null; }
+    acceptArtifactChanges = true;
+    reviewedArtifactChanges = drift.map(({ file, beforeHash, afterHash }) => ({ file, beforeHash, afterHash }));
+  }
 
   let removeGlobal = false;
   if (action === "unset") {
@@ -111,13 +193,34 @@ export async function promptSetupOptions(
   return {
     action,
     mode: "shared",
-    clients: clientValue as ClientName[],
+    clients: clientValue,
     language,
     yes: false,
     dryRun: false,
     json: false,
     removeGlobal,
+    acceptArtifactChanges,
+    reviewedArtifactChanges,
+    acceptCiCommands,
+    ciCommands,
   };
+}
+
+export function beginSetupPrompt(): void {
+  p.intro(COPY.zh.title);
+}
+
+export function detectWithPrompt<T>(work: () => T): T {
+  const spinner = p.spinner();
+  spinner.start(COPY.zh.detecting);
+  try {
+    const result = work();
+    spinner.stop(COPY.zh.detected);
+    return result;
+  } catch (error) {
+    spinner.stop(COPY.zh.detected);
+    throw error;
+  }
 }
 
 export function finishPrompt(message: string): void {

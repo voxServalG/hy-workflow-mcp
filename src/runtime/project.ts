@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { requireRuntimeBaseBranch } from "../config.js";
 
 export class ProjectRootError extends Error {
@@ -17,21 +17,22 @@ export class ProjectRootError extends Error {
 }
 
 export function findProjectRoot(start = process.cwd()): string {
-  let dir = start;
-  while (dir !== "/") {
-    if (fs.existsSync(path.join(dir, ".git"))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new ProjectRootError(start);
+  const candidate = path.resolve(start);
+  try {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: candidate,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    }).trim();
+    if (root) return fs.realpathSync.native(root);
+  } catch {}
+  throw new ProjectRootError(candidate);
 }
 
 export function resolveGitPrivatePath(root: string, relativePath: string): string {
   try {
-    const resolved = execSync(`git rev-parse --git-path ${relativePath}`, { cwd: root })
-      .toString()
-      .trim();
+    const resolved = execFileSync("git", ["rev-parse", "--git-path", relativePath], { cwd: root, encoding: "utf-8" }).trim();
     return path.isAbsolute(resolved) ? resolved : path.join(root, resolved);
   } catch {
     return path.join(root, ".git", relativePath);
@@ -40,7 +41,7 @@ export function resolveGitPrivatePath(root: string, relativePath: string): strin
 
 export function currentGitBranch(root: string): string {
   try {
-    return execSync("git branch --show-current", { cwd: root }).toString().trim();
+    return execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf-8" }).trim();
   } catch {
     return "unknown";
   }
