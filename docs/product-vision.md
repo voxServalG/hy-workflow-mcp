@@ -25,7 +25,7 @@ The product should not become a large platform with many overlapping tools. The 
 The ideal first-time experience is:
 
 1. Install from README without reading all docs.
-2. Run setup, review its project/client/CI evidence and the two team-file diffs, then commit those files through a focused PR.
+2. Run setup, review its project/client/CI evidence and the three team-artifact diffs (`hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the auto-migrated `AGENTS.md` managed block), then commit those files through a focused PR.
 3. Restart the MCP client.
 4. Ask the agent to call `hy_status`.
 5. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
@@ -105,7 +105,7 @@ The workflow must continue to reject:
 
 Artifact boundaries stay central:
 
-- setup always maintains exactly `hy-workflow.json` and `.github/workflows/hy-workflow.yml` as team source;
+- setup always maintains exactly three team-owned repository surfaces as source: `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the `<!-- hy-workflow-rules -->` managed block in `AGENTS.md` (content outside the markers stays team-owned and is migrated, not overwritten);
 - unset and hy_init never delete or rewrite those team files; deployment/state/cache, client config, and legacy/runtime/compat artifacts stay external or untracked.
 
 ## Documentation Model

@@ -214,7 +214,7 @@ export function checkSetupStamp(root = projectRoot()): SetupCheck {
 export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
   const phase = readCurrentPhaseReadonly();
   const reason = check.status === "artifact_drift"
-    ? `The two team artifacts no longer match the deployment evidence: ${check.artifactDrift?.map(item => `${item.file} (${item.reason})`).join(", ") ?? "unknown drift"}.`
+    ? `The three team artifacts no longer match the deployment evidence: ${check.artifactDrift?.map(item => `${item.file} (${item.reason})`).join(", ") ?? "unknown drift"}.`
     : check.status === "tool_mismatch"
       ? `Installed tool evidence is incomplete or stale: ${check.issues?.join("; ") ?? "unknown tool mismatch"}.`
       : check.status === "outdated"

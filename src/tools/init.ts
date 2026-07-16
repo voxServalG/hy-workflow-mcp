@@ -38,13 +38,13 @@ export function initArtifactGuidance(
   trackedLocalArtifacts: string[] = [],
 ): { commitArtifacts: string[]; localArtifacts: string[]; trackedLocalArtifacts: string[]; body: string } {
   const body = [
-    "Setup intentionally maintains only hy-workflow.json and .github/workflows/hy-workflow.yml in the repository; hy_init itself changes no project files.",
+    "Setup intentionally maintains three team-owned repository surfaces: hy-workflow.json, .github/workflows/hy-workflow.yml, and the managed block between <!-- hy-workflow-rules --> markers in AGENTS.md (content outside the markers is team-owned and never touched); hy_init itself changes no project files.",
     "Deployment metadata, registry, workflow state, scope locks, DocsGraph cache, and client configuration live in OS user directories.",
     ...(trackedLocalArtifacts.length
       ? ["", "Legacy local/runtime files are tracked and should be removed in a separate cleanup change:", ...trackedLocalArtifacts.map(file => `- ${file}`)]
       : []),
     "",
-    "hy-workflow unset removes the external project deployment but never deletes the two team-owned repository files.",
+    "hy-workflow unset removes the external project deployment but never deletes the three team-owned repository files.",
   ].join("\n");
   return {
     commitArtifacts: [],

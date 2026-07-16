@@ -96,6 +96,6 @@ The generated Verify job executes confirmed `ci.commands` as the complete native
 
 ## Version migration
 
-Every `hy_*` dispatch checks schema-3 deployment version, direct binaries/versions, MCP catalog hashes and both team artifact SHA/size. `hy_init` additionally requires the root config/workflow, resolvable base ref, substantive docs and current managed rules. Missing, unreadable, outdated, tool-mismatch or artifact-drift evidence returns a structured setup/artifact-sync stop; legacy state is never deleted or treated as a second mode.
+Every `hy_*` dispatch checks schema-3 deployment version, direct binaries/versions, MCP catalog hashes and all three team artifact SHA/size (`hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the managed `AGENTS.md` block). `hy_init` additionally requires the root config/workflow, resolvable base ref, substantive docs and current managed rules. Missing, unreadable, outdated, tool-mismatch or artifact-drift evidence returns a structured setup/artifact-sync stop; legacy state is never deleted or treated as a second mode.
 
 The npm package contains compiled `dist/`, docs, the shared workflow template, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.

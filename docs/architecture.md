@@ -8,7 +8,7 @@ MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be 
 
 Project profile evidence comes from Git-tracked files, language manifests, origin HEAD/current/conventional refs, source extensions and real directory casing. TypeScript is never inferred from `package.json` alone; JS, Python, Go, Rust and material mixed repositories retain their actual extensions/directories. Unknown, material mixed, non-conventional-branch and other low-confidence Git profiles require explicit confirmation; an existing complete root config remains authoritative.
 
-Setup has one deployment model and may write only `hy-workflow.json` and `.github/workflows/hy-workflow.yml`. Before writing it validates candidate project/docs readiness and requires confirmation of detected or explicit `ci.commands`. Deployment schema 3 records direct-tool versions/catalog hashes and both team artifact SHA/size; runtime, registry, workflow state, scope, DocsGraph and client configuration stay under OS user roots. Legacy config/mode manifests/project client files are diagnosis or migration inputs, never active fallback.
+Setup has one deployment model and may write three team-owned repository surfaces: `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the managed block between `<!-- hy-workflow-rules -->` markers in `AGENTS.md` (any content outside those markers is team-owned and preserved byte-for-byte). Before writing it validates candidate project/docs readiness and requires confirmation of detected or explicit `ci.commands`. Deployment schema 3 records direct-tool versions/catalog hashes and all three team artifact SHA/size; runtime, registry, workflow state, scope, DocsGraph and client configuration stay under OS user roots. Legacy config/mode manifests/project client files are diagnosis or migration inputs, never active fallback.
 
 hy-workflow-mcp 是一个 MCP server，强制 LLM agent 走带文档同步 gate 的闭环工作流。通过状态机锁定 Phase 转换、lint 校验、用户 approve gate 三层机制，确保每次代码/文档变更可审计。
 
@@ -79,13 +79,13 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 
 - **状态文件**: OS 用户 state 下按 project id 持久化 Phase、PlanDoc、Approval、verifyHash、scope 和 document metadata；文档 excerpts 不进入 workflow state，全量 DocsGraph digest/link index 位于用户 cache
 - **项目根定位**: `projectRoot()` 向上查找 `.git` 目录
-- **幂等 init**: runtime 每次 dispatch 检查 deployment schema/version/tool evidence/artifact hashes；`hy_init` 再验证 root config、两个团队文件、base ref、非空实质文档和 managed rules version，只推进外置状态
+- **幂等 init**: runtime 每次 dispatch 检查 deployment schema/version/tool evidence/artifact hashes；`hy_init` 再验证 root config、三个团队产物（`hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` managed block）、base ref、非空实质文档和 managed rules version，只推进外置状态
 - **执行器边界**: 服务启动时探测本机 `git`、`gh` 与 gh 认证状态；commit/push/rebase 等仓库操作固定使用 git，PR/checks/merge 等 GitHub API 操作固定使用已认证 gh。`GH_REPO` 与 `GH_HOST` 不参与仓库选择；origin fetch/push URL 必须解析为同一带 host 的 repository selector。项目没有内部 Git/GitHub 后端，能力不足时结构化失败而不是静默降级
 - **配置保护**: preserve-first 迁移不改写人工 project/ci 值；profile 候选与 CI 命令必须在写盘前确认。MCP runtime 不把 legacy/compat 配置当 fallback，缺字段、无 ref、零文档事实或 stale managed block 均 fail closed
 - **提交恢复**: `hy_commit` 在 push 前把 commit OID、verifyHash、branch、baseBranch 和 repository 写入 approval 派生状态，只推送该不可移动 object ID。若 push 或 PR API 失败，重试必须同时匹配该记录与 clean HEAD；空提交或其他移动 HEAD 会被拒绝。CI 每次轮询与 merge 前也必须复查 exact PR identity，merge 使用 `--match-head-commit`
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 - **Promotion 例外**: 状态机闭环服务于普通开发改动合入 `baseBranch`；`baseBranch → releaseBranch`（如 dev → main）属于发布/晋级操作，不伪造 scope，也不硬套 `hy_branch`/`hy_commit`，必须在用户授权后通过 promotion PR 完成
-- **Artifact contract**: setup 只允许模板 workflow 与 `hy-workflow.json`，其 drift 单独走 artifact sync PR；unset/hy_init 不删除或改写团队文件；runtime/client/compat artifacts 不提交；`dist/` 只进入 npm tarball，不进入 GitHub
+- **Artifact contract**: setup 维护三个团队产物（`hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` managed block），其 drift 单独走 artifact sync PR；unset/hy_init 不删除或改写团队文件；runtime/client/compat artifacts 不提交；`dist/` 只进入 npm tarball，不进入 GitHub
 
 ## 配置文件
 
