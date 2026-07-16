@@ -509,7 +509,7 @@ export async function runRepositoryScenario(
     ], { cwd: root, env: workspace.env, timeoutMs: 45_000 });
     const freshPreviewEnvelope = parseJsonOutput(freshPreview.stdout);
     assert(freshPreviewEnvelope.ok === true && freshPreviewEnvelope.ciConfirmationRequired === true, "fresh-clone setup preview did not infer a confirmable install");
-    assert(Array.isArray(freshPreviewEnvelope.projectFilesChanged) && freshPreviewEnvelope.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "fresh-clone preview did not report exactly two project artifacts");
+    assert(Array.isArray(freshPreviewEnvelope.projectFilesChanged) && freshPreviewEnvelope.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "fresh-clone preview did not report exactly three project artifacts");
     assert((await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout === beforeFreshProject, "fresh-clone dry-run changed project files");
     assert(isolatedUserStateFingerprint(workspace) === beforeFreshUserState, "fresh-clone dry-run changed isolated user state");
     const freshCiArgs = exactCiArgs(freshPreviewEnvelope, "fresh-clone setup preview");
