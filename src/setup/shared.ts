@@ -4,10 +4,12 @@ import { createHash } from "node:crypto";
 import type { JsonObject } from "../config.js";
 import { atomicWriteText } from "../runtime/user-paths.js";
 import { SetupFailure, type ArtifactEvidence } from "./types.js";
+import { planAgentsFile } from "./agents-rules.js";
 
 const WORKFLOW_FILE = ".github/workflows/hy-workflow.yml";
 const CONFIG_FILE = "hy-workflow.json";
-export const SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE] as const;
+export const AGENTS_FILE = "AGENTS.md";
+export const SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE, AGENTS_FILE] as const;
 
 function inside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
@@ -54,10 +56,12 @@ function write(root: string, relative: string, next: string): void {
 }
 
 export function sharedArtifactPlan(root: string, config: JsonObject): Array<{ file: string; content: string }> {
-  const values = [
+  const values: Array<{ file: string; content: string }> = [
     { file: CONFIG_FILE, content: JSON.stringify(config, null, 2) + "\n" },
     { file: WORKFLOW_FILE, content: templateText() },
   ];
+  const agents = planAgentsFile(root);
+  if (agents.changed) values.push({ file: AGENTS_FILE, content: agents.nextContent });
   return values.filter(item => changed(root, item.file, item.content));
 }
 

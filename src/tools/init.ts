@@ -71,7 +71,7 @@ function documentationFiles(root: string, docsDir: string): string[] {
   return files;
 }
 
-export function projectReadinessIssues(root: string, candidate?: JsonObject): Array<{ code: string; message: string; recovery: string }> {
+export function projectReadinessIssues(root: string, candidate?: JsonObject, options: { forSetup?: boolean } = {}): Array<{ code: string; message: string; recovery: string }> {
   const config = candidate ?? requireRuntimeConfig(root);
   const issues: Array<{ code: string; message: string; recovery: string }> = [];
   const branch = validateBaseBranch(root, config.project.baseBranch as string);
@@ -84,9 +84,13 @@ export function projectReadinessIssues(root: string, candidate?: JsonObject): Ar
   for (const issue of inspectDocumentation(root, docs, { includeAgents: false }).issues) {
     issues.push({ code: issue.code, message: issue.message, recovery: issue.recovery });
   }
-  if (fs.existsSync(path.join(root, "AGENTS.md"))) {
+  if (!options.forSetup && fs.existsSync(path.join(root, "AGENTS.md"))) {
     for (const issue of inspectDocumentation(root, ["AGENTS.md"]).issues.filter(item => item.code === "STALE_MANAGED_AGENTS")) {
-      issues.push({ code: issue.code, message: issue.message, recovery: issue.recovery });
+      issues.push({
+        code: issue.code,
+        message: issue.message,
+        recovery: "Run hy-workflow setup in the project root; setup automatically migrates the managed AGENTS.md block while preserving content outside the markers.",
+      });
     }
   }
   return issues;

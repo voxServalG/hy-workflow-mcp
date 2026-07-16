@@ -24,20 +24,20 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-验证 schema-3 deployment 的版本、direct-bin/MCP catalog 证据和两个团队 artifact hash，并检查根 `hy-workflow.json`、`.github/workflows/hy-workflow.yml`、可解析的 `project.baseBranch` 与非空文档事实，然后把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
+验证 schema-3 deployment 的版本、direct-bin/MCP catalog 证据与团队/托管 artifact hash（`hy-workflow.json`、`.github/workflows/hy-workflow.yml`、以及 `AGENTS.md` managed block），并检查可解析的 `project.baseBranch` 与非空文档事实，然后把 workflow state 初始化到 identity-scoped user state。`hy_init` 不写 `AGENTS.md`、`.gitignore`、工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [], allowedTools: ["hy_read_docs", "hy_status"] }`
 - **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
 
-`hy-workflow.json` 是唯一有效项目配置源。根配置必须显式包含 runtime 必填字段；默认推断、含 mode 的旧 manifest、项目内 legacy stamp 或 compatibility JSON 都不能绕过。缺少/漂移的团队 artifact、缺失 ref、空文档、无实质事实或过期 managed AGENTS version 都返回结构化 stop envelope，agent 必须请用户修复或重新运行 setup。
+`hy-workflow.json` 是唯一有效项目配置源。根配置必须显式包含 runtime 必填字段；默认推断、含 mode 的旧 manifest、项目内 legacy stamp 或 compatibility JSON 都不能绕过。缺少/漂移的团队 artifact、缺失 ref、空文档或无实质事实都返回结构化 stop envelope；过期 managed AGENTS block 同样阻断 plan，但 recovery 明确指向 `hy-workflow setup`，由 setup 在事务内自动迁移该 block（保留块外自定义指令）。
 
 MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input.
 
 旧 local/runtime artifacts 已被跟踪时仍返回诊断，但不会自动删除或改写。
 
-Artifact contract: setup 固定且只维护 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`，其变化单独走 artifact sync PR。unset/hy_init 不删除或改写团队文件；deployment/state/cache、客户端配置和 compatibility JSON 不提交。
+Artifact contract: setup 固定维护根 `hy-workflow.json`、`.github/workflows/hy-workflow.yml`，并在 `AGENTS.md` 中托管 `<!-- hy-workflow-rules -->` 块（块外内容团队所有，setup 自动迁移块内版本但不改写块外指令）。unset/hy_init 不删除或改写团队文件；deployment/state/cache、客户端配置和 compatibility JSON 不提交。
 
 ## Session setup check
 

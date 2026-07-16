@@ -57,6 +57,9 @@ function writeStamp(root: string, setupVersion: string, tools = defaultStampTool
   fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
   fs.writeFileSync(path.join(root, "hy-workflow.json"), "{}\n", "utf-8");
   fs.writeFileSync(path.join(root, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\n", "utf-8");
+  let agents = "";
+  try { agents = fs.readFileSync(path.join(process.cwd(), "AGENTS.md"), "utf-8"); } catch { agents = "<!-- hy-workflow-rules -->\n<!-- hy-workflow-rules-version: 2026.07.16.1 -->\nplaceholder\n<!-- /hy-workflow-rules -->\n"; }
+  fs.writeFileSync(path.join(root, "AGENTS.md"), agents, "utf-8");
   writeDeployment(root, {
     setupVersion,
     mode: "shared",

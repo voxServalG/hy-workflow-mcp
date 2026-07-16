@@ -20,12 +20,15 @@ The Node TUI shows its intro/spinner before a bounded inspection of Codex, Claud
 
 ## Single deployment model
 
-Setup always creates or updates exactly two team-owned repository files:
+Setup creates or updates repository files in two categories:
 
+Team-owned configuration and CI:
 - `hy-workflow.json`
 - `.github/workflows/hy-workflow.yml`
 
-Review and commit those files in a dedicated setup artifact sync PR. No other setup output belongs in the repository. Deployment, registry, workflow state, scope locks, DocsGraph cache, and client MCP configuration remain outside the repository. External data is keyed by a stable project identity derived from canonical project root, Git common dir, and origin remote:
+Agent instruction injection in `AGENTS.md`. Setup owns only the `<!-- hy-workflow-rules --> ... <!-- /hy-workflow-rules -->` block. When `AGENTS.md` does not exist, setup creates it with the current managed block. When the file exists but the block is missing, stale, or malformed (missing version marker, removed setup flags, old mode text), setup replaces just that block in place while preserving every byte outside the two markers. Custom agent instructions written before or after the managed block are never overwritten. Setup refuses to silently overwrite a hand-edited `hy-workflow.json` or workflow template; those changes still go through the artifact drift review path described below.
+
+Review and commit `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and any auto-migrated `AGENTS.md` managed block in a dedicated setup artifact sync PR. All other setup state (deployment, registry, workflow state, scope locks, DocsGraph cache, client MCP configuration) remains outside the repository. External data is keyed by a stable project identity derived from canonical project root, Git common dir, and origin remote:
 
 | Data | Linux default | macOS default | Windows default |
 | --- | --- | --- | --- |
@@ -46,7 +49,7 @@ The packaged template and root `hy-workflow.json` are canonical. Profile inferen
 
 MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input.
 
-Setup accepts an existing `docs`/`documentation`/`doc` directory, or `.` only when the repository root has a case-insensitive README/index document. It fails closed if that system is empty, contains no substantive project facts, is dominated by excluded dependency/example/fixture/generated trees, or has a managed AGENTS block without `hy-workflow-rules-version: 2026.07.16.1`. Create/repair the maintained docs or select another project-relative directory, then rerun:
+Setup accepts an existing `docs`/`documentation`/`doc` directory, or `.` only when the repository root has a case-insensitive README/index document. It fails closed if that system is empty, contains no substantive project facts, or is dominated by excluded dependency/example/fixture/generated trees. A managed AGENTS block that lacks the current `hy-workflow-rules-version` is migrated automatically during setup rather than blocking the run. Create/repair the maintained docs or select another project-relative directory, then rerun:
 
 ```bash
 hy-workflow config --apply --json --docs-dir '<existing-project-relative-dir>'
@@ -75,9 +78,9 @@ hy-workflow setup --yes --clients codex --ci-command 'npm test' --accept-artifac
 hy-workflow unset --yes --clients all --remove-global --json
 ```
 
-Non-interactive use requires `--yes`, explicit `--clients`, and either existing valid `ci.commands` or explicit repeatable `--ci-command`. A bare `--accept-ci-commands` is rejected because it does not identify what was reviewed. `--dry-run` reports project evidence, CI candidates, artifact diff/hash/change-kind and confirmation requirements without writing; JSON emits one envelope. To apply drift non-interactively, pass `--accept-artifact-changes` plus one exact `--review-artifact <file>:<before-sha256|absent>:<after-sha256>` for every accepted diff. Stale or self-generated approval hashes fail closed.
+Non-interactive use requires `--yes`, explicit `--clients`, and either existing valid `ci.commands` or explicit repeatable `--ci-command`. A bare `--accept-ci-commands` is rejected because it does not identify what was reviewed. `--dry-run` reports project evidence, CI candidates, artifact diff/hash/change-kind and confirmation requirements without writing; JSON emits one envelope. To apply drift non-interactively on `hy-workflow.json` or `.github/workflows/hy-workflow.yml`, pass `--accept-artifact-changes` plus one exact `--review-artifact <file>:<before-sha256|absent>:<after-sha256>` for every accepted diff. Stale or self-generated approval hashes fail closed.
 
-Legacy projects with a stale managed `AGENTS.md` block remain human-owned: setup never edits that file. `hy-workflow config --print-managed-rules` prints the versioned canonical block bundled in the installed npm package. Replace only the marked block, review/commit that project change separately, then rerun setup.
+Setup auto-migrates the managed `AGENTS.md` block without an acceptance flag: existing hand-written content outside the markers is preserved byte-for-byte, and malformed legacy blocks are rewritten to the canonical versioned block.
 
 ## CI enforcement
 

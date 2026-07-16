@@ -9,6 +9,7 @@ import { readDeployment } from "../runtime/deployment.js";
 import { executableInvocation, resolveExecutable, runExecutable } from "./clients/index.js";
 import { assertSafeEffectiveConfig } from "./clients/effective.js";
 import { contentEvidence, SHARED_PROJECT_FILES, sharedArtifactPlan } from "./shared.js";
+import { planAgentsFile } from "./agents-rules.js";
 import {
   MCP_DEFINITIONS,
   SetupFailure,
@@ -58,21 +59,24 @@ export function previewArtifactChanges(root: string, config: any): ArtifactChang
     const before = existed ? fs.readFileSync(target) : null;
     const beforeHash = before ? digest(before) : null;
     const afterHash = contentEvidence(item.content).sha256;
-    const recorded = deployment?.schemaVersion === "3" ? deployment.artifacts[item.file]?.sha256 : null;
+    const isAgentsManagedBlock = item.file === "AGENTS.md";
+    const recorded = !isAgentsManagedBlock && deployment?.schemaVersion === "3" ? deployment.artifacts[item.file]?.sha256 : null;
     const changeKind: ArtifactChange["changeKind"] = !existed
       ? "create"
-      : recorded && recorded === beforeHash
+      : isAgentsManagedBlock
         ? "managed_update"
-        : recorded
-          ? "drift"
-          : "unmanaged_existing";
+        : recorded && recorded === beforeHash
+          ? "managed_update"
+          : recorded
+            ? "drift"
+            : "unmanaged_existing";
     return {
       file: item.file,
       changeKind,
       beforeHash,
       afterHash,
       diff: boundedDiff(item.file, before?.toString("utf-8") ?? "", item.content),
-      requiresAcceptance: existed && beforeHash !== afterHash,
+      requiresAcceptance: !isAgentsManagedBlock && existed && beforeHash !== afterHash,
     };
   });
 }
@@ -198,6 +202,7 @@ export async function runSetupPreflight(
   const artifactExpectedHashes: Record<string, string> = options.action === "setup" ? {
     "hy-workflow.json": digest(JSON.stringify(config, null, 2) + "\n"),
     ".github/workflows/hy-workflow.yml": digest(fs.readFileSync(new URL("../../templates/hy-workflow.yml", import.meta.url))),
+    "AGENTS.md": digest(planAgentsFile(root).nextContent),
   } : {};
   const artifactBeforeHashes = Object.fromEntries(SHARED_PROJECT_FILES.map(file => {
     const target = path.join(root, file);

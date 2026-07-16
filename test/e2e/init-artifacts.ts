@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { SETUP_VERSION } from "../../src/bootstrap.js";
@@ -7,6 +7,8 @@ import { ensureConfigDefaults } from "../../src/config.js";
 import { writeDeployment } from "../../src/runtime/deployment.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { sharedArtifactEvidence, SHARED_PROJECT_FILES } from "../../src/setup/shared.js";
+import { AGENTS_OPEN, AGENTS_CLOSE } from "../../src/setup/agents-rules.js";
+import { MANAGED_RULES_VERSION } from "../../src/policy/docs.js";
 import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, initArtifactGuidance, trackedLocalArtifactDiagnostics } from "../../src/tools/init.js";
 
 function assert(condition: unknown, message: string): void {
@@ -30,6 +32,10 @@ function project(prefix: string): string {
   writeFileSync(join(root, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\non: [push]\njobs: {}\n");
   writeFileSync(join(root, "README.md"), "# Test\n");
   writeFileSync(join(root, "package.json"), "{}\n");
+  const canonicalSource = readFileSync(join(process.cwd(), "AGENTS.md"), "utf-8");
+  const match = canonicalSource.match(new RegExp(`${AGENTS_OPEN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${AGENTS_CLOSE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  const agentsBlock = match?.[0]?.includes(`hy-workflow-rules-version: ${MANAGED_RULES_VERSION}`) ? match[0] : null;
+  if (agentsBlock) writeFileSync(join(root, "AGENTS.md"), agentsBlock + "\n");
   git(root, ["add", "."]);
   git(root, ["commit", "-m", "init"]);
   return root;

@@ -145,7 +145,7 @@ export function inspectDocumentation(
           code: "STALE_MANAGED_AGENTS",
           file: agents,
           message: `Managed AGENTS rules are stale: ${reasons.join("; ")}.`,
-          recovery: "Run hy-workflow config --print-managed-rules, manually replace only the managed hy-workflow block, review that project diff, then rerun setup.",
+          recovery: "Run hy-workflow setup in the project root; setup automatically migrates the managed hy-workflow block inside AGENTS.md while preserving all content outside the <!-- hy-workflow-rules --> markers.",
         });
       }
     }

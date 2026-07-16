@@ -183,7 +183,7 @@ export async function runSetupCli(
             recovery: configResult.suggestedCommand || configResult.hint,
           }));
         } else if (candidate) {
-          try { readinessIssues = projectReadinessIssues(projectRoot, candidate); }
+          try { readinessIssues = projectReadinessIssues(projectRoot, candidate, { forSetup: true }); }
           catch (error: any) { readinessIssues = [{ code: "SETUP_PREFLIGHT_FAILED", message: error?.message ?? String(error), recovery: configResult.hint }]; }
         } else readinessIssues = [{ code: "SETUP_PREFLIGHT_FAILED", message: configResult.display.body, recovery: configResult.hint }];
         return { detections, candidate, ciCandidates, hasCiCommands, readinessIssues };

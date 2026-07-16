@@ -262,39 +262,28 @@ async function ensureProjectConfig(workspace: AcceptanceWorkspace, root: string,
   }
 }
 
-async function verifyStaleManagedAgentsBoundary(workspace: AcceptanceWorkspace, root: string, repo: AcceptanceRepo): Promise<void> {
+async function verifyStaleManagedAgentsAutoMigration(workspace: AcceptanceWorkspace, root: string, repo: AcceptanceRepo): Promise<{ original: string; file: string }> {
+  const file = join(root, "AGENTS.md");
+  assert(existsSync(file), repo.id + " legacy fixture has no AGENTS.md to auto-migrate");
   const beforeProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
   const beforeUserState = isolatedUserStateFingerprint(workspace);
-  const result = await run("hy-workflow", ["setup", "--yes", "--clients", "codex", "--dry-run", "--json", "--language", "en"], {
+  const original = readFileSync(file, "utf8");
+  assert(MANAGED_RULES_BLOCK.test(original), repo.id + " legacy AGENTS.md has no managed rules block to migrate");
+  const dryRun = await run("hy-workflow", ["setup", "--yes", "--clients", "codex", "--dry-run", "--json", "--language", "en"], {
     cwd: root,
     env: workspace.env,
     timeoutMs: 30_000,
     allowFailure: true,
   });
-  const output = result.stdout + result.stderr;
-  assert(result.status !== 0, repo.id + " stale managed AGENTS rules must block setup");
-  assert(/STALE_MANAGED_AGENTS|managed AGENTS rules are stale|managed rules version/i.test(output), repo.id + " stale AGENTS result did not explain the migration boundary");
-  const afterProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
-  assert(afterProject === beforeProject, repo.id + " stale-AGENTS preflight changed project files");
-  assert(isolatedUserStateFingerprint(workspace) === beforeUserState, repo.id + " stale-AGENTS preflight changed isolated user state");
-}
-
-async function migrateManagedAgentsExplicitly(workspace: AcceptanceWorkspace, root: string, repo: AcceptanceRepo): Promise<TestOwnedMigration> {
-  const file = join(root, "AGENTS.md");
-  assert(existsSync(file), repo.id + " legacy fixture has no AGENTS.md to migrate");
-  const original = readFileSync(file, "utf8");
-  const exported = await run("hy-workflow", ["config", "--print-managed-rules"], {
-    cwd: root,
-    env: workspace.env,
-    timeoutMs: 20_000,
-  });
-  const canonical = exported.stdout.match(MANAGED_RULES_BLOCK)?.[0];
-  assert(canonical, "installed hy-workflow did not export a canonical managed rules block");
-  assert(MANAGED_RULES_BLOCK.test(original), repo.id + " legacy AGENTS.md has no managed rules block");
-  const migrated = original.replace(MANAGED_RULES_BLOCK, canonical);
-  assert(migrated !== original, repo.id + " legacy AGENTS.md unexpectedly already matches the canonical managed block");
-  writeFileSync(file, migrated);
-  return { file, original, migrated };
+  const output = dryRun.stdout + dryRun.stderr;
+  assert(dryRun.status === 0, repo.id + " dry-run with stale AGENTS must not block setup: " + output);
+  const envelope = parseJsonOutput(dryRun.stdout);
+  assert(envelope.ok === true, repo.id + " dry-run envelope must be ok for stale AGENTS auto-migration");
+  assert(Array.isArray(envelope.artifactChanges), repo.id + " dry-run must expose artifact changes");
+  assert(envelope.artifactChanges.some((item: any) => item.file === "AGENTS.md"), repo.id + " dry-run must report AGENTS.md managed_update");
+  assert((await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout === beforeProject, repo.id + " dry-run must not modify project files");
+  assert(isolatedUserStateFingerprint(workspace) === beforeUserState, repo.id + " dry-run must not modify isolated user state");
+  return { original, file };
 }
 
 function isTargetCodexTable(header: string): boolean {
@@ -530,15 +519,14 @@ export async function runRepositoryScenario(
     const freshEnvelope = parseJsonOutput(freshSetup.stdout);
     assert(freshEnvelope.ok === true, "fresh-clone setup did not return ok=true");
     const freshChanged = await assertProjectBoundary(root, workspace.env);
-    assert(freshChanged.includes("hy-workflow.json") && freshChanged.includes(".github/workflows/hy-workflow.yml") && freshChanged.length === 2, "fresh-clone setup did not write exactly the two team artifacts");
+    assert(freshChanged.includes("hy-workflow.json") && freshChanged.includes(".github/workflows/hy-workflow.yml") && freshChanged.includes("AGENTS.md"), "fresh-clone setup must write the three managed artifacts");
   }
 
   await ensureProjectConfig(workspace, root, repo);
-  let managedAgentsMigration: TestOwnedMigration | null = null;
+  let managedAgentsOriginal: { original: string; file: string } | null = null;
   let codexProjectMigration: TestOwnedMigration | null = null;
   if (repo.category === "legacy") {
-    await verifyStaleManagedAgentsBoundary(workspace, root, repo);
-    managedAgentsMigration = await migrateManagedAgentsExplicitly(workspace, root, repo);
+    managedAgentsOriginal = await verifyStaleManagedAgentsAutoMigration(workspace, root, repo);
     const injectedCodexFixture = ensureLegacyCodexFixture(root);
     await verifyCodexProjectShadowBoundary(workspace, root, repo);
     codexProjectMigration = migrateCodexProjectSectionsExplicitly(root, repo);
@@ -589,11 +577,20 @@ export async function runRepositoryScenario(
   ], { cwd: root, env: workspace.env, timeoutMs: 45_000 });
   const setupEnvelope = parseJsonOutput(setup.stdout);
   assert(setupEnvelope.ok === true, repo.id + " setup did not return ok=true");
-  const testOwnedFiles = [managedAgentsMigration ? "AGENTS.md" : null, codexProjectMigration ? ".codex/config.toml" : null]
+  const testOwnedFiles = [codexProjectMigration ? ".codex/config.toml" : null]
     .filter((file): file is string => file !== null);
-  const changed = await assertProjectBoundary(root, workspace.env, testOwnedFiles);
+  const changed = await assertProjectBoundary(root, workspace.env, ["AGENTS.md", ...testOwnedFiles]);
   assert(changed.includes("hy-workflow.json") || existsSync(join(root, "hy-workflow.json")), repo.id + " setup did not maintain hy-workflow.json");
   assert(existsSync(join(root, ".github", "workflows", "hy-workflow.yml")), repo.id + " setup did not maintain workflow");
+  if (repo.category === "legacy") {
+    assert(changed.includes("AGENTS.md"), repo.id + " setup must auto-migrate stale AGENTS.md");
+    const migrated = readFileSync(join(root, "AGENTS.md"), "utf8");
+    assert(MANAGED_RULES_BLOCK.test(migrated), repo.id + " auto-migrated AGENTS.md must contain a canonical managed block");
+    const block = migrated.match(MANAGED_RULES_BLOCK)?.[0] ?? "";
+    assert(block.includes("hy-workflow-rules-version:"), repo.id + " auto-migrated block must carry a version marker");
+  const exported = await run("hy-workflow", ["config", "--print-managed-rules"], { cwd: root, env: workspace.env, timeoutMs: 20_000 });
+  assert(exported.status === 0 && /<!--\s*hy-workflow-rules-version:/.test(exported.stdout), repo.id + " installed package must still export canonical managed rules for offline reference");
+  }
 
   const beforeRepeatProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
   const beforeRepeatClients = existsSync(workspace.env.HY_ACCEPTANCE_CLIENT_STATE!)
@@ -639,9 +636,8 @@ export async function runRepositoryScenario(
   assert(existsSync(join(root, ".github", "workflows", "hy-workflow.yml")), "unset removed shared workflow");
   assertUnsetExternalCleanup(workspace, repo, setupEnvelope.projectId, unsetEnvelope);
 
-  if (managedAgentsMigration) {
-    assert(readFileSync(managedAgentsMigration.file, "utf8") === managedAgentsMigration.migrated, repo.id + " setup or unset modified AGENTS.md after explicit human migration");
-    writeFileSync(managedAgentsMigration.file, managedAgentsMigration.original);
+  if (managedAgentsOriginal) {
+    writeFileSync(managedAgentsOriginal.file, managedAgentsOriginal.original);
   }
   if (codexProjectMigration) {
     assert(readFileSync(codexProjectMigration.file, "utf8") === codexProjectMigration.migrated, repo.id + " setup or unset modified project .codex/config.toml after explicit human migration");
@@ -669,7 +665,7 @@ export async function runRepositoryScenario(
       changed,
       docsChars: docs.chars,
       lintPressure,
-      managedAgentsMigration: Boolean(managedAgentsMigration),
+      managedAgentsAutoMigration: Boolean(managedAgentsOriginal),
       codexProjectMigration: Boolean(codexProjectMigration),
       workspaceBytes,
     },
