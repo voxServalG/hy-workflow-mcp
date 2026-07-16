@@ -1,5 +1,6 @@
 import { readState, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash, documentReadHealth } from "../state.js";
-import { buildImplementationManifest, runAllChecks } from "../checks.js";
+import { buildImplementationManifest } from "../checks.js";
+import { runAllChecksAsync } from "../checks-async.js";
 import { implementationDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
@@ -26,7 +27,7 @@ export async function handleVerify(): Promise<ToolResult> {
     });
   }
 
-  const report = runAllChecks(root, state);
+  const report = await runAllChecksAsync(root, state);
 
   if (!report.allPassed) {
     if (report.status === "amend_required" && report.suggestedAmendment) {

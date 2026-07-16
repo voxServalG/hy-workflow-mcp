@@ -30,16 +30,16 @@ export interface ExecResult {
   durationMs: number;
 }
 
-const CHECK_COMMAND_TIMEOUT_MS = 90_000;
-const CHECK_TEST_TIMEOUT_MS = 1_200_000;
-const CHECK_PACK_TIMEOUT_MS = 300_000;
-const ACCEPTANCE_TOTAL_TIMEOUT_MS = 2_700_000;
-const ACCEPTANCE_CLEANUP_ALLOWANCE_MS = 120_000;
-const CHECK_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
+export const CHECK_COMMAND_TIMEOUT_MS = 90_000;
+export const CHECK_TEST_TIMEOUT_MS = 1_200_000;
+export const CHECK_PACK_TIMEOUT_MS = 300_000;
+export const ACCEPTANCE_TOTAL_TIMEOUT_MS = 2_700_000;
+export const ACCEPTANCE_CLEANUP_ALLOWANCE_MS = 120_000;
+export const CHECK_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
 
 export type CheckCommand = string | { file: string; args: string[] };
 
-const CHECK_COMMAND_SUPERVISOR = String.raw`
+export const CHECK_COMMAND_SUPERVISOR = String.raw`
 const { spawn } = require("node:child_process");
 const payload = JSON.parse(Buffer.from(process.argv[1], "base64").toString("utf8"));
 const started = Date.now();
@@ -214,10 +214,10 @@ function execWithOneRetry(cmd: string, cwd?: string): ExecResult {
     : { ...second, stderr: `attempt 1: ${first.stderr || first.stdout}; attempt 2: ${second.stderr || second.stdout}` };
 }
 
-function ok(title: string, layer: string, detail = "", hard = true): CheckResult {
+export function ok(title: string, layer: string, detail = "", hard = true): CheckResult {
   return { layer, name: title, passed: true, detail: detail || "OK", hard };
 }
-function fail(title: string, layer: string, detail = "", hard = true): CheckResult {
+export function fail(title: string, layer: string, detail = "", hard = true): CheckResult {
   return { layer, name: title, passed: false, detail: detail || "FAILED", hard };
 }
 
@@ -225,12 +225,12 @@ function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort();
 }
 
-function formatExit(r: ExecResult): string {
+export function formatExit(r: ExecResult): string {
   if (r.timedOut) return `timeout after ${r.timeoutMs}ms`;
   return r.status === null ? "unknown exit" : `exit ${r.status}`;
 }
 
-function findPython(): string {
+export function findPython(): string {
   const candidates = ["python3", "python", "py"];
   for (const cmd of candidates) {
     try {
