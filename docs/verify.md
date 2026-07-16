@@ -74,7 +74,7 @@ Compile checks are built per language from `hy-workflow.json: project.codeExt` a
 
 - `.ts` / `.tsx` projects run `npx tsc --noEmit`.
 - JavaScript-only projects (`.js`, `.jsx`, `.mjs`, `.cjs`) do not automatically require TypeScript. If a `tsconfig.json` exists, `npx tsc --noEmit` still runs because the project has an explicit TS compile configuration.
-- Python projects enumerate configured `project.codeDirs`, include top-level files such as `src/app.py`, include nested files, and do not hard-code `src/**/*.py`.
+- Python projects enumerate configured `project.codeDirs` recursively (for example files matching `*.py` / `*.pyw` / `*.pyi`), and also include top-level `.py` siblings at the project root; the glob is driven by configured directories rather than a hard-coded `src/**/*.py` assumption.
 - Mixed-language projects run every relevant compile check, so a `.ts + .py` project gets both TypeScript and Python compile evidence.
 
 ## Lint JSON Parsing

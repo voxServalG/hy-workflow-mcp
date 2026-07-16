@@ -82,7 +82,8 @@ MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be 
 
 Setup and doctor use `type: "setup"` with a stable subtype and code. A setup
 result may report success only after its effective client definitions, direct
-installed binaries, bounded MCP handshakes, both team artifacts, deployment,
+installed binaries, bounded MCP handshakes, all three team artifacts (`hy-workflow.json`,
+`.github/workflows/hy-workflow.yml`, and the managed `AGENTS.md` block), deployment,
 registry, and ownership postconditions agree. Important codes include:
 
 - `SETUP_PREFLIGHT_FAILED`, `SETUP_BINARY_MISSING`, and

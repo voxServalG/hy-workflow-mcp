@@ -17,7 +17,7 @@ The public package `@voxstudio/hy-workflow` exposes one bin: `hy-workflow`. Runn
 - `hy-workflow config --apply-suggested --json`
 - `hy-workflow lint-contract`
 
-`setup`/`unset` share one Node engine. The TUI immediately shows progress, then selects installed clients and binds confirmation to exact native CI commands and artifact before/after hashes. Non-interactive setup requires existing CI config or explicit repeatable `--ci-command`; artifact replacement additionally requires `--accept-artifact-changes` plus exact repeatable `--review-artifact` tuples from dry-run. Bare approval flags, stale hashes, dry-run and cancellation never authorize later values. There is no mode selector: only `hy-workflow.json` and `.github/workflows/hy-workflow.yml` are team files, while deployment/state/cache/client config stay external.
+`setup`/`unset` share one Node engine. The TUI immediately shows progress, then selects installed clients and binds confirmation to exact native CI commands and artifact before/after hashes. Non-interactive setup requires existing CI config or explicit repeatable `--ci-command`; artifact replacement additionally requires `--accept-artifact-changes` plus exact repeatable `--review-artifact` tuples from dry-run. Bare approval flags, stale hashes, dry-run and cancellation never authorize later values. There is no mode selector: team-owned repository surfaces are `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the `<!-- hy-workflow-rules -->` managed block in `AGENTS.md` (content outside the markers is team-owned and preserved byte-for-byte), while deployment/state/cache/client config stay external.
 
 ## Config safety
 
