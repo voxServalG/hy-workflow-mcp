@@ -76,7 +76,7 @@ if (process.platform !== "win32") {
   assert(payload.tools?.["docs-gardener"]?.version === "docs-gardener-test", "non-interactive setup must inspect the isolated docs-gardener version");
   assert(fs.realpathSync(payload.tools["docs-gardener"].executable) === fs.realpathSync(docsGardener), "non-interactive setup must not depend on a developer-machine docs-gardener binary");
   assert(/^[0-9a-f]{64}$/.test(payload.tools["docs-gardener"].catalogHash), "non-interactive setup must complete the docs-gardener MCP catalog handshake");
-  assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "non-interactive dry-run should report both planned team artifacts");
+  assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "non-interactive dry-run should report the three planned managed artifacts");
   assert(gitStatus(root) === before, "non-interactive dry-run must not touch the project");
   assert(fs.readFileSync(inheritedCodexConfig, "utf8") === poisonConfig, "non-interactive dry-run must not read or rewrite inherited Codex config");
   assert(!fs.existsSync(path.join(isolatedCodexHome, "config.toml")), "non-interactive dry-run must not create isolated Codex config");

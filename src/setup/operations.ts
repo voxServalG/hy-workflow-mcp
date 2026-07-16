@@ -612,7 +612,7 @@ async function executeInstall(
   };
   const { projectReadinessIssues } = await import("../tools/init.js");
   const assertReadiness = (candidate: JsonObject): void => {
-    const readiness = projectReadinessIssues(root, candidate);
+    const readiness = projectReadinessIssues(root, candidate, { forSetup: true });
     if (readiness.length) {
       throw new SetupFailure(
         "preflight",
@@ -661,7 +661,9 @@ async function executeInstall(
         false,
         file => {
           transaction.prepareExpected(path.join(root, file), expectedArtifactHashes[file]);
-          setupFailpoint(file === "hy-workflow.json" ? "shared:config" : "shared:workflow");
+          if (file === "hy-workflow.json") setupFailpoint("shared:config");
+          else if (file === ".github/workflows/hy-workflow.yml") setupFailpoint("shared:workflow");
+          else if (file === "AGENTS.md") setupFailpoint("shared:agents");
         },
         file => transaction.markApplied([path.join(root, file)]),
       );

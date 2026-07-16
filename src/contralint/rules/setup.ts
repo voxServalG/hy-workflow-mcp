@@ -25,6 +25,7 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
   const config = readText(context.root, "src/config.ts");
   const init = readText(context.root, "src/tools/init.ts");
   const runtimeProject = readText(context.root, "src/runtime/project.ts");
+  const sharedText = readText(context.root, "src/setup/shared.ts");
   for (const token of ["setup", "unset", "--clients", "--yes", "--json", "--dry-run"]) {
     if (!cli.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `setup CLI is missing ${token}.`, file: "src/setup-cli.ts" });
   }
@@ -38,7 +39,15 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
     findings.push({ rule: "setup", severity: "hard_fail", message: "setup TUI must not offer a deployment-mode choice.", file: "src/setup/prompts.ts" });
   }
   if (!operations.includes("writeSharedArtifacts(") || !operations.includes("SHARED_PROJECT_FILES") || operations.includes('options.mode === "shared"')) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "setup must always maintain the shared config and workflow artifacts.", file: "src/setup/operations.ts" });
+    findings.push({ rule: "setup", severity: "hard_fail", message: "setup must always maintain the shared config, workflow, and managed AGENTS block artifacts.", file: "src/setup/operations.ts" });
+  }
+  for (const token of ["planAgentsFile", "AGENTS_FILE", "outsidePreserved"]) {
+    if (!exists(context.root, "src/setup/agents-rules.ts") || !readText(context.root, "src/setup/agents-rules.ts").includes(token)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `agents-rules module must expose ${token}.`, file: "src/setup/agents-rules.ts" });
+    }
+  }
+  if (!sharedText?.includes("AGENTS_FILE") || !sharedText?.includes("planAgentsFile")) {
+    findings.push({ rule: "setup", severity: "hard_fail", message: "shared artifact plan must include AGENTS.md managed by agents-rules.", file: "src/setup/shared.ts" });
   }
   for (const client of ["codex", "claude", "opencode"]) {
     if (!operations.includes(client)) findings.push({ rule: "setup", severity: "hard_fail", message: `setup operations must support ${client}.`, file: "src/setup/operations.ts" });

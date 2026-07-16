@@ -50,9 +50,9 @@ fs.mkdirSync(path.dirname(legacyConfigPath), { recursive: true });
 fs.writeFileSync(legacyConfigPath, legacyConfigText, "utf-8");
 const before = gitStatus(root);
 const setup = await executeSetup(root, options, [adapter]);
-assert(setup.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "setup should write exactly the shared config and workflow");
+assert(setup.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "setup should write the shared config, workflow, and AGENTS.md managed block");
 const setupStatus = gitStatus(root);
-assert(setupStatus.includes("hy-workflow.json") && setupStatus.includes(".github/workflows/hy-workflow.yml"), "setup should expose exactly the two team artifacts to git");
+assert(setupStatus.includes("hy-workflow.json") && setupStatus.includes(".github/workflows/hy-workflow.yml") && setupStatus.includes("AGENTS.md"), "setup should expose the three managed artifacts to git");
 assert(adapter.definitions.size === 2, "setup should configure both owned MCP servers");
 const setupOwnership = readOwnership(root);
 assert(
@@ -61,7 +61,7 @@ assert(
   "ownership must preserve both locked preflight baselines instead of a sibling-created transaction snapshot",
 );
 assert(readDeployment(root)?.clients[0] === "codex" && readDeployment(root)?.mode === "shared", "setup should register a shared project deployment");
-assert(readDeployment(root)?.projectFiles.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "deployment should own both shared artifacts even when already current");
+assert(readDeployment(root)?.projectFiles.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "deployment should own the shared artifacts and AGENTS.md");
 assert(projectPaths(root).config.includes(projectPaths(root).identity.id), "project config should be identity-scoped");
 
 adapter.failRemove = "docs-gardener";

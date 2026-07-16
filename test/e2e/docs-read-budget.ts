@@ -119,6 +119,7 @@ try {
   writeState(planState());
   const stale = await handleReadDocs({ stage: "before_plan", task: "plan a feature" });
   assert(stale.error?.code === "STALE_MANAGED_AGENTS" && stale.stop_here, `stale managed AGENTS rules must block planning: ${JSON.stringify(stale)}`);
+  assert(/hy-workflow setup/.test(stale.hint ?? ""), "stale AGENTS hint must point to setup auto-migration");
 } finally {
   process.chdir(originalCwd);
 }

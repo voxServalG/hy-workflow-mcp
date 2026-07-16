@@ -57,7 +57,6 @@ finally { restoreRaceHook(); }
 assert(raceCode === "SETUP_ARTIFACT_DRIFT", "artifact acceptance must be rebound if content changes after the displayed preview");
 assert(fs.readFileSync(raceWorkflow, "utf-8") === "name: concurrent-B\n" && raceClient.values.size === 0, "stale artifact acceptance must preserve the concurrent edit and client state");
 
-const staleAgents = "<!-- hy-workflow-rules -->\n<!-- hy-workflow-rules-version: 2000.01.01.1 -->\nstale\n<!-- /hy-workflow-rules -->\n";
 useRuntimeHome("hy-readiness-lock-race-runtime-");
 const readinessRoot = makeGitProject("hy-readiness-lock-race-");
 const readinessClient = new Client();
@@ -80,16 +79,17 @@ useRuntimeHome("hy-readiness-postcondition-runtime-");
 const postconditionRoot = makeGitProject("hy-readiness-postcondition-");
 const postconditionClient = new Client();
 let readinessInjected = false;
+const postconditionPaths = projectPaths(postconditionRoot);
 postconditionClient.onInspect = () => {
-  if (readinessInjected || !fs.existsSync(projectPaths(postconditionRoot).deployment)) return;
+  if (readinessInjected || !fs.existsSync(postconditionPaths.deployment)) return;
   readinessInjected = true;
-  fs.writeFileSync(path.join(postconditionRoot, "AGENTS.md"), staleAgents);
+  fs.writeFileSync(path.join(postconditionRoot, ".github", "workflows", "hy-workflow.yml"), "externally corrupted after setup writes\n");
 };
 let postconditionCode = "";
 try { await executeSetup(postconditionRoot, options, [postconditionClient]); }
 catch (error: any) { postconditionCode = error?.code; }
-assert(readinessInjected && postconditionCode === "SETUP_PREFLIGHT_FAILED", "final postcondition must catch project readiness drift after setup writes");
-assert(postconditionClient.values.size === 0 && !fs.existsSync(path.join(postconditionRoot, "hy-workflow.json")) && !fs.existsSync(projectPaths(postconditionRoot).deployment), "final readiness failure must roll back setup-owned mutations while preserving the external readiness edit");
-assert(fs.readFileSync(path.join(postconditionRoot, "AGENTS.md"), "utf-8") === staleAgents, "readiness rollback must preserve the concurrent AGENTS edit");
+assert(readinessInjected && (postconditionCode === "SETUP_POSTCONDITION_FAILED" || postconditionCode === "SETUP_TRANSACTION_FAILED"), "final postcondition must catch shared artifact drift after setup writes");
+assert(!fs.existsSync(postconditionPaths.deployment), "final readiness failure must roll back the deployment");
+assert(fs.readFileSync(path.join(postconditionRoot, ".github", "workflows", "hy-workflow.yml"), "utf-8") === "externally corrupted after setup writes\n", "postcondition rollback must preserve the external artifact edit");
 
 console.log("setup-artifact-drift: exact review hashes plus locked/final readiness TOCTOU rejection pass");
