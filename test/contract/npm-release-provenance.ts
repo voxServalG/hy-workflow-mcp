@@ -7,16 +7,23 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-const workflow = readFileSync(".github/workflows/npm-publish.yml", "utf8");
-const startMarker = "          node --input-type=module <<'NODE'\n";
-const start = workflow.indexOf(startMarker);
-const end = workflow.indexOf("\n          NODE", start + startMarker.length);
-assert(start >= 0 && end > start, "release provenance Node validator is missing");
-const validator = workflow
-  .slice(start + startMarker.length, end)
-  .split("\n")
-  .map(line => line.startsWith("          ") ? line.slice(10) : line)
-  .join("\n");
+function extractValidator(text: string): string {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const startMarker = "          node --input-type=module <<'NODE'\n";
+  const start = normalized.indexOf(startMarker);
+  const end = normalized.indexOf("\n          NODE", start + startMarker.length);
+  assert(start >= 0 && end > start, "release provenance Node validator is missing");
+  return normalized
+    .slice(start + startMarker.length, end)
+    .split("\n")
+    .map(line => line.startsWith("          ") ? line.slice(10) : line)
+    .join("\n");
+}
+
+const rawWorkflow = readFileSync(".github/workflows/npm-publish.yml", "utf8");
+const workflow = rawWorkflow.replace(/\r\n?/g, "\n");
+const validator = extractValidator(rawWorkflow);
+assert(extractValidator(workflow.replace(/\n/g, "\r\n")) === validator, "release provenance validator must parse identically with CRLF");
 
 function validate(version: string, tag: string, prerelease: boolean, expected: boolean): void {
   const root = mkdtempSync(join(tmpdir(), "hy-release-provenance-"));

@@ -11,13 +11,19 @@ function assert(condition: unknown, message: string): void {
 if (process.platform !== "win32") {
   const root = makeGitProject("hy-setup-noninteractive-");
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "hy-setup-noninteractive-runtime-"));
+  const home = path.join(runtime, "home");
+  const inheritedCodexConfig = path.join(home, ".codex", "config.toml");
+  const isolatedCodexHome = path.join(runtime, "codex-home");
+  const poisonConfig = "[mcp_servers.hy-workflow\n";
+  fs.mkdirSync(path.dirname(inheritedCodexConfig), { recursive: true });
+  fs.writeFileSync(inheritedCodexConfig, poisonConfig);
   const bin = path.join(runtime, "bin");
   fs.mkdirSync(bin);
   const codex = path.join(bin, "codex");
   fs.writeFileSync(codex, [
     "#!/bin/sh",
     "if [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi",
-    "if [ \"$1\" = \"mcp\" ] && [ \"$2\" = \"get\" ]; then exit 1; fi",
+    "if [ \"$1\" = \"mcp\" ] && [ \"$2\" = \"get\" ]; then echo \"MCP server not found\" >&2; exit 1; fi",
     "exit 0",
     "",
   ].join("\n"), { mode: 0o755 });
@@ -30,6 +36,12 @@ if (process.platform !== "win32") {
   ].join("\n"), { mode: 0o755 });
   const env = {
     ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    XDG_CONFIG_HOME: path.join(runtime, "xdg-config"),
+    XDG_STATE_HOME: path.join(runtime, "xdg-state"),
+    XDG_CACHE_HOME: path.join(runtime, "xdg-cache"),
+    CODEX_HOME: isolatedCodexHome,
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     HY_WORKFLOW_CONFIG_HOME: path.join(runtime, "config"),
     HY_WORKFLOW_STATE_HOME: path.join(runtime, "state"),
@@ -46,6 +58,8 @@ if (process.platform !== "win32") {
   assert(payload.ok && payload.dryRun && payload.mode === "shared", "non-interactive JSON should expose the single shared mode");
   assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "non-interactive dry-run should report both planned team artifacts");
   assert(gitStatus(root) === before, "non-interactive dry-run must not touch the project");
+  assert(fs.readFileSync(inheritedCodexConfig, "utf8") === poisonConfig, "non-interactive dry-run must not read or rewrite inherited Codex config");
+  assert(!fs.existsSync(path.join(isolatedCodexHome, "config.toml")), "non-interactive dry-run must not create isolated Codex config");
 
   const removedLocal = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--local", "--json"], { cwd: root, env, encoding: "utf-8" });
   const removedError = JSON.parse(removedLocal.stdout).error;
