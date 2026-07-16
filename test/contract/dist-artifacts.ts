@@ -14,6 +14,11 @@ const init = readDist("tools/init.js");
 const server = readDist("server.js");
 const readDocs = readDist("tools/read_docs.js");
 const syncDocs = readDist("tools/sync_docs.js");
+const pkg = JSON.parse(readFileSync(join(cwd(), "package.json"), "utf-8"));
+const publishWorkflow = readFileSync(join(cwd(), ".github", "workflows", "npm-publish.yml"), "utf-8");
+
+assert(pkg.scripts?.build === "npm run clean && tsc", "dist must always be rebuilt from an empty directory");
+assert(!publishWorkflow.includes("upload-artifact"), "compiled dist must never be uploaded as a GitHub Actions artifact");
 
 assert(!init.includes("npx --yes github:voxServalG/hy-harness"), "dist init must not execute hy-harness");
 assert(!init.includes("stdio: \"inherit\""), "dist init must not inherit stdio");

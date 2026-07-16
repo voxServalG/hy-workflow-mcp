@@ -25,9 +25,10 @@ The product should not become a large platform with many overlapping tools. The 
 The ideal first-time experience is:
 
 1. Install from README without reading all docs.
-2. Restart the MCP client.
-3. Ask the agent to call `hy_status`.
-4. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
+2. Run setup, review its project/client/CI evidence and the two team-file diffs, then commit those files through a focused PR.
+3. Restart the MCP client.
+4. Ask the agent to call `hy_status`.
+5. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
 
 ### `hy_status` Is The Dashboard
 
@@ -100,12 +101,12 @@ The workflow must continue to reject:
 - committing local/runtime artifacts;
 - skipping verification before commit;
 - using direct git or GitHub operations to bypass workflow gates;
-- treating setup/client compatibility artifacts as committed project source.
+- treating runtime, client, or compatibility artifacts as committed project source.
 
 Artifact boundaries stay central:
 
-- default setup/unset/hy_init: zero project and `.git` changes; config/state/cache stay in OS user directories;
-- explicit shared artifacts: `hy-workflow.json` and `.github/workflows/hy-workflow.yml`; legacy local/runtime/client artifacts stay untracked.
+- setup always maintains exactly `hy-workflow.json` and `.github/workflows/hy-workflow.yml` as team source;
+- unset and hy_init never delete or rewrite those team files; deployment/state/cache, client config, and legacy/runtime/compat artifacts stay external or untracked.
 
 ## Documentation Model
 
@@ -137,11 +138,11 @@ Each recipe should say when to use it, when not to use it, what can go wrong, wh
 
 ### P1: Make It Feel Like A Mature MCP Product
 
-- Add a doctor or Inspector recipe for MCP connection, client config, git remote, GitHub auth, docsDir, baseBranch, artifact ignore, and tool catalog consistency.
+- Keep the `hy-workflow doctor --offline --json` recipe aligned with effective client scopes, direct bins/catalogs, external state, baseBranch/docs readiness and artifact drift.
 - Add LLM-readable docs entry points such as `llms.txt` or an equivalent generated index.
 - Define profile/toolset language for audit, plan-only, local-dev, repo-ops, and promotion modes.
 - Generate public tool tables from contract metadata and enforce drift through contract lint.
-- Add manual tests or evals for happy path, verify-fail recovery, CI red stop, and promotion path.
+- Maintain release acceptance for real pinned repositories, isolated npm-tarball install, transaction faults, CI fail-closed, artifact boundaries and no remote writes; add focused evals for workflow recovery paths.
 
 ### P2: Increase Distribution And Trust
 
@@ -149,13 +150,14 @@ Each recipe should say when to use it, when not to use it, what can go wrong, wh
 - Add version policy, changelog discipline, migration notes, and deprecation paths.
 - Consider an optional UI/status page only after structured status output is reliable.
 - Add audit logging, telemetry/privacy switches, and stronger sensitive-output handling where appropriate.
-- Evaluate hosted or bridge modes without weakening local-first safety.
+- Evaluate hosted or bridge modes without weakening repository-minimal safety.
 
 ## Success Criteria
 
 hy-workflow-mcp is moving toward this vision when:
 
 - a new user can install it and call `hy_status` within five minutes;
+- setup never reports success until effective client configuration, native CI evidence, team artifacts and external deployment agree;
 - an agent can choose the correct next tool in any phase from `hy_status` and the last tool result;
 - every destructive action is visible in runtime output, schema/tool metadata, and docs;
 - every verify failure has one minimal recovery direction;

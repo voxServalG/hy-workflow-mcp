@@ -1,6 +1,6 @@
 {
   "name": "@voxstudio/hy-workflow",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server enforcing a closed-loop workflow for LLM-assisted development",
   "type": "module",
   "main": "dist/server.js",
@@ -8,14 +8,18 @@
     "hy-workflow": "dist/server.js"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "npm run clean && tsc",
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
     "lint:contract": "npm run build && npm run lint:contract:built",
     "lint:contract:built": "node dist/contralint/index.js",
-    "test:unit": "for f in test/unit/*.ts; do npx tsx \"$f\" || exit 1; done",
-    "test:e2e": "for f in test/e2e/*.ts; do npx tsx \"$f\" || exit 1; done",
-    "test:contract": "for f in test/contract/*.ts; do npx tsx \"$f\" || exit 1; done",
+    "test:run": "node -e \"const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),tsx=require.resolve('tsx/cli');const dir=process.argv[1];for(const name of fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).sort()){const child=cp.spawnSync(process.execPath,[tsx,path.join(dir,name)],{stdio:'inherit'});if(child.error){console.error(child.error.message);process.exit(1)}if(child.status!==0)process.exit(child.status??1)}\"",
+    "test:unit": "npm run test:run -- test/unit",
+    "test:e2e": "npm run test:run -- test/e2e",
+    "test:contract": "npm run test:run -- test/contract",
+    "test:acceptance": "npx tsx test/acceptance/runner.ts --profile release",
+    "test:windows": "node scripts/windows-smoke.mjs",
     "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
     "verify": "npm run build && npm test",
     "prepack": "npm run build",
@@ -57,6 +61,7 @@
     "dist",
     "docs",
     "templates",
+    "AGENTS.md",
     "README.md"
   ]
 }

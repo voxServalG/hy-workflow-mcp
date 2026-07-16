@@ -6,15 +6,15 @@
 
 | # | Phase | 含义 |
 |---|-------|------|
-| 1 | `init` | 初始状态，等待 `hy_init` 验证 setup/bootstrap 产物 |
+| 1 | `init` | 等待 `hy_init` 验证 deployment/tool/artifact evidence、两个团队文件、base ref 与文档事实 readiness |
 | 2 | `plan` | 任务规划，先由 agent 自动执行 `hy_read_docs(before_plan)` 建立文档事实基线，再生成 PlanDoc |
 | 3 | `approve` | 用户审视 PlanDoc；用户批准后 agent 自动执行 `hy_read_docs(before_approve)` 做文档审计，再输入 `"approve"` 放行 |
 | 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
 | 5 | `edit` | LLM 编写代码，scope 已锁定；实现后运行 `hy_read_docs(after_edit)` 和 `hy_sync_docs` |
 | 6 | `verify` | 本地任务 gate（compile/scope/boundary/platform/smoke/tests），通过则进 commit |
-| 7 | `commit` | git commit + push + gh pr create |
-| 8 | `ci` | 轮询 GitHub Checks |
-| 9 | `merge` | CI 全绿后合并 PR |
+| 7 | `commit` | git commit 后先持久化 exact commit/base/repository identity，再 exact-SHA push；精确查找并复用同 repository/base/head/headRefOid 的唯一 OPEN PR，零匹配时才创建并复查 |
+| 8 | `ci` | 每次轮询同时复查 PR repository/base/head/headRefOid；identity 漂移、无 checks 或仅 skipped/neutral 均 fail closed |
+| 9 | `merge` | 再次复查 PR identity，并用 `--match-head-commit` 锁定已验证 OID 后合并 |
 | 10 | `chain` | rebase 下游分支 |
 | — | `done` | 终结状态，不再继续 |
 
@@ -36,23 +36,37 @@ chain    → chain, done
 done     → done
 ```
 
-关键路径：
+首次初始化只在 deployment 或项目尚未初始化时执行：
 ```
-init → plan → approve → branch → edit → hy_read_docs(after_edit) → hy_sync_docs → verify → commit → ci → merge → chain → done
-    ↑                   ↑                        ↑                   ↑
- 驳回回到 plan      驳回回到 plan          verify fail→edit      CI fail→edit
-                                         edit → verify → commit (新)
+hy_init → hy_read_docs(before_plan) → hy_plan
+```
+
+后续每个开发任务的完整关键路径：
+```
+hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain → hy_reset
+```
+
+失败或驳回分支：
+```
+hy_approve 驳回 → plan
+hy_verify 失败 → edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify
+hy_ci 检查失败 → edit → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci
+hy_ci 无 checks 或仅 skipped/neutral → ci（CI_CHECKS_REQUIRED，阻止 hy_merge/hy_chain）
+hy_ci pending 或 API 异常 → ci（等待后重试 hy_ci，不进入 edit）
+hy_commit 在 push/PR API 失败 → commit（仅当完整验证快照、持久化 recovery record 与 HEAD 全部一致时复用，不创建空提交）
 ```
 
 ## 文档读取 gate
 
 `hy_read_docs` 不新增状态机 phase，而是在 `plan`、`approve` 和 `edit` phase 内作为自动 gate 运行。
 
+每次返回是 task-ranked 有界页：最多 12 files、48,000 chars、单文件 12,000 chars并带 token estimate；`pagination.nextCursor` 读取后续页。DocsGraph 全量 digest/link index 位于用户 cache，workflow state 的 `documentReads` 只保存 path/size/SHA/truncation/budget/pagination/digest，不保存返回 excerpts。空/无实质事实、过期 `hy-workflow-rules-version` 或零相关事实直接阻断对应 phase。
+
 - `before_plan`: 运行于 `plan` phase，记录用户 task 并写入 `documentReads.beforePlan`。`hy_plan` 缺少 baseline 时拒绝执行；baseline task 与 PlanDoc task 文案不一致时只给 warning，不阻断同一任务的自然改写。
 - `before_approve`: 运行于 `approve` phase，绑定当前 PlanDoc hash，写入 `documentReads.beforeApprove`。如果本次读取的文档 digest 或全量 DocsGraph digest 相对 `before_plan` 发生变化，snapshot 会记录 `changedSinceBaseline: true`，`documentReadHealth` 会将其标记为 stale，`hy_approve` 拒绝批准并要求重新生成 PlanDoc。
 - `after_edit`: 运行于 `edit` / `verify` phase，绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。`hy_verify` 缺少 current 审计时拒绝执行。
 
-`documentReadHealth` 从现有状态派生每个 gate 的 `missing` / `current` / `stale` 状态。PlanDoc hash、实现 digest 不匹配，或 before_approve 文档 digest / DocsGraph digest 相对 before_plan 已变化时，旧的下游 `documentReads` 不会被复用；before_plan task 文案不一致仅作为诊断信息；`hy_status` 会显示 `blockedBy`、`staleDocumentReads` 和下一步工具。`hy_plan` 写入新 PlanDoc 时会清空 downstream gate（`beforeApprove`、`afterEdit`、`syncDocs`），避免新 plan 继承旧审计。
+`documentReadHealth` 从 metadata 派生每个 gate 的 `missing/current/stale`。PlanDoc hash、实现 digest 或全量 DocsGraph digest 不匹配时，旧下游读取不能复用；before_plan task 文案不一致仅诊断。`hy_status` 显示阻塞和下一工具，`hy_plan` 清空 downstream gate，避免新计划继承旧审计。
 
 这些 gate 不要求用户审核。用户仍只审核 `hy_plan` 生成的 PlanDoc，以及 `hy_amend_plan` 这类 scope 修订。`hy_plan` 进入 approve 前会拒绝 malformed PlanDoc、空 scope、越出项目根目录的任何 scope 路径，以及不存在的 `scope.changes` / `scope.delete` 路径；计划创建的文件必须放在 `scope.new_files`，可以在审批时尚不存在，但路径仍必须位于项目根内。`hy_amend_plan` 应用 pending amendment 时复用同一套路径与非空 scope 规则。
 
@@ -93,6 +107,10 @@ interface WorkflowState {
 `computeVerifyHash()` 对 PlanDoc 的 task + scope + boundary + rubrics 字段，以及 `hy_verify` 记录的实现文件集合摘要和实现内容摘要做 SHA256 取前 12 位。`hy_verify` 通过后写入 `WorkflowState.verifyHash`、`implementationManifest`、`verifiedManifestHash` 和 `verifiedImplementationDigest`。`hy_commit` 不只检查 verifyHash 是否存在，还会确认当前 Git 分支等于 `state.branch`，当前 manifest 等于已验证 manifest，当前文件内容摘要等于已验证摘要，并重新计算 verifyHash。任何一项不匹配都会停在 commit phase，要求重新执行 `hy_read_docs(after_edit)`、`hy_sync_docs` 和 `hy_verify`。
 
 `hy_commit` 生成 commit/PR body 时，会从当前 `WorkflowState.plan` 直接序列化完整 PlanDoc JSON，并额外写入 `planHash` 与顶层 `verifyHash`。如果 `hy_amend_plan` 修改过 scope，必须重新 `hy_verify` 后才能进入 commit，因此 PR body 记录的是 amended 后重新验证过的当前 PlanDoc 快照。CI、merge、chain 和 reset 阶段不会再改写 PR body。`hy_reset` 会清空 plan、approval、branch、PR、verifyHash、pending amendment、manifest、document reads 和 syncDocs 等派生状态，避免新计划继承旧运行态。
+
+`hy_commit` commit 后再次核对路径集合和内容摘要，把 commit OID、verifyHash、branch、baseBranch 与带 host 的 repository 写入 approval 派生状态，再用该 commit OID 的精确 refspec 推送。origin fetch/push URL 必须解析为同一 repository；PR 操作忽略 `GH_REPO` 与 `GH_HOST`，并查询 repository/base/head/headRefOid 精确匹配的 OPEN PR：唯一匹配直接复用，零匹配才调用 `gh pr create`，多匹配、旧 OID、查询失败、JSON 异常或上下文不精确匹配均 fail closed。create 成功也要 post-lookup 确认；命令失败但远端已接收时，只有 exact post-lookup 才可恢复。
+
+若 push 或 PR 步骤失败，状态保持 `commit` 且 recovery record 已在任何远端副作用前落盘。下一次 `hy_commit` 仍先验证 branch、manifest、digest 和 verifyHash；仅在这些证据、base/repository、recovery record 与当前 clean `HEAD` 全部一致时，复用记录中的 commit OID 作为 `recovered_verified_head`，再次 exact-SHA push 并复用 PR。缺少记录或插入空提交都会 fail closed。`hy_ci` 每次查询同时比较 PR tuple；`hy_merge` 再比较一次并传 `--match-head-commit`。复用不会覆盖既有 PR body；新建时才写入本次生成的 PlanDoc body。
 
 ## ToolResult envelope
 

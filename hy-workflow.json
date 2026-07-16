@@ -19,5 +19,13 @@
   },
   "docsGardener": {
     "catalogs": {}
+  },
+  "ci": {
+    "commands": [
+      "npm ci",
+      "npm run build",
+      "npm run lint:contract:built",
+      "npm test"
+    ]
   }
 }

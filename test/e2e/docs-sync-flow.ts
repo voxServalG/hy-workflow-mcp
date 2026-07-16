@@ -63,8 +63,11 @@ try {
   writeFileSync(join(root, "docs", "workflow.md"), "# Workflow\n\nDocs sync happens before verify.\n");
   writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nSee [Usage](./usage.md).\n");
   writeFileSync(join(root, "docs", "usage.md"), "# Usage\n\nUse the app.\n");
-  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { docsDir: "docs" } }, null, 2) + "\n");
-  writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "main" }, null, 2) + "\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
+    codelint: { lintDirs: ["src"] },
+  }, null, 2) + "\n");
+  writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "dev", codeExt: ".py", codeDirs: ["legacy-src"] }, null, 2) + "\n");
   run("git add .", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);

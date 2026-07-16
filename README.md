@@ -6,6 +6,8 @@
 
 hy-workflow MCP 是一个项目级工作流守门员：把开发 agent 约束在"先读文档、先计划、等用户批准、锁定 scope、实现、同步文档、验证、提交、CI、合并、整理下游"的闭环里，减少跳步、乱改和把本地产物混进 PR 的机会。
 
+完整合同文档从 [docs/index.md](docs/index.md) 进入。
+
 ## 安装与部署
 
 先从 npm 全局安装两个 scoped 包，再进入任意 Git 项目根目录运行统一 setup TUI：
@@ -17,9 +19,9 @@ hy-workflow setup
 
 国内网络需要镜像时，安装命令可追加 `--registry=https://registry.npmmirror.com`。更新时重跑同一条 npm 安装命令，再运行 `hy-workflow setup`。只要求 Node.js >= 18；同一个 Node CLI 支持 Windows、macOS 和 Linux，不再依赖 Bash 或 PowerShell 安装脚本。
 
-TUI 会提前检测 Codex、Claude Code、OpenCode，供用户多选，然后完成安装或更新。默认是本机模式：项目配置、deployment、workflow state、scope lock 和 DocsGraph cache 全部写入 OS 用户目录，项目工作树和 `.git` 保持零改动。任何时候可运行 `hy-workflow unset` 解除当前项目；只有最后一个已登记项目且用户明确选择时，才移除 hy-workflow 所拥有的全局 MCP 配置。
+TUI 会先显示进度，再检测 Codex、Claude Code、OpenCode 的真实有效配置，并审查项目类型、base branch、文档事实、原生 CI 命令与团队产物 diff。低置信推断、空文档、被 project config shadow/disabled 的 MCP、未知 CI 命令或 artifact drift 都会在写入前停止并给出恢复信息。setup 没有部署模式选择：它只创建或更新 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`；其余 deployment/state/cache/client 配置全部外置。
 
-CI 或自动化可使用 `hy-workflow setup --yes --clients codex,claude,opencode --json`；预览用 `--dry-run`。只有明确需要团队共享配置时才选 `--shared`，此模式允许写入 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`。
+CI 或自动化先用 `hy-workflow setup --yes --clients codex,claude,opencode --dry-run --json` 预览，再用可重复的 `--ci-command` 原样传入已审阅的完整命令序列。已有团队文件发生变化时，必须同时传 `--accept-artifact-changes` 和 dry-run 返回的每个 `--review-artifact <file>:<before-sha256|absent>:<after-sha256>`；裸布尔批准不会生效。排障运行 `hy-workflow doctor --offline --json`；任何时候可用 `hy-workflow unset` 解除本机部署，它不会删除两个团队文件。
 
 Codex CLI 项目配置的期望态是直接运行已安装命令：
 
@@ -41,7 +43,7 @@ tool_timeout_sec = 300
 首次接入项目时：
 
 ```text
-setup TUI → restart client/MCP session → hy_init → hy_plan
+setup TUI → restart client/MCP session → hy_init → hy_read_docs(before_plan) → hy_plan
 ```
 
 后续每个代码或文档任务都走同一个闭环：
@@ -73,7 +75,7 @@ hy-workflow
 docs-gardener mcp
 ```
 
-1. `hy_read_docs(before_plan)` 先读取项目文档，建立规划事实基线。没有被上下文捉到的东西，与不存在没有区别。
+1. `hy_read_docs(before_plan)` 先按任务相关性读取有界文档页，建立规划事实基线；有后续页时沿 `pagination.nextCursor` 继续。空文档、零实质事实或过期托管规则直接阻断。
 2. `hy_plan` 产出 scope、dependency DAG、验证命令、风险和取舍，并完整展示给用户。
 3. 用户明确 approve 后，`hy_read_docs(before_approve)` 再审计一次 PlanDoc，确认事实没有偏移。
 4. `hy_branch` 和 `hy_edit` 创建分支并锁定 scope，agent 只能改 PlanDoc 声明的文件。
@@ -85,7 +87,7 @@ docs-gardener mcp
 
 ## 产物边界
 
-本机模式的项目配置位于 OS 用户配置目录；共享模式的 `hy-workflow.json` 是仓库内人工维护的配置源，并优先于本机配置。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
+仓库根目录的 `hy-workflow.json` 是统一且人工维护的项目配置源。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`；可选 `ci.commands` 是团队确认后的完整原生 CI 命令序列。
 
 项目内产物分三类：
 
@@ -93,18 +95,18 @@ docs-gardener mcp
 
 | 类别 | 产物 | 规则 |
 | --- | --- | --- |
-| default local artifacts | OS 用户目录中的 config/state/cache、客户端用户级 MCP 配置 | setup、unset、hy_init 默认只改这些位置 |
-| explicit shared artifacts | `hy-workflow.json`、`.github/workflows/hy-workflow.yml` | 仅 `setup --shared` 写入；需要团队共享时才提交 |
-| legacy/compatibility artifacts | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 不由默认 setup 创建，不应提交；旧数据只迁移读取、不自动删除 |
+| setup team artifacts | `hy-workflow.json`、`.github/workflows/hy-workflow.yml` | setup 固定且只维护这两项；通过独立 setup artifact sync PR 提交 |
+| runtime/client artifacts | OS 用户目录中的 deployment/registry/state/cache、客户端用户级 MCP 配置 | 外置，不提交；unset 只清理当前项目拥有的这些登记 |
+| legacy/compatibility artifacts | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 不提交；compat JSON 仅在命令运行期临时生成并恢复，旧 config/manifest 只读兼容且不自动删除 |
 
-本机模式不应产生 tracked diff。显式 shared 模式造成的仓库变化应单独创建 setup artifact sync PR，不要混入无关任务。
+setup 造成的两项仓库变化应单独创建 setup artifact sync PR，不要混入无关任务。除此之外，setup、unset 和 hy_init 都不得把运行时或客户端产物带入 tracked diff。
 
 ## 工具
 
 | Tool | 作用 |
 | --- | --- |
-| `hy_init` | 校验用户目录中的 deployment/config，初始化外置状态；不写项目或 `.git` |
-| `hy_status` | 查看当前 workflow phase |
+| `hy_init` | 校验 schema-3 deployment、direct tools、两个 artifact hash、base ref 与文档 readiness；不写项目或 `.git` |
+| `hy_status` | 查看 phase、deployment tool/artifact evidence 与下一步 |
 | `hy_read_docs` | 在 plan、approve、edit 后读取文档并做事实对齐 |
 | `hy_plan` | 生成 PlanDoc，声明 scope、边界、验证、风险和取舍 |
 | `hy_approve` | 用户批准 gate |
@@ -121,7 +123,7 @@ docs-gardener mcp
 
 ## 验证
 
-`hy_verify` 包含本地任务 gate；采用 shared 模式的项目可由显式部署的 GitHub Actions workflow 执行完整 lint：
+`hy_verify` 包含本地任务 gate；setup 部署的 GitHub Actions workflow 先执行已确认的 `ci.commands`，再强制执行固定版本 doclint/codelint：
 
 ```text
 CI lint  → doclint + codelint + workflow-contract lint
@@ -133,7 +135,7 @@ smoke    → 快速冒烟
 tests    → 完整测试套件
 ```
 
-如果本地 gate 失败，agent 回到 edit 修复后重新验证。只有本地 gate 通过，才允许 commit 并进入 CI；CI 继续执行完整 lint 和测试。
+如果本地 gate 失败，agent 回到 edit 修复后重新验证。CI 缺少命令、未知生态、命令超时/失败、doclint/codelint 扫描零文件、没有 checks 或只有 skipped/neutral checks 都 fail closed。仓库管理员必须另外把 Verify check 设为 required；setup 不越权修改仓库规则。
 
 ## 自举
 

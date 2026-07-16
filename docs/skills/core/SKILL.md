@@ -9,7 +9,9 @@ description: Operate the hy-workflow MCP safely in this repository.
 
 Use this workflow order for ordinary development: hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_ci -> hy_merge -> hy_chain -> hy_reset.
 
-For first setup, run the `hy-workflow setup` TUI, restart the client, then run hy_init before planning. Default setup/hy_init must not change project files; use `hy-workflow unset` to remove the local deployment. Do not call later workflow tools out of order.
+For first setup, run the TUI and inspect its Git-tracked/manifests/base-ref project evidence, multi-extension directories, native `ci.commands`, client effective scopes, and artifact diff. Unknown/material-mixed/low-confidence profiles, empty docs, missing refs, unsafe CI inference, or drift require explicit recovery/confirmation. Commit only `hy-workflow.json` and `.github/workflows/hy-workflow.yml`, restart the client, then run hy_init; deployment/state/cache/client config remain external and unset never deletes team files.
+
+Documentation gates are mandatory and indivisible. Reads are task-ranked and budgeted; follow `pagination.nextCursor` when `hasMore`, while workflow state stores metadata/digests rather than excerpts. Empty/no-fact docs or stale managed rules fail closed. Generated Verify runs confirmed `ci.commands`, then pinned doclint/codelint; missing commands, zero scans, timeout, no checks or non-success checks block merge. An administrator, not setup, makes Verify required.
 
 ## Tools
 

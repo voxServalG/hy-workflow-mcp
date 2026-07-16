@@ -1,8 +1,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyEdits, modify, parse } from "jsonc-parser";
-import type { ClientAdapter, ClientDetection, ClientServerSnapshot, McpDefinition, ServerName } from "../types.js";
+import { createHash } from "node:crypto";
+import { applyEdits, findNodeAtLocation, modify, parse, parseTree } from "jsonc-parser";
+import { SetupFailure, type ClientAdapter, type ClientConfigSource, type ClientDetection, type ClientServerSnapshot, type McpDefinition, type ServerName } from "../types.js";
+import { assertClientSnapshotUnchanged } from "./effective.js";
 import { definitionEquals, resolveExecutable, versionOf } from "./index.js";
 
 function configPath(): string {
@@ -14,13 +16,57 @@ function configPath(): string {
   return path.join(dir, "opencode.json");
 }
 
-function readDocument(): { file: string; text: string; value: any } {
-  const file = configPath();
+function canonicalLocation(file: string): string {
+  try { return fs.realpathSync(file); }
+  catch {
+    try { return path.join(fs.realpathSync(path.dirname(file)), path.basename(file)); }
+    catch { return path.resolve(file); }
+  }
+}
+
+function locationInside(root: string, target: string): boolean {
+  const inside = (base: string, candidate: string): boolean => {
+    const relative = path.relative(base, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  };
+  return inside(path.resolve(root), path.resolve(target)) || inside(canonicalLocation(root), canonicalLocation(target));
+}
+
+function readDocument(file = configPath()): { file: string; text: string; value: any } {
+  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error(`OpenCode config must not be a symbolic link: ${file}`);
   const text = fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : "{}\n";
   const errors: any[] = [];
   const value = parse(text, errors, { allowTrailingComma: true, disallowComments: false });
   if (errors.length) throw new Error(`OpenCode config is not valid JSONC: ${file}`);
   return { file, text, value: value ?? {} };
+}
+
+type OpenCodeRawSnapshot = {
+  entry: unknown;
+  entryText: string;
+  entryFingerprint: string;
+  configMode: number;
+};
+
+function rawSnapshot(document: ReturnType<typeof readDocument>, server: ServerName, entry: unknown): OpenCodeRawSnapshot {
+  const tree = parseTree(document.text, [], { allowTrailingComma: true, disallowComments: false });
+  const node = tree ? findNodeAtLocation(tree, ["mcp", server]) : undefined;
+  if (!node) throw new Error(`OpenCode ${server} entry could not be located losslessly in ${document.file}`);
+  const entryText = document.text.slice(node.offset, node.offset + node.length);
+  return {
+    entry,
+    entryText,
+    entryFingerprint: createHash("sha256").update(entryText).digest("hex"),
+    configMode: fs.statSync(document.file).mode & 0o777,
+  };
+}
+
+function decodedRaw(raw: unknown): { entry: unknown; entryText?: string; configMode?: number } {
+  if (raw && typeof raw === "object" && "entry" in raw && "entryFingerprint" in raw) {
+    const snapshot = raw as OpenCodeRawSnapshot;
+    return { entry: snapshot.entry, entryText: snapshot.entryText, configMode: snapshot.configMode };
+  }
+  return { entry: raw };
 }
 
 function fromEntry(entry: any): McpDefinition | null {
@@ -39,24 +85,71 @@ function toEntry(definition: McpDefinition): any {
   };
 }
 
-function writeEntry(server: ServerName, value: unknown): void {
+function writeEntry(server: ServerName, value: unknown, exactEntryText?: string, restoreMode?: number): void {
   const document = readDocument();
-  const edits = modify(document.text, ["mcp", server], value, {
-    formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
-  });
+  let output: string;
+  if (exactEntryText !== undefined) {
+    const tree = parseTree(document.text, [], { allowTrailingComma: true, disallowComments: false });
+    const node = tree ? findNodeAtLocation(tree, ["mcp", server]) : undefined;
+    if (!node) throw new Error(`OpenCode ${server} cannot be restored losslessly because the setup-owned entry is absent`);
+    output = document.text.slice(0, node.offset) + exactEntryText + document.text.slice(node.offset + node.length);
+  } else {
+    const edits = modify(document.text, ["mcp", server], value, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    });
+    output = applyEdits(document.text, edits);
+  }
   fs.mkdirSync(path.dirname(document.file), { recursive: true });
-  fs.writeFileSync(document.file, applyEdits(document.text, edits), "utf-8");
+  const mode = fs.existsSync(document.file) ? fs.statSync(document.file).mode & 0o777 : 0o600;
+  const temporary = path.join(path.dirname(document.file), `.${path.basename(document.file)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, output, { encoding: "utf-8", mode, flag: "wx" });
+    fs.renameSync(temporary, document.file);
+    if (Number.isInteger(restoreMode)) fs.chmodSync(document.file, restoreMode!);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch {}
+    throw error;
+  }
 }
 
-export function createOpenCodeAdapter(): ClientAdapter {
+export function createOpenCodeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?? process.cwd()): ClientAdapter {
   const executable = resolveExecutable("opencode");
+  const projectRoot = path.resolve(root);
+  const projectFiles = [path.join(projectRoot, "opencode.json"), path.join(projectRoot, ".opencode", "opencode.json")];
   const inspect = (server: ServerName): ClientServerSnapshot => {
     try {
-      const document = readDocument();
-      const raw = document.value?.mcp?.[server];
-      return { definition: fromEntry(raw), raw };
+      const sources: ClientConfigSource[] = [];
+      const userDocument = readDocument();
+      const configuredAsProject = locationInside(projectRoot, userDocument.file);
+      const userRaw = userDocument.value?.mcp?.[server];
+      if (userRaw !== undefined) {
+        sources.push({ scope: configuredAsProject ? "project" : "user", source: userDocument.file, definition: fromEntry(userRaw), enabled: userRaw?.enabled !== false });
+      }
+      for (const file of projectFiles) {
+        if (canonicalLocation(file) === canonicalLocation(userDocument.file)) continue;
+        if (!fs.existsSync(file)) continue;
+        const document = readDocument(file);
+        const raw = document.value?.mcp?.[server];
+        if (raw !== undefined) sources.push({ scope: "project", source: file, definition: fromEntry(raw), enabled: raw?.enabled !== false });
+      }
+      const effective = [...sources].reverse().find(item => item.scope === "project") ?? sources.find(item => item.scope === "user");
+      if (!effective) return { definition: null, source: userDocument.file, scope: configuredAsProject ? "project" : "user", state: "absent", sources, ownedDefinition: null };
+      const effectiveDocument = effective.scope === "user" ? userDocument : readDocument(effective.source);
+      const rawEntry = effectiveDocument.value?.mcp?.[server];
+      const raw = rawSnapshot(effectiveDocument, server, rawEntry);
+      const state = !effective.definition ? "unreadable" : effective.enabled === false ? "disabled" : effective.scope === "project" ? "shadowed" : "active";
+      return {
+        definition: effective.definition,
+        raw,
+        source: effective.source,
+        scope: effective.scope,
+        enabled: effective.enabled,
+        state,
+        sources,
+        ownedDefinition: sources.find(item => item.scope === "user")?.definition ?? null,
+      };
     } catch (error: any) {
-      return { definition: null, raw: { error: error?.message ?? String(error) } };
+      return { definition: null, raw: { error: error?.message ?? String(error) }, state: "unreadable", scope: "unknown" };
     }
   };
   return {
@@ -66,9 +159,28 @@ export function createOpenCodeAdapter(): ClientAdapter {
       return { name: "opencode", installed: Boolean(executable), executable, version: executable ? versionOf(executable) : null, configured };
     },
     inspect,
-    install(server, definition) {
-      if (!executable) throw new Error("opencode is not installed");
+    install(server, definition, expectedPrevious) {
+      if (!executable) throw new SetupFailure("client_missing", "SETUP_CLIENT_NOT_INSTALLED", "OpenCode is not installed.", "Install OpenCode, then rerun setup.");
       const previous = inspect(server);
+      if (expectedPrevious) assertClientSnapshotUnchanged("opencode", server, expectedPrevious, previous);
+      if (previous.scope === "project") {
+        throw new SetupFailure(
+          "client_shadowed",
+          "SETUP_EFFECTIVE_CONFIG_SHADOWED",
+          `OpenCode ${server} is shadowed by project configuration at ${previous.source}.`,
+          "Remove or migrate that project-owned entry explicitly; setup will not modify tracked legacy configuration.",
+          { server, source: previous.source, sources: previous.sources },
+        );
+      }
+      if (previous.enabled === false || previous.state === "unreadable" || previous.scope === "unknown") {
+        throw new SetupFailure(
+          "client_config",
+          "SETUP_CLIENT_CONFIG_UNSAFE",
+          `OpenCode ${server} cannot be modified because its effective configuration is ${previous.state ?? "unknown"} at ${previous.source ?? "unknown source"}.`,
+          "Repair, enable, or remove the existing entry explicitly, then rerun setup.",
+          { server, source: previous.source, state: previous.state, raw: previous.raw },
+        );
+      }
       if (previous.definition && definitionEquals(previous.definition, definition)) return previous;
       if (previous.raw && !previous.definition && !(previous.raw as any).error) {
         throw new Error(`OpenCode ${server} exists but is not a supported local MCP definition`);
@@ -76,11 +188,19 @@ export function createOpenCodeAdapter(): ClientAdapter {
       writeEntry(server, toEntry(definition));
       return previous;
     },
-    remove(server, expected, previous) {
+    remove(server, expected, previous, expectedCurrent) {
       const current = inspect(server);
-      if (!current.definition) return;
-      if (!definitionEquals(current.definition, expected)) throw new Error(`OpenCode ${server} changed after setup; refusing to remove it`);
-      writeEntry(server, previous?.raw ?? undefined);
+      if (expectedCurrent) assertClientSnapshotUnchanged("opencode", server, expectedCurrent, current);
+      if (current.scope === "project") {
+        throw new SetupFailure("client_shadowed", "SETUP_EFFECTIVE_CONFIG_SHADOWED", `OpenCode ${server} is controlled by project configuration at ${current.source}.`, "Migrate the project-owned entry explicitly; unset will not modify tracked project configuration.", { server, current });
+      }
+      if (current.state === "absent" && !current.definition) return;
+      if (current.state === "unreadable" || current.state === "disabled" || current.scope === "unknown" || !current.definition) {
+        throw new SetupFailure("client_config", "SETUP_CLIENT_CONFIG_UNSAFE", `OpenCode ${server} cannot be safely removed because its effective configuration is ${current.state ?? "unknown"}.`, "Repair the OpenCode configuration and retry unset; ownership has been kept.", { server, current });
+      }
+      if (!definitionEquals(current.definition, expected)) throw new SetupFailure("ownership", "SETUP_CLIENT_OWNERSHIP_MISMATCH", `OpenCode ${server} changed after setup; refusing to remove it.`, "Restore the setup-owned definition or resolve ownership manually, then retry unset.", { server, expected, current });
+      const restoration = decodedRaw(previous?.raw);
+      writeEntry(server, restoration.entry, restoration.entryText, restoration.configMode);
     },
   };
 }

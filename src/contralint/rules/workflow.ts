@@ -2,6 +2,41 @@ import { PHASES, VALID_TRANSITIONS } from "../../runtime/state-machine.js";
 import { readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
+const DOCUMENT_GATE_SEQUENCE = [
+  "hy_status",
+  "hy_read_docs(before_plan)",
+  "hy_plan",
+  "hy_read_docs(before_approve)",
+  "hy_approve",
+  "hy_branch",
+  "hy_edit",
+  "hy_read_docs(after_edit)",
+  "hy_sync_docs",
+  "hy_verify",
+  "hy_commit",
+  "hy_ci",
+  "hy_merge",
+  "hy_chain",
+  "hy_reset",
+];
+
+const DOCUMENT_GATE_CONTRACT_FILES = [
+  "AGENTS.md",
+  "src/server.ts",
+  "docs/state-machine.md",
+  "docs/skills/core/SKILL.md",
+];
+
+function containsOrderedTokens(text: string, tokens: string[]): boolean {
+  let cursor = 0;
+  for (const token of tokens) {
+    const index = text.indexOf(token, cursor);
+    if (index < 0) return false;
+    cursor = index + token.length;
+  }
+  return true;
+}
+
 export function checkWorkflowContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
   const state = readText(context.root, "src/state.ts");
@@ -22,6 +57,28 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
       }
     }
   }
+  for (const file of DOCUMENT_GATE_CONTRACT_FILES) {
+    const text = readText(context.root, file);
+    if (!containsOrderedTokens(text, DOCUMENT_GATE_SEQUENCE)) {
+      findings.push({
+        rule: "workflow",
+        severity: "hard_fail",
+        message: "Agent contract must preserve the complete hy_status -> docs/plan/approve -> branch/edit/docs/verify -> commit/CI/merge/chain/reset order.",
+        file,
+        detail: { expected: DOCUMENT_GATE_SEQUENCE },
+      });
+    }
+  }
+  const ci = readText(context.root, "templates/hy-workflow.yml");
+  for (const token of [
+    "No supported project ecosystem detected",
+    "No native verification command detected",
+    "ci.commands must be a non-empty string array",
+    "files <= 0",
+  ]) {
+    if (!ci.includes(token)) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: "Required CI must fail closed: missing " + token + ".", file: "templates/hy-workflow.yml" });
+    }
+  }
   return findings;
 }
-

@@ -17,6 +17,28 @@ const OUTPUT_DOCS = [
   "docs/skills/core/SKILL.md",
 ];
 
+const CI_FAIL_CLOSED_SOURCE_TOKENS = [
+  'toolResult("ci"',
+  "CI_CHECKS_REQUIRED",
+  "noChecks",
+  "noEffectiveChecks",
+  "requires_user: true",
+  "stop_here: true",
+  'blockedTools: ["hy_merge", "hy_chain"]',
+];
+
+const CI_FAIL_CLOSED_DOC_TOKENS = [
+  'next: "ci"',
+  "CI_CHECKS_REQUIRED",
+  "noChecks",
+  "noEffectiveChecks",
+  "requires_user",
+  "stop_here",
+  "blockedTools",
+  "hy_merge",
+  "hy_chain",
+];
+
 function addMissingTokenFindings(findings: ContractFinding[], rule: string, severity: ContractFinding["severity"], fields: readonly string[], text: string, file: string, label: string): void {
   for (const field of fields) {
     if (!text.includes(field)) {
@@ -39,6 +61,11 @@ export function checkOutputContracts(context: ContractRuleContext): ContractFind
   const source = readText(context.root, "src/output/envelope.ts");
   const base = readText(context.root, "src/tools/_base.ts");
   const docs = OUTPUT_DOCS.map(file => readText(context.root, file)).join("\n");
+  const ciSource = readText(context.root, "src/tools/ci.ts");
+  const noChecksStart = ciSource.indexOf("if (result.noChecks || result.noEffectiveChecks)");
+  const noChecksEnd = noChecksStart < 0 ? -1 : ciSource.indexOf("if (!result.allGreen)", noChecksStart);
+  const noChecksBlock = noChecksStart < 0 ? "" : ciSource.slice(noChecksStart, noChecksEnd < 0 ? undefined : noChecksEnd);
+  const envelopeDocs = readText(context.root, "docs/tool-result-envelope.md");
   if (!base.includes("../output/envelope.js")) {
     findings.push({ rule: "output", severity: "hard_fail", message: "Tool base helper must delegate to src/output/envelope.ts.", file: "src/tools/_base.ts" });
   }
@@ -57,5 +84,17 @@ export function checkOutputContracts(context: ContractRuleContext): ContractFind
   addMissingTokenFindings(findings, "output", "amend_required", NOTICE_FIELDS, docs, "docs/output.md", "Notice docs");
   addMissingTokenFindings(findings, "output", "hard_fail", NOTICE_UPDATE_FIELDS, source, "src/output/envelope.ts", "Notice update source");
   addMissingTokenFindings(findings, "output", "amend_required", NOTICE_UPDATE_FIELDS, docs, "docs/output.md", "Notice update docs");
+  addMissingTokenFindings(findings, "output", "hard_fail", CI_FAIL_CLOSED_SOURCE_TOKENS, noChecksBlock, "src/tools/ci.ts", "CI missing-check branch");
+  addMissingTokenFindings(findings, "output", "hard_fail", CI_FAIL_CLOSED_DOC_TOKENS, envelopeDocs, "docs/tool-result-envelope.md", "CI fail-closed envelope docs");
+  for (const forbidden of ['skipReason: "no_reported_checks"', "no_reported_checks", "`skipped: true`"]) {
+    if (envelopeDocs.includes(forbidden)) {
+      findings.push({
+        rule: "output",
+        severity: "hard_fail",
+        message: `CI envelope docs contain the removed fail-open contract: ${forbidden}.`,
+        file: "docs/tool-result-envelope.md",
+      });
+    }
+  }
   return findings;
 }

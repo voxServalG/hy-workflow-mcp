@@ -4,6 +4,20 @@ import type { McpDefinition } from "../types.js";
 
 export type CommandResult = { ok: boolean; stdout: string; stderr: string; status: number | null };
 
+export function executableInvocation(executable: string, args: string[], platform: NodeJS.Platform = process.platform): { command: string; args: string[] } {
+  const isCmdShim = platform === "win32" && [".cmd", ".bat"].includes(path.extname(executable).toLowerCase());
+  return isCmdShim
+    ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", executable, ...args] }
+    : { command: executable, args };
+}
+
+export function selectExecutableCandidate(output: string, platform: NodeJS.Platform = process.platform): string | null {
+  const candidates = output.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  if (platform !== "win32") return candidates[0] ?? null;
+  const supported = new Set([".com", ".exe", ".bat", ".cmd"]);
+  return candidates.find(candidate => supported.has(path.win32.extname(candidate).toLowerCase())) ?? null;
+}
+
 export function resolveExecutable(name: string): string | null {
   try {
     const locator = process.platform === "win32" ? "where.exe" : "which";
@@ -12,7 +26,7 @@ export function resolveExecutable(name: string): string | null {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
     });
-    return output.split(/\r?\n/).map(value => value.trim()).find(Boolean) ?? null;
+    return selectExecutableCandidate(output);
   } catch {
     return null;
   }
@@ -20,10 +34,8 @@ export function resolveExecutable(name: string): string | null {
 
 export function runExecutable(executable: string, args: string[], timeout = 15_000): CommandResult {
   try {
-    const isCmdShim = process.platform === "win32" && [".cmd", ".bat"].includes(path.extname(executable).toLowerCase());
-    const command = isCmdShim ? (process.env.ComSpec ?? "cmd.exe") : executable;
-    const commandArgs = isCmdShim ? ["/d", "/s", "/c", executable, ...args] : args;
-    const stdout = execFileSync(command, commandArgs, {
+    const invocation = executableInvocation(executable, args);
+    const stdout = execFileSync(invocation.command, invocation.args, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout,

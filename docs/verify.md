@@ -1,6 +1,6 @@
 # Verify Pipeline
 
-`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。显式 shared 模式可由 GitHub Actions workflow 承担完整 lint。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。setup 固定部署的 GitHub Actions workflow 承担强制 doclint、codelint 和项目 CI。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 
@@ -28,6 +28,16 @@ Layer 6: smoke
 Layer 7: tests
 └── plan.verify.tests 命令逐条执行，actual exit 必须精确等于 expected_exit
 ```
+
+## Command budget and cleanup
+
+Verify commands run through a synchronous cross-platform supervisor rather than a direct shell timeout. Ordinary commands receive 90 seconds, `npm pack` receives 5 minutes, and the normal unit/e2e/contract/Windows/verify suites receive 20 minutes. `npm run test:acceptance` receives the larger of its configured internal budget and the mandatory 45-minute release budget, plus 2 minutes for cleanup. A timeout is reported explicitly instead of as an unknown exit. Before returning, the supervisor terminates the complete detached process group on POSIX or uses `taskkill /T /F` on Windows, so a timed-out npm shell cannot leave descendants mutating `dist/` or holding the worktree. Structured compile invocations such as Python `py_compile` use executable plus argv rather than shell quoting.
+
+## CI evidence gate
+
+GitHub workflow 从根 `hy-workflow.json` 读取已确认的 `ci.commands` 并按顺序执行完整原生项目检查，再临时生成 compatibility JSON 运行固定版本 doclint/codelint。缺少/空命令、未知且无法安全推断的生态、命令或 lint 超时/失败、lint 报告扫描零文件、materialization/cleanup 失败均 fail closed；临时 JSON 必须恢复且不提交。`hy_ci` 只有至少一个有效 check 且全部成功才进入 merge，没有 checks 或只有 skipped/neutral 时返回 `CI_CHECKS_REQUIRED`。
+
+setup 负责生成 workflow，但不修改 GitHub 管理配置。仓库管理员必须在 ruleset 或 branch protection 中把 workflow 的 Verify check 设为 required，才能在平台层阻止绕过。
 
 ## 判定逻辑
 
@@ -117,6 +127,8 @@ interface VerifyReport {
 | `hy-workflow.json: project.codeDirs` | Python compile 的文件枚举根目录；同时支持顶层和嵌套 Python 文件 |
 | `hy-workflow.json: project.baseBranch` | scope check 和 dependency manifest boundary 的 Git diff 基线分支 |
 | runtime `doclint.json` | 由 `hy-workflow.json` 临时生成给 doclint 使用，验证文档质量 |
+| runtime `codelint.json` | 由 `hy-workflow.json` 临时生成给 codelint 使用，验证代码治理规则 |
+| runtime `docs-gardener.json` | 仅在旧 docs-gardener CLI 需要时临时生成；不作为配置源或提交产物 |
 
 ## Related
 

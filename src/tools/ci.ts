@@ -34,7 +34,7 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
   const deadline = Date.now() + timeoutSeconds * 1000;
 
   let result = checkCi(root, state.prNumber);
-  while (result.ok && !result.allGreen && !result.noChecks) {
+  while (result.ok && !result.allGreen && !result.noChecks && !result.noEffectiveChecks) {
     const checks = result.checks || [];
     const failedNames = checks.filter((c: any) => FAILURE_CONCLUSIONS.has(c.conclusion)).map((c: any) => c.name);
     if (failedNames.length || Date.now() >= deadline) break;
@@ -44,25 +44,44 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
 
   if (!result.ok) return toolResult("ci", { error: result.error, data: { executor: result.executor }, checks: result.checks, requires_user: true, stop_here: true, recovery: { tool: "hy_ci", instruction: "Inspect the CI query error and retry hy_ci after the GitHub/API issue is resolved." }, allowedTools: ["hy_ci", "hy_status"] });
 
-  if (result.noChecks) {
-    const next = transition(state, "merge");
-    writeState(next);
-
-    return toolResult("merge", {
+  if (result.noChecks || result.noEffectiveChecks) {
+    const reason = result.noChecks
+      ? "No CI checks were reported"
+      : result.requiredCheckAmbiguous
+        ? "Multiple provenance-verified Verify checks were reported"
+      : result.requiredCheckMissing
+        ? "No Verify check from the bound hy-workflow Actions run was reported"
+        : "The required Verify check was skipped or neutral";
+    return toolResult("ci", {
       data: { executor: result.executor },
-      allGreen: true,
-      skipped: true,
-      skipReason: "no_reported_checks",
-      noChecks: true,
+      allGreen: false,
+      noChecks: Boolean(result.noChecks),
+      noEffectiveChecks: Boolean(result.noEffectiveChecks),
+      requiredCheckMissing: Boolean(result.requiredCheckMissing),
+      requiredCheckAmbiguous: Boolean(result.requiredCheckAmbiguous),
       checks: result.checks,
-      display: {
-        title: "CI skipped",
-        body: `No CI checks were reported for PR #${state.prNumber}; treating this as a workflow no-match and continuing to merge.`,
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "CI_CHECKS_REQUIRED",
+        message: `${reason} for PR #${state.prNumber}; merge is blocked.`,
+        hint: "Ensure exactly one .github/workflows/hy-workflow.yml Actions run for the verified PR commit reports Verify as SUCCESS, then retry hy_ci.",
+        retryable: true,
       },
-      hint: "Continue to hy_merge. This PR reported no CI checks, so hy_ci recorded a no_checks skip instead of pending.",
-      allowedTools: ["hy_merge", "hy_status"],
-      blockedTools: ["hy_chain"],
-      message: "No CI checks reported. Skipping CI wait and continuing to merge.",
+      requires_user: true,
+      stop_here: true,
+      display: {
+        title: "CI checks required",
+        body: `${reason} for PR #${state.prNumber}. hy_ci will not advance to merge.`,
+      },
+      hint: "Fix or enable the required Verify check, then retry hy_ci. Do not merge without Verify SUCCESS.",
+      recovery: {
+        tool: "hy_ci",
+        instruction: "Ensure the required Verify check completes successfully, then rerun hy_ci.",
+      },
+      allowedTools: ["hy_ci", "hy_status"],
+      blockedTools: ["hy_merge", "hy_chain"],
+      message: `${reason}. Merge remains blocked.`,
     });
   }
 
@@ -121,11 +140,11 @@ export async function handleCi(args: CiArgs = {}): Promise<ToolResult> {
     checks: result.checks,
     display: {
       title: "CI passed",
-      body: `All CI checks passed for PR #${state.prNumber}.`,
+      body: `The required Verify check and all effective CI checks passed for PR #${state.prNumber}.`,
     },
     hint: "Continue to hy_merge. The approved workflow does not stop after CI success.",
     allowedTools: ["hy_merge", "hy_status"],
     blockedTools: ["hy_chain"],
-    message: "All CI checks passed. Ready to merge.",
+    message: "Required Verify and all effective CI checks passed. Ready to merge.",
   });
 }

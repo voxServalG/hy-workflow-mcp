@@ -108,9 +108,12 @@ export type DocumentReadStage = "before_plan" | "before_approve" | "after_edit";
 export interface DocumentReadFile {
   path: string;
   bytes: number;
+  chars?: number;
   sha256: string;
-  content: string;
+  content?: string;
   truncated: boolean;
+  omittedChars?: number;
+  score?: number;
 }
 
 export interface DocumentReadSnapshot {
@@ -126,6 +129,23 @@ export interface DocumentReadSnapshot {
   docsGraphDigest: string;
   entryPoints: string[];
   traversalRoots: string[];
+  budget?: {
+    maxFiles: number;
+    maxChars: number;
+    maxFileChars: number;
+    estimatedMaxTokens: number;
+    selectedFiles: number;
+    selectedChars: number;
+    estimatedTokens: number;
+    truncatedFiles: number;
+  };
+  pagination?: {
+    cursor: string;
+    offset: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+    omittedFiles: number;
+  };
   changedSinceBaseline?: boolean;
   implementationFiles?: string[];
   implementationDigest?: string;

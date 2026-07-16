@@ -54,7 +54,11 @@ try {
   run("git config user.name Test", root);
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src", "app.ts"), "export const value = 1;\n");
-  writeFileSync(join(root, "codelint.json"), "{\"baseBranch\":\"main\"}\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
+    codelint: { lintDirs: ["src"] },
+  }, null, 2) + "\n");
+  writeFileSync(join(root, "codelint.json"), "{\"baseBranch\":\"dev\"}\n");
   run("git add .", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
@@ -100,6 +104,20 @@ try {
   const scopeFailure = scopeChecks.find(check => check.hard && !check.passed);
   if (scopeFailure?.classification !== "amend_required") {
     throw new Error(`expected amend_required scope failure, got ${JSON.stringify(scopeFailure)}`);
+  }
+
+  const overDeclaredPlan: PlanDoc = {
+    ...plan,
+    scope: { ...plan.scope, changes: [...plan.scope.changes, "codelint.json"] },
+  };
+  const missingDeclared = runScopeCheck(root, overDeclaredPlan, manifest)
+    .find(check => check.detail.includes("Declared but not changed"));
+  if (missingDeclared?.classification !== "amend_required") {
+    throw new Error(`declared-but-unchanged paths should require explicit scope amendment, got ${JSON.stringify(missingDeclared)}`);
+  }
+  const removal = suggestPlanAmendment(overDeclaredPlan, manifest);
+  if (!removal?.scope.changes.remove.includes("codelint.json")) {
+    throw new Error(`expected suggested removal for the unchanged declared path, got ${JSON.stringify(removal)}`);
   }
 
   const amendment = suggestPlanAmendment(plan, manifest);
