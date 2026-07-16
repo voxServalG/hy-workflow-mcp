@@ -21,7 +21,8 @@ if (process.platform !== "win32" && fs.existsSync("/usr/bin/script")) {
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "hy-tui-safety-runtime-"));
   const before = gitStatus(root);
   const started = Date.now();
-  const child = spawn("/usr/bin/script", ["-qfec", `${process.execPath} ${path.resolve("dist/server.js")} setup`, "/dev/null"], {
+  const setupCommand = "stty cols 120 rows 40 && exec " + JSON.stringify(process.execPath) + " " + JSON.stringify(path.resolve("dist/server.js")) + " setup";
+  const child = spawn("/usr/bin/script", ["-qfec", setupCommand, "/dev/null"], {
     cwd: root,
     env: {
       ...process.env,
@@ -55,7 +56,7 @@ if (process.platform !== "win32" && fs.existsSync("/usr/bin/script")) {
   const missingClientRoot = makeGitProject("hy-tui-no-client-");
   const missingClientRuntime = fs.mkdtempSync(path.join(os.tmpdir(), "hy-tui-no-client-runtime-"));
   const missingClientBefore = gitStatus(missingClientRoot);
-  const missingClientChild = spawn("/usr/bin/script", ["-qfec", `${process.execPath} ${path.resolve("dist/server.js")} setup`, "/dev/null"], {
+  const missingClientChild = spawn("/usr/bin/script", ["-qfec", setupCommand, "/dev/null"], {
     cwd: missingClientRoot,
     env: {
       ...process.env,
