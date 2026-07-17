@@ -110,42 +110,18 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 
 ## hy_verify
 
-执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后记录当前 implementation manifest、manifest hash、文件内容 digest 和 verifyHash，并转换到 commit。
+执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已完成；全部通过后记录 implementation manifest、manifest hash、verifyHash 并转换到 commit。`boundary.no_new_external` 校验外部依赖声明（package.json scripts/version 元数据允许变；真正的依赖清单变化仍 fail closed）。
 
-`boundary.no_new_external` 校验外部依赖声明，而不是把 `package.json` / `package-lock.json` 的任意字节变化都当成新增依赖。npm 包的 version、scripts 和 lockfile 根包 version 等发布元数据可以变化；dependencies、devDependencies、peerDependencies、optionalDependencies、bundle/bundledDependencies 或其他生态依赖清单发生变化仍 fail closed。无法读取或解析 `origin/<baseBranch>` 基线时同样失败。
+- **进入 Phase**: `edit`, `verify`; **通过→commit**; **失败→edit**
+- **通过**: `{ next:"commit", allPassed:true, checks, verifyHash }`
+- **失败**: `{ next:"edit", allPassed:false, hardFailed, failedChecks, recovery.byLayer }`
+- **长测试套件**: 命令预计 >60s 或 sync 超时，请改用异步 `hy_exam_plan`+`hy_exam_submit`（verifyHash 等价）。
 
-- **进入 Phase**: `edit`, `verify`
-- **通过后转换到**: `commit`
-- **失败后转换到**: `edit`
-- **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash, hint, allowedTools }`
-- **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks, failedChecks, recovery.byLayer }`
-- **长测试套件**: 若任何命令预计 >60s 或 sync `hy_verify` 在 MCP transport 内超时，请改用异步 `hy_exam_plan` + `hy_exam_submit`（见下）。两者产出相同 verifyHash 并同等放行 `hy_commit`。
+## hy_exam_plan / hy_exam_submit（异步 verify）
 
-## hy_exam_plan
-
-异步 verify 第 1 步（出题）。立即返回 `examId` + nonce + 检查清单（command/cwd/timeoutMs/expectExitCode/mustContain per check），**不在 MCP transport 里跑任何命令**。agent 用 Bash 逐条运行、收集 exitCode 和最后 4KB stdout，再调 `hy_exam_submit` 交卷。
-
-适用场景：tests 层较重、单命令 >60s、全量 verify 会触发 MCP client `-32001 Request timed out`。清单与 sync `hy_verify` 跑的命令完全一致。
-
-- **进入 Phase**: `edit`, `verify`
-- **成功返回**: `{ next: "verify", examId, issuedAt, expiresAt, scopeFingerprint, nonce, checks: ExamCheck[], display }`
-- **2 小时 TTL**，过期或 working tree 变化需重新 issue
-
-## hy_exam_submit
-
-异步 verify 第 2 步（阅卷）。提交 `examId` + 每条命令的 `{id, command, nonce, exitCode, stdoutTail?, durationMs?}`。服务端校验：
-1. exam 存在且未过期
-2. per-check nonce 匹配
-3. 提交的 command 字符串与 manifest 完全一致（防偷换命令）
-4. exitCode === expectExitCode
-5. mustContain/mustNotContain 正则通过（若声明）
-6. 当前 git write-tree hash 与 issue 时一致（防改代码不重跑）
-
-全部通过才写 verifyHash 放行 `hy_commit`；否则返回 `failedChecks[]`，修完只需补交失败条目（passed 条不需要重交），2h 内有效。
-
-- **进入 Phase**: `edit`, `verify`
-- **通过返回**: `{ next: "commit", passed: true, examId, verifyHash, submitted }`
-- **失败返回**: `{ next: "edit", passed: false, failedChecks, recovery.nextAction: "fix_then_resubmit", recovery.resubmitExamId }`
+两工具实现 verify-as-oracle 模式，解决长测试套件触发 MCP `-32001 Request timed out`（90s）。sync `hy_verify` 仍保留为 <60s 快路径。
+- **hy_exam_plan**（出题）：立即返回 `examId`（2h TTL）、`scopeFingerprint`（git write-tree）、per-check `{id, layer, command, timeoutMs, expectExitCode, nonce, mustContain?}`；agent 用 Bash 逐条跑，收集 exitCode + 最后 4KB stdout。
+- **hy_exam_submit**（阅卷）：提交 `{examId, results:[{id, command, nonce, exitCode, stdoutTail?}]}`。校验：(1) exam 未过期；(2) nonce 匹配；(3) command 字串完全一致；(4) exitCode 匹配；(5) mustContain 正则；(6) git write-tree 未变。通过则写 verifyHash 放行 `hy_commit`，与 sync 路径等价；失败返回 `failedChecks[]`，2h 内只需补交失败项。进入 Phase: `edit, verify`；成功 → `commit`，失败 → `edit`（`recovery.nextAction=fix_then_resubmit`）。
 
 ## hy_amend_plan
 
