@@ -75,10 +75,17 @@ hy-workflow setup --yes --clients codex,claude,opencode --json
 hy-workflow setup --yes --clients codex --ci-command 'npm ci' --ci-command 'npm test' --json
 hy-workflow setup --yes --clients codex --dry-run --json
 hy-workflow setup --yes --clients codex --ci-command 'npm test' --accept-artifact-changes --review-artifact 'hy-workflow.json:<before>:<after>' --json
+hy-workflow setup --yes --clients codex --ci-command 'npm test' --accept-artifact-changes --json
+hy-workflow setup --yes --clients codex --force-client-overwrite codex --json
+hy-workflow setup --yes --clients codex --migrate-legacy-clients --json
 hy-workflow unset --yes --clients all --remove-global --json
 ```
 
-Non-interactive use requires `--yes`, explicit `--clients`, and either existing valid `ci.commands` or explicit repeatable `--ci-command`. A bare `--accept-ci-commands` is rejected because it does not identify what was reviewed. `--dry-run` reports project evidence, CI candidates, artifact diff/hash/change-kind and confirmation requirements without writing; JSON emits one envelope. To apply drift non-interactively on `hy-workflow.json` or `.github/workflows/hy-workflow.yml`, pass `--accept-artifact-changes` plus one exact `--review-artifact <file>:<before-sha256|absent>:<after-sha256>` for every accepted diff. Stale or self-generated approval hashes fail closed.
+Non-interactive use requires `--yes`, explicit `--clients`, and either existing valid `ci.commands` or explicit repeatable `--ci-command`. A bare `--accept-ci-commands` is rejected because it does not identify what was reviewed. `--dry-run` reports project evidence, CI candidates, artifact diff/hash/change-kind and confirmation requirements without writing; JSON emits one envelope. After `--dry-run --json` the exact artifact hashes are cached on the OS user state for 5 minutes, so an immediate `--accept-artifact-changes` (without `--review-artifact`) will reuse them automatically. To apply drift non-interactively on `hy-workflow.json` or `.github/workflows/hy-workflow.yml`, pass `--accept-artifact-changes` plus one exact `--review-artifact <file>:<before-sha256|absent>:<after-sha256>` for every accepted diff; stale or self-generated approval hashes fail closed.
+
+`--force-client-overwrite <client1,client2>` re-installs the hy-workflow-owned user-scope MCP definition for those clients even when the existing entry is unreadable, shadowed, or drifted from the owned definition. It does not touch project-scope (tracked) files; combine with `--migrate-legacy-clients` if legacy project-level MCP files (.mcp.json, .opencode/, .codex/, .claude/) are blocking setup.
+
+`--migrate-legacy-clients` scans the project root for legacy client MCP definitions referencing hy-workflow or docs-gardener, backs them up to `.hy-cleanup-backup/<timestamp>/`, ensures user-scope definitions exist, then moves the project-level files out of the way. Project files are moved (not deleted) so they can be reviewed and `git rm`'d later.
 
 Setup auto-migrates the managed `AGENTS.md` block without an acceptance flag: existing hand-written content outside the markers is preserved byte-for-byte, and malformed legacy blocks are rewritten to the canonical versioned block.
 

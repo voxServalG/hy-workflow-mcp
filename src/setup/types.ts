@@ -65,6 +65,19 @@ export type SetupOptions = {
   acceptCiCommands?: boolean;
   ciCommands?: string[];
   projectId?: string;
+  /**
+   * When set, setup will force-reinstall the owned user-scope MCP definition for these
+   * clients even when an inspect() returns unreadable/shadowed/no-longer-matches. Only
+   * user-scope entries are removed and rewritten; project-scope files are never touched.
+   */
+  forceClientOverwrite?: ClientName[];
+  /**
+   * When true, setup scans the project root for legacy client-local MCP definitions
+   * (.mcp.json, .opencode/, .codex/, .claude/), backs them up under
+   * .hy-cleanup-backup/<timestamp>/, ensures user-scope definitions for hy-workflow/docs-gardener,
+   * and moves the project-level legacy files out of the way.
+   */
+  migrateLegacyClients?: boolean;
 };
 
 export type SetupClientStatus = "configured" | "replaced" | "removed" | "unchanged" | "shadowed" | "skipped" | "recovery_required";
