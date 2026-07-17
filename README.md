@@ -1,160 +1,228 @@
-# hy-workflow MCP
+<p align="center">
+  <h1 align="center">最蠢的模型，进化吧！</h1>
+  <p align="center">
+    <strong>让任何开发 agent（Claude Code / Codex / OpenCode / Cursor …）听话的工作流守门员。</strong>
+  </p>
+  <p align="center">
+    agent 必须：<b>先读文档 → 先做计划 → 等你批准 → 锁死可改的文件 → 实现 → 同步文档 → 本地验证全绿 → 才能提交 / 提 PR / 等 CI / 合并</b>。
+    <br/>不再跳步、不再乱改文件、不再把本地缓存混进 PR。
+  </p>
+</p>
 
-> 让任何开发 agent（Claude Code / Codex / OpenCode 等）听话的工作流守门员。
->
-> agent 必须：**先读文档 → 先做计划 → 等你批准 → 锁定要改的文件 → 实现 → 同步文档 → 本地验证 → 才能提交/提 PR/等 CI/合并**。不再跳步、不再乱改文件、不再把本地缓存混进 PR。
+<p align="center">
+  <a href="https://www.npmjs.com/package/@voxstudio/hy-workflow"><img alt="npm latest" src="https://img.shields.io/npm/v/@voxstudio/hy-workflow/latest?color=cc3534&label=latest&style=flat-square"/></a>
+  <a href="https://www.npmjs.com/package/@voxstudio/hy-workflow"><img alt="npm next" src="https://img.shields.io/npm/v/@voxstudio/hy-workflow/next?color=e8a22c&label=next&style=flat-square"/></a>
+  <a href="https://www.npmjs.com/package/@voxstudio/hy-workflow"><img alt="npm weekly downloads" src="https://img.shields.io/npm/dw/@voxstudio/hy-workflow?style=flat-square"/></a>
+  <a href="LICENSE"><img alt="license MIT" src="https://img.shields.io/npm/l/@voxstudio/hy-workflow?style=flat-square"/></a>
+  <a href="https://modelcontextprotocol.io/"><img alt="MCP compatible" src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square"/></a>
+</p>
 
 ---
-
-## 30 秒上手
-
-### 1. 安装（一行）
 
 ```bash
 npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 ```
 
-国内网络加镜像：
+<sub>国内镜像加 <code>--registry=https://registry.npmmirror.com</code>。需要 Node.js ≥ 18、<code>git</code> 在 PATH、<code>gh</code> 已登录。</sub>
+
+---
+
+## 🤡 没有 hy-workflow 的 agent，长这样
+
+| 裸奔 agent | 有 hy-workflow |
+|---|---|
+| ❌ 你说"加个 rate limit"，它直接在 main 上改完就 push | ✅ 先读 `docs/`，出 PlanDoc，等你回 `approve` 才动手 |
+| ❌ scope 不锁，顺手改了 17 个无关文件 | ✅ 只能改 PlanDoc 里列的文件，多一个都不行 |
+| ❌ 改了代码不跑测试，CI 红了就摆烂 | ✅ 本地必须 compile + lint + tests 全绿才允许 commit |
+| ❌ 改了代码忘了改文档 / 改了文档忘了改代码 | ✅ 改完自动 `hy_sync_docs` gate，不同步不许走 |
+| ❌ 把本地 `.env` / `node_modules` / 缓存误塞进 PR | ✅ boundary gate 拦截新外部依赖和可疑路径 |
+| ❌ 直接合 main，没有 PR、没有 review | ✅ 必须建分支 → 提 PR → 等 CI 绿 → 才 merge |
+| ❌ "我以为你要改那个文件" | ✅ 所有决定写进 PlanDoc，可审计、可驳回、可 reset |
+
+---
+
+## ⚡ 30 秒上手
 
 ```bash
-npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest --registry=https://registry.npmmirror.com
-```
+# 1. 装
+npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 
-要求 Node.js ≥ 18、`git` 在 PATH、`gh` 已登录（要用来建 PR 和查 CI）。
-
-### 2. 在你的项目里跑 setup
-
-```bash
-cd 你的项目根目录
+# 2. 在你项目根跑 setup（中文 TUI）
+cd 你的项目
 hy-workflow setup
 ```
 
 setup 会自动：
-- 识别项目语言（JS/TS/Python/Go/Rust）、源文件目录、主分支、文档目录
-- 为 Codex / Claude Code / OpenCode 配好 MCP（不写项目级配置，只改你本机客户端的用户配置）
-- 在仓库里写入 / 更新三个**团队共有文件**（提交到 git 的）：
-  - `hy-workflow.json`：项目工作流配置（主分支、语言、文档目录、CI 命令）
-  - `.github/workflows/hy-workflow.yml`：CI 上跑 doclint + codelint
-  - `AGENTS.md` 里的 `<!-- hy-workflow-rules -->` 托管块：agent 规则（块外你写的团队自定义指令字节级保留，setup 只替换块内）
-- 推断你的 CI 命令（识别 `npm test` / `cargo test` / `pytest` 等），让你确认
 
-完了**重启你的 MCP 客户端**（Claude Code / Codex / OpenCode），在对话里让 agent 调 `hy_status` 就能看到当前阶段。
+- 🔍 识别项目语言（JS/TS/Python/Go/Rust）、源码目录、主分支、文档目录
+- 🔌 给 Codex / Claude Code / OpenCode 配好 MCP（**只写你本机用户级配置，不往项目里塞 `.opencode/`/`.codex/`**）
+- 📝 在仓库里写入/更新三个**团队共有文件**（要提交到 git）：
+  - `hy-workflow.json` — 项目工作流配置
+  - `.github/workflows/hy-workflow.yml` — CI 跑 doclint + codelint
+  - `AGENTS.md` 里的 `<!-- hy-workflow-rules -->` 托管块 — agent 规则（块外你写的团队指令字节级保留）
+- 🧠 推断你的 CI 命令（`npm test` / `cargo test` / `pytest` …），让你确认
 
-### 3. 第一次对话里跟 agent 说什么
+重启 MCP 客户端，然后——
 
-直接说你要做的事，比如：
+> 直接对 agent 说："帮我给登录接口加 rate limit，先做个计划。"
 
-> 帮我给这个项目的登录接口加个 rate limit，先做个计划。
-
-agent 会自动：
-1. 调 `hy_read_docs(before_plan)` 读 `docs/` 目录建事实基线
-2. 调 `hy_plan` 产出 PlanDoc（改哪些文件、怎么验证、风险）
-3. **停下来等你回复 `approve`**（调 `hy_approve`）
-4. 你批准后才建分支、改代码、跑验证、提 PR
-
-只要在对话里看到 PlanDoc 摘要，你看一眼回 `approve`，剩下的 agent 自己跑。
+agent 会自己跑：`hy_read_docs(before_plan)` → `hy_plan` → **停下来把 PlanDoc 摘要给你看** → 你回 `approve` → 建分支 → 改代码 → 同步文档 → 本地验证 → 提 PR。
 
 ---
 
-## 最常见的三个问题
+## 🧩 功能卡片
 
-### Q1: agent 说 "setup update required / tool mismatch" 怎么办？
-
-你升级了 `@voxstudio/hy-workflow` 全局包。回项目根目录重跑：
-
-```bash
-hy-workflow setup
-```
-
-然后重启 MCP 客户端。
-
-### Q2: agent 说需要 `hy_init` 怎么办？
-
-说明这个项目还没在你这台机器上初始化过。在终端跑：
-
-```bash
-hy-workflow setup
-```
-
-（`hy_init` 是 MCP 工具，**不会改你项目文件**；真正写项目文件的只有 `hy-workflow setup` CLI。）
-
-### Q3: setup 提示 "Project type is mixed; explicit confirmation is required" 怎么办？
-
-项目里同时有多种语言（比如 `.ts` + `.js`），setup 不敢自己猜。手动传参数：
-
-```bash
-hy-workflow setup --yes --clients codex,claude,opencode \
-  --ci-command 'npm ci' --ci-command 'npm test' \
-  --json
-```
-
-或者先写一个 `hy-workflow.json`（见 [docs/setup.md](./docs/setup.md)）。
+| | |
+|---|---|
+| 📋 **Plan-first** | 没有 PlanDoc、没有你 `approve`，agent 一个字节都不改 |
+| 🔒 **Scope-locked** | 只能改 PlanDoc 里列的文件，多改一个直接被 gate 打回 |
+| 📝 **Docs-synced** | 改代码必须同步 `docs/`，文档漂移不许往下走 |
+| ✅ **Verify-gated** | 本地 compile / lint / tests 全绿才允许 commit，CI 绿才允许 merge |
+| 🤝 **Multi-client** | Codex、Claude Code、OpenCode 一套配置全支持 |
+| 🌐 **CI-enforced** | GitHub Actions 跑固定版本 doclint + codelint，零扫描也不许绿 |
+| 🛟 **Safe-unset** | `hy-workflow unset` 只删本机部署，团队文件一个字节不动 |
+| 🇨🇳 **中文 TUI** | setup 中文交互；海外同事 `--language en` |
 
 ---
 
-## 工作流长什么样（给想看全貌的人）
+## 🔄 工作流长这样
 
-首次接入项目：
+打开你的 agent，说一句话，它自己跑这条流水线：
 
-```text
-setup TUI → restart client → hy_init → hy_read_docs(before_plan) → hy_plan
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 你
+    participant A as Agent
+    participant D as Docs
+    participant G as Git/GitHub
+
+    U->>A: "加个 rate limit，先做计划"
+    A->>D: hy_read_docs(before_plan) 读 docs/ 建基线
+    A->>U: hy_plan 出 PlanDoc（改哪些文件、风险、验证）
+    U-->>A: approve
+    A->>D: hy_read_docs(before_approve) 二审计划没飘
+    A->>G: hy_branch 建分支
+    A->>A: hy_edit 锁 scope，开始改代码
+    A->>D: hy_sync_docs 同步文档
+    A->>A: hy_verify 本地 compile+lint+tests
+    A->>G: hy_commit git add+commit+push+建 PR
+    A->>G: hy_ci 等 CI 绿
+    A->>G: hy_merge 合并 PR
+    A->>G: hy_chain rebase 下游分支
+    A->>A: hy_reset 回 plan 等下一个任务
 ```
 
-之后每个改动：
+<details>
+<summary>看不惯 mermaid？纯文本版（所有渲染器通用）</summary>
 
-```text
+```
 hy_status
 → hy_read_docs(before_plan)      # 先读文档建基线
-→ hy_plan                         # 产出计划给你看
-→ 你 approve                      # 回复 approve 放行；回复别的就是驳回
-→ hy_read_docs(before_approve)    # 二审计划没飘
+→ hy_plan                         # 产出 PlanDoc 给你看
+→ 你 approve                      # approve 放行；别的就是驳回
+→ hy_read_docs(before_approve)    # 二审没飘
+→ hy_approve                      # 你 approve
 → hy_branch                       # 建分支
-→ hy_edit                         # 锁定 scope，agent 只能改计划里的文件
-→ （agent 改代码/文档）
-→ hy_read_docs(after_edit)        # 审计实现 diff
-→ hy_sync_docs                    # 同步文档（如有）
-→ hy_verify                       # 本地 lint + 编译 + 测试
-→ （必要时 hy_amend_plan 小改 scope，你再 approve 一次）
-→ hy_commit                       # git add + commit + push + 建 PR
-→ hy_ci                           # 等 GitHub CI 绿
-→ hy_merge                        # 合并 PR
-→ hy_chain                        # rebase 下游分支（没有就空数组）
-→ hy_reset                        # 回到 plan，准备下一个任务
+→ hy_edit                         # 锁 scope
+→ （agent 改代码 / 文档）
+→ hy_read_docs(after_edit)        # 审计 diff
+→ hy_sync_docs                    # 同步文档
+→ hy_verify                       # 本地全量校验
+→ hy_amend_plan                   # verify 允许的小范围 scope 修订（需你再 approve）
+→ hy_commit                       # 提 PR
+→ hy_ci                           # 等 CI 绿
+→ hy_merge                        # 合并
+→ hy_chain                        # rebase 下游分支
+→ hy_reset                        # 回 plan 等下一个任务
 ```
+
+</details>
 
 更细的工具说明：[docs/tools.md](./docs/tools.md)，状态机：[docs/state-machine.md](./docs/state-machine.md)。
 
 ---
 
-## 文件边界（哪些要提交，哪些不要）
+## 💬 真实对话长这样
 
-| 类别 | 文件 | 处理方式 |
-| --- | --- | --- |
-| setup 团队产物（提交到仓库） | `hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` 中 `<!-- hy-workflow-rules -->` 托管块 | setup 自动维护；块外自定义指令属于团队，setup 不动 |
-| runtime/client 产物（**不要提交**） | `~/.config/hy-workflow/`、`~/.local/state/hy-workflow/`、`~/.cache/hy-workflow/`、MCP 客户端用户级配置 | 在你本机用户目录，不进仓库；`hy-workflow unset` 清当前项目 |
-| legacy/compat（**不要提交**） | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 仅在旧 CLI 运行时临时生成，setup/unset 不删团队文件 |
+```
+你：帮我给这个项目的登录接口加 rate limit，先做个计划。
 
-setup 改了团队文件应当单独开一个 "setup artifact sync" PR 提交，不要混进业务 PR。
+agent：
+  [hy_read_docs(before_plan)] 已读取 docs/api.md、docs/auth.md
+  [hy_plan] PlanDoc 摘要：
 
----
+    ## Plan
+    现在：登录接口 POST /api/login 无速率限制，存在暴力破解风险。
+    期望：加 5 次/分钟/IP 限制，超限返回 429。
+    Scope：
+      changes: src/middleware/rateLimit.ts (新增), src/routes/auth.ts (接入)
+      docs: docs/api.md (补 429 说明)
+    Verify: npm run lint && npm run build && npm test
+    Risks: 共享出口 IP 误杀 → 用 X-Forwarded-For 取真实 IP
 
-## 想卸？
+    回复 approve 开始执行。
 
-```bash
-cd 你的项目根目录
-hy-workflow unset
+你：approve
+
+agent：
+  [hy_branch] fix/rate-limit-login
+  [hy_edit] 锁定 2 个代码文件 + 1 个文档文件
+  [改代码 ...]
+  [hy_sync_docs] 同步 docs/api.md
+  [hy_verify] lint ✅ build ✅ test ✅ 42 passed
+  [hy_commit] 推送并建 PR #142
+  [hy_ci] 等待 CI... Verify ✅ doclint ✅ codelint ✅
+  [hy_merge] PR #142 已合并到 main
+  [hy_reset] 下一个任务？
 ```
 
-unset 只删你本机的 deployment/state/cache 和客户端 MCP 登记，**不删仓库里的 `hy-workflow.json`、workflow 和 AGENTS.md**——那些是团队文件，要走正常 PR 才能改。
+你只需要在 PlanDoc 那一步看一眼，回一句 `approve`。剩下的 agent 自己跑。
 
 ---
 
-## Codex / Claude Code / OpenCode 配置长什么样
+## 📁 文件边界（什么要 commit，什么不要）
 
-setup 会自动写，一般不用手改。期望态：
+| 类别 | 文件 | 处理方式 |
+|---|---|---|
+| **setup 团队产物（提交到仓库）** | `hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` 中 `<!-- hy-workflow-rules -->` 托管块 | setup 自动维护；块外自定义指令属于团队，setup 不动 |
+| **runtime/client 产物（不要提交）** | `~/.config/hy-workflow/`、`~/.local/state/hy-workflow/`、`~/.cache/hy-workflow/`、MCP 客户端用户级配置 | 在你本机用户目录；`hy-workflow unset` 清当前项目 |
+| **legacy/compat（不要提交）** | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 各 client 自己的项目级配置，setup 不删，用 `--migrate-legacy-clients` 备份迁移 |
+
+setup 改了团队文件应单独开一个 "setup artifact sync" PR 提交，不要混进业务 PR。
+
+---
+
+## ❓ 最常见的几个问题
+
+**Q1: agent 说 "setup update required / tool mismatch" 怎么办？**
+A: 你升级了 `@voxstudio/hy-workflow` 全局包。回项目根目录重跑 `hy-workflow setup`，然后重启 MCP 客户端。0.2.3 起升级场景 setup 会自愈 sidecar 差异，不需要手动清理。如果真遇到旧 entry 卡壳（极个别升级路径），可以加 `--force-client-overwrite codex,claude,opencode` 强制重装 user-scope 定义。
+
+**Q2: agent 说需要 `hy_init` 怎么办？**
+A: 这个项目还没在你这台机器上初始化。终端跑 `hy-workflow setup`。（`hy_init` 是 MCP 工具，不改项目文件；真正写项目文件的是 setup CLI。）
+
+**Q3: setup 提示 "Project type is mixed; explicit confirmation is required"？**
+A: 项目里多种语言共存（比如 `.ts` + `.py`），setup 不敢猜。非交互模式传：
+```bash
+hy-workflow setup --yes --clients codex,claude,opencode \
+  --ci-command 'npm ci' --ci-command 'npm test' --json
+```
+或先写好 `hy-workflow.json`（见 [docs/setup.md](./docs/setup.md)）。
+
+**Q4: 支持 Python / Go / Rust / Bun 吗？**
+A: 支持。setup 识别 `pyproject.toml`/`go.mod`/`Cargo.toml`/`bun.lock`，CI 会自动装对应 toolchain，跑 `pytest`/`go test`/`cargo test`/`bun test`。多语言共存时按 Q3 显式确认。
+
+**Q5: 和 Cursor rules / Claude Desktop settings / .cursorrules 是什么关系？**
+A: 它们是**提示词级**约定，agent 可以无视；hy-workflow 是**工具级**强制——agent 必须通过 MCP 工具调 gate，没走 gate 就拿不到 commit/PR/merge 的能力。两者可以共存，AGENTS.md 托管块本身就会被所有 client 读。
+
+---
+
+## 🛠 Codex / Claude Code / OpenCode 配置长啥样
+
+setup 自动写，一般不用手改。期望态：
 
 ```toml
-# ~/.codex/config.toml （Codex 用户级）
+# ~/.codex/config.toml（Codex 用户级）
 [mcp_servers.hy-workflow]
 command = "hy-workflow"
 startup_timeout_sec = 60
@@ -167,37 +235,59 @@ startup_timeout_sec = 60
 tool_timeout_sec = 300
 ```
 
-Claude Code 和 OpenCode 的配置格式类似，setup 会写到对应的用户级配置文件里。
+Claude Code 和 OpenCode 配置类似，setup 写到对应用户级文件。
 
 ---
 
-## 深入文档
+## 🚪 想卸？
 
-完整合同文档入口：[docs/index.md](./docs/index.md)。常用几篇：
+```bash
+cd 你的项目根目录
+hy-workflow unset
+```
 
-- [Setup 详解](./docs/setup.md)
-- [工具参考](./docs/tools.md)
-- [CLI 契约](./docs/cli.md)
-- [架构](./docs/architecture.md)
-- [状态机](./docs/state-machine.md)
-- [verify pipeline](./docs/verify.md)
-- [发布验收](./docs/acceptance.md)
+unset 只删你本机 deployment/state/cache 和客户端 MCP 登记，**不删仓库里的 `hy-workflow.json`、workflow 和 AGENTS.md**——那些是团队文件，走正常 PR 改。
 
 ---
 
-## 验证工具
+## 📚 深入文档
 
-`hy_verify` 做本地 gate：compile → scope → boundary → platform → smoke → tests。
-setup 生成的 GitHub Actions workflow 先跑你确认的 `ci.commands`，再强制跑固定版本 doclint/codelint。
-CI 没命令、命令超时/失败、doclint/codelint 扫零文件、没有 checks 或只有 skipped/neutral 都 **fail closed**。
-仓库管理员需要在 GitHub ruleset / branch protection 里把 `Verify` check 设为 required（setup 不越权改管理配置）。
+合同文档入口：[docs/index.md](./docs/index.md)。常用几篇：
+
+- [Setup 详解](./docs/setup.md) · [CLI 契约](./docs/cli.md)
+- [工具参考](./docs/tools.md) · [架构](./docs/architecture.md)
+- [状态机](./docs/state-machine.md) · [verify pipeline](./docs/verify.md)
+- [错误码](./docs/errors.md) · [发布验收](./docs/acceptance.md)
 
 ---
 
-## 自举
+## ✅ 验证有多严
+
+- `hy_verify`：compile → scope → boundary → platform → smoke → tests，一层都不能少
+- setup 生成的 GitHub Actions：先跑你确认的 `ci.commands`，再强制 pinned doclint/codelint
+- CI 没命令 / 命令失败 / doclint/codelint 扫零文件 / 无 checks 或只有 skipped/neutral → **fail closed**
+- 仓库管理员需在 GitHub ruleset 把 `Verify` check 设为 required（setup 不越权改管理配置）
+
+---
+
+## ⭐ Star History
+
+帮你驯服 agent 了？Star 一下让更多 agent 不再裸奔 🛡️
+
+<a href="https://star-history.com/#voxServalG/hy-workflow-mcp&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=voxServalG/hy-workflow-mcp&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=voxServalG/hy-workflow-mcp&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=voxServalG/hy-workflow-mcp&type=Date" />
+  </picture>
+</a>
+
+---
+
+## 🪞 自举
 
 本项目自己也用 hy-workflow 管理。
 
-## 许可
+## 📄 许可
 
 MIT
