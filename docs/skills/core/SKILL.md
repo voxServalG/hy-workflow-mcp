@@ -9,6 +9,8 @@ description: Operate the hy-workflow MCP safely in this repository.
 
 Use this workflow order for ordinary development: hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_ci -> hy_merge -> hy_chain -> hy_reset.
 
+For long-running verify suites (any command estimated >60s, large test layers, or when hy_verify returns a timeout hint), use the async exam path instead of synchronous hy_verify: hy_exam_plan to get the check manifest and nonces, run each listed command via Bash collecting exitCode + last 4KB stdout, then hy_exam_submit with the examId and results. Both paths produce a verifyHash that unblocks hy_commit.
+
 For first setup, run the TUI and inspect its Git-tracked/manifests/base-ref project evidence, multi-extension directories, native `ci.commands`, client effective scopes, and artifact diff. Unknown/material-mixed/low-confidence profiles, empty docs, missing refs, unsafe CI inference, or drift require explicit recovery/confirmation. Commit only `hy-workflow.json` and `.github/workflows/hy-workflow.yml`, restart the client, then run hy_init; deployment/state/cache/client config remain external and unset never deletes team files.
 
 Documentation gates are mandatory and indivisible. Reads are task-ranked and budgeted; follow `pagination.nextCursor` when `hasMore`, while workflow state stores metadata/digests rather than excerpts. Empty/no-fact docs or stale managed rules fail closed. Generated Verify runs confirmed `ci.commands`, then pinned doclint/codelint; missing commands, zero scans, timeout, no checks or non-success checks block merge. An administrator, not setup, makes Verify required.
@@ -23,6 +25,8 @@ Documentation gates are mandatory and indivisible. Reads are task-ranked and bud
 - `hy_edit`
 - `hy_sync_docs`
 - `hy_verify`
+- `hy_exam_plan`
+- `hy_exam_submit`
 - `hy_amend_plan`
 - `hy_commit`
 - `hy_ci`

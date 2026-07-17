@@ -36,7 +36,7 @@ The generated workflow runs the confirmed `ci.commands` sequence followed by man
 The MCP surface is canonical in `src/commands/catalog.ts` and registered by `src/server.ts`:
 
 - `hy_init`, `hy_read_docs`, `hy_plan`, `hy_approve`
-- `hy_branch`, `hy_edit`, `hy_sync_docs`, `hy_verify`, `hy_amend_plan`
+- `hy_branch`, `hy_edit`, `hy_sync_docs`, `hy_verify`, `hy_exam_plan`, `hy_exam_submit`, `hy_amend_plan`
 - `hy_commit`, `hy_ci`, `hy_merge`, `hy_chain`, `hy_reset`, `hy_status`
 
 Contract lint checks that README, tool docs, server registration, and tests agree on this surface.
