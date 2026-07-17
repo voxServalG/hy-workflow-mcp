@@ -19,6 +19,8 @@ import { handleBranch } from "./tools/branch.js";
 import { handleEdit } from "./tools/edit.js";
 import { handleVerify } from "./tools/verify.js";
 import { handleAmendPlan } from "./tools/amend_plan.js";
+import { handleExamPlan } from "./tools/exam-plan.js";
+import { handleExamSubmit } from "./tools/exam-submit.js";
 import { handleCommit } from "./tools/commit.js";
 import { handleCi } from "./tools/ci.js";
 import { handleMerge } from "./tools/merge.js";
@@ -282,8 +284,42 @@ const TOOLS = [
   },
   {
     name: "hy_verify",
-    description: "本地任务校验：compile + scope + boundary + platform + smoke + tests。setup 部署的 GitHub Actions 必须执行 doclint 与 codelint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。",
+    description: "本地任务校验（同步快路径）：compile + scope + boundary + platform + smoke + tests。setup 部署的 GitHub Actions 必须执行 doclint 与 codelint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。单命令预计 >60s 或 tests 层较重时请改用 hy_exam_plan/hy_exam_submit 异步模式避免 MCP transport 超时。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "hy_exam_plan",
+    description: "异步 verify 第 1 步（出题）：立即返回一份检查清单（examId + nonce + 每命令 cwd/timeoutMs/expectExitCode），不在 MCP transport 里跑命令。适合长 test 套件或命令预计 >60s 的场景。agent 用 Bash 逐条运行、收集 exitCode 和最后 4KB stdout，再调 hy_exam_submit 交卷。清单与同步 hy_verify 跑的命令一致。",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "hy_exam_submit",
+    description: "异步 verify 第 2 步（阅卷）：提交 hy_exam_plan 颁发的 examId + 每条命令的 result（id/command/nonce/exitCode/stdoutTail）。校验 nonce、命令字串、exitCode、mustContain 正则，以及 scopeFingerprint（git write-tree）与出题时一致。全部通过才写 verifyHash 放行 commit，否则返回 failedChecks 供修后补交。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        examId: { type: "string", description: "hy_exam_plan 返回的 examId（2 小时 TTL）。" },
+        results: {
+          type: "array",
+          description: "按 ExamCheck 列表逐条提交结果。",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              command: { type: "string", description: "原样返回 ExamCheck.command 字串，不能改。" },
+              nonce: { type: "string" },
+              exitCode: { type: "integer" },
+              durationMs: { type: "integer" },
+              stdoutTail: { type: "string", description: "stdout 最后 4KB。" },
+              stderrTail: { type: "string" },
+            },
+            required: ["id", "command", "nonce", "exitCode"],
+          },
+        },
+      },
+      required: ["examId", "results"],
+      additionalProperties: false,
+    },
   },
   {
     name: "hy_amend_plan",
@@ -410,6 +446,8 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
     case "hy_branch":  return handleBranch(args as any);
     case "hy_edit":    return handleEdit();
     case "hy_verify":  return handleVerify();
+    case "hy_exam_plan": return handleExamPlan();
+    case "hy_exam_submit": return handleExamSubmit(args as any);
     case "hy_amend_plan": return handleAmendPlan(args as any);
     case "hy_commit":  return handleCommit(args as any);
     case "hy_ci":      return handleCi(args as any);

@@ -10,6 +10,8 @@ const EXPECTED_TOOL_LITERALS = [
   "hy_edit",
   "hy_sync_docs",
   "hy_verify",
+  "hy_exam_plan",
+  "hy_exam_submit",
   "hy_amend_plan",
   "hy_commit",
   "hy_ci",

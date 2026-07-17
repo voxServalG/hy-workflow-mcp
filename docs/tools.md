@@ -14,6 +14,8 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 | `hy_edit`   | branch, edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_sync_docs` | edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
+| `hy_exam_plan` | edit, verify | — | verify (异步 verify 出题) | 否 |
+| `hy_exam_submit` | edit, verify | `{examId, results[]}` | commit (阅卷通过) / edit (失败补交) | 否 |
 | `hy_amend_plan` | verify | `{approved, note?}` | edit / verify | 否 |
 | `hy_commit` | commit | `{title, body}` | ci | 否 |
 | `hy_ci`     | ci, edit | — | merge (有效 checks 全绿) / ci (缺失、无效或 pending) / edit (失败) | 否 |
@@ -108,15 +110,18 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 
 ## hy_verify
 
-执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已匹配当前 PlanDoc 与实现 diff。全部通过后记录当前 implementation manifest、manifest hash、文件内容 digest 和 verifyHash，并转换到 commit。
+执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已完成；全部通过后记录 implementation manifest、manifest hash、verifyHash 并转换到 commit。`boundary.no_new_external` 校验外部依赖声明（package.json scripts/version 元数据允许变；真正的依赖清单变化仍 fail closed）。
 
-`boundary.no_new_external` 校验外部依赖声明，而不是把 `package.json` / `package-lock.json` 的任意字节变化都当成新增依赖。npm 包的 version、scripts 和 lockfile 根包 version 等发布元数据可以变化；dependencies、devDependencies、peerDependencies、optionalDependencies、bundle/bundledDependencies 或其他生态依赖清单发生变化仍 fail closed。无法读取或解析 `origin/<baseBranch>` 基线时同样失败。
+- **进入 Phase**: `edit`, `verify`; **通过→commit**; **失败→edit**
+- **通过**: `{ next:"commit", allPassed:true, checks, verifyHash }`
+- **失败**: `{ next:"edit", allPassed:false, hardFailed, failedChecks, recovery.byLayer }`
+- **长测试套件**: 命令预计 >60s 或 sync 超时，请改用异步 `hy_exam_plan`+`hy_exam_submit`（verifyHash 等价）。
 
-- **进入 Phase**: `edit`, `verify`
-- **通过后转换到**: `commit`
-- **失败后转换到**: `edit`
-- **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash, hint, allowedTools }`
-- **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks, failedChecks, recovery.byLayer }`
+## hy_exam_plan / hy_exam_submit（异步 verify）
+
+两工具实现 verify-as-oracle 模式，解决长测试套件触发 MCP `-32001 Request timed out`（90s）。sync `hy_verify` 仍保留为 <60s 快路径。
+- **hy_exam_plan**（出题）：立即返回 `examId`（2h TTL）、`scopeFingerprint`（git write-tree）、per-check `{id, layer, command, timeoutMs, expectExitCode, nonce, mustContain?}`；agent 用 Bash 逐条跑，收集 exitCode + 最后 4KB stdout。
+- **hy_exam_submit**（阅卷）：提交 `{examId, results:[{id, command, nonce, exitCode, stdoutTail?}]}`。校验：(1) exam 未过期；(2) nonce 匹配；(3) command 字串完全一致；(4) exitCode 匹配；(5) mustContain 正则；(6) git write-tree 未变。通过则写 verifyHash 放行 `hy_commit`，与 sync 路径等价；失败返回 `failedChecks[]`，2h 内只需补交失败项。进入 Phase: `edit, verify`；成功 → `commit`，失败 → `edit`（`recovery.nextAction=fix_then_resubmit`）。
 
 ## hy_amend_plan
 
@@ -185,11 +190,10 @@ setup 生成的 workflow 必须执行 doclint 与 codelint。仓库管理员需�
 
 ## hy_status
 
-只读工具，可任意阶段调用。返回当前 WorkflowState 快照。损坏的 workflow.json 会通过结构化 workflow state 错误返回，而不是暴露原始 JSON parse 异常。
+只读工具，返回 WorkflowState 快照（phase/branch/prNumber/plan/approved/verified/next/hint/setupUpdateCheck/capabilities）。损坏的 workflow.json 会返回结构化错误而不是原始异常。
 
 - **进入 Phase**: 无限制
-- **转换到**: 无（只读）
-- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, capabilities, action? }`；`capabilities` 包含启动时探测到的 git、gh 版本与 gh 认证状态，内部后端明确标为不可用。
+- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, capabilities, action? }`
 
 ## Related
 [Architecture](./architecture.md) · [State Machine](./state-machine.md) · [Verify Pipeline](./verify.md)
