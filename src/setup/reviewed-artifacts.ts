@@ -48,9 +48,12 @@ function writeCache(root: string, cache: ReviewedArtifactCache): void {
 
 /**
  * Persist reviewed artifact hashes from a dry-run for up to TTL_MS.
- * Silently overwrites any prior cache for this project.
+ * Silently overwrites any prior cache for this project. No-op when running
+ * under isolated acceptance (HY_WORKFLOW_ACCEPTANCE is set) so dry-run does
+ * not mutate the fingerprinted user state during release pressure tests.
  */
 export function cacheReviewedArtifacts(root: string, changes: Array<Pick<ArtifactChange, "file" | "beforeHash" | "afterHash">>): void {
+  if (process.env.HY_WORKFLOW_ACCEPTANCE) return;
   const now = Date.now();
   writeCache(root, {
     version: 1,

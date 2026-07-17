@@ -265,6 +265,7 @@ export function createWorkspace(sourceRoot: string): AcceptanceWorkspace {
     HY_ACCEPTANCE_CLIENT_STATE: join(root, "client-state.json"),
     HY_ACCEPTANCE_CLIENT_EVENTS: join(reports, "client-events.ndjson"),
     HY_ACCEPTANCE_LINT_ARCHIVE_DIR: lintArchives,
+    HY_WORKFLOW_ACCEPTANCE: "1",
   };
   for (const forbidden of ["SSH_AUTH_SOCK", "NPM_TOKEN", "NODE_AUTH_TOKEN", "GITHUB_TOKEN"]) {
     if (env[forbidden] !== undefined) throw new Error("Acceptance environment inherited forbidden credential variable: " + forbidden);
