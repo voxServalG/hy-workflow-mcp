@@ -4,6 +4,8 @@ import { structuredError } from "./errs/structured.js";
 import { findProjectRoot } from "./runtime/project.js";
 import { createClientAdapters, detectClients, executeSetup } from "./setup/operations.js";
 import { previewArtifactChanges } from "./setup/preflight.js";
+import { cacheReviewedArtifacts, loadReviewedArtifacts } from "./setup/reviewed-artifacts.js";
+import { scanLegacyClientConfigs } from "./setup/legacy-migration.js";
 import { beginSetupPrompt, detectWithPrompt, finishPrompt, promptSetupOptions, runWithSpinner, successMessage, failureMessage } from "./setup/prompts.js";
 import { SetupFailure, type SetupAction, type SetupLanguage, type SetupOptions } from "./setup/types.js";
 import { projectReadinessIssues } from "./tools/init.js";
@@ -96,6 +98,16 @@ export function parseSetupArgs(argv: string[], invokedAction: SetupAction): Pars
       }
     }
     else if (arg === "--accept-ci-commands") parsed.options.acceptCiCommands = true;
+    else if (arg === "--force-client-overwrite") {
+      const value = take(i, arg);
+      if (value !== null) {
+        i += 1;
+        const clients = parseClients(value);
+        if (!clients?.length) parsed.errors.push(`Invalid --force-client-overwrite value: ${value}`);
+        else parsed.options.forceClientOverwrite = clients;
+      }
+    }
+    else if (arg === "--migrate-legacy-clients") parsed.options.migrateLegacyClients = true;
     else if (arg === "--clients") {
       const value = take(i, arg);
       if (value !== null) {
@@ -217,13 +229,33 @@ export async function runSetupCli(
         );
       }
       if (options.acceptArtifactChanges && !options.reviewedArtifactChanges?.length) {
-        throw new SetupFailure(
-          "artifact_drift",
-          "SETUP_ARTIFACT_DRIFT",
-          "Non-interactive artifact approval requires exact reviewed before/after hashes.",
-          "Run --dry-run --json, then pass each accepted tuple with --review-artifact <file>:<before-sha256|absent>:<after-sha256>, or use the TUI.",
-        );
+        // Try the 5-minute TTL reviewed-artifact cache from a recent --dry-run, but only
+        // when there are real drift entries that would require acceptance.
+        const prePreview = previewArtifactChanges(projectRoot, ensureConfigDefaults(projectRoot, { dryRun: true }).candidate as JsonObject);
+        const requiringAcceptance = prePreview.filter(a => a.requiresAcceptance);
+        if (requiringAcceptance.length) {
+          const fromCache = loadReviewedArtifacts(projectRoot, requiringAcceptance);
+          if (fromCache) {
+            options.reviewedArtifactChanges = fromCache;
+          }
+        }
+        if (!options.reviewedArtifactChanges?.length) {
+          throw new SetupFailure(
+            "artifact_drift",
+            "SETUP_ARTIFACT_DRIFT",
+            "Non-interactive artifact approval requires exact reviewed before/after hashes.",
+            "Run --dry-run --json first (it caches reviewed hashes for 5 minutes), then rerun with --accept-artifact-changes. Or pass each accepted tuple with --review-artifact <file>:<before-sha256|absent>:<after-sha256>.",
+          );
+        }
       }
+    }
+    // When running non-interactive dry-run, cache the exact artifact hashes so the next
+    // --accept-artifact-changes invocation can reuse them without manual copy-paste.
+    if (!interactive && options.dryRun && options.json) {
+      const result = await executeSetup(projectRoot, options, adapters, { inspectDirectTools: true });
+      if (Array.isArray(result.artifactChanges)) cacheReviewedArtifacts(projectRoot, result.artifactChanges);
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      return result.ok ? 0 : 1;
     }
     let result;
     if (interactive) {
