@@ -247,18 +247,19 @@ function installClients(
         const desired = MCP_DEFINITIONS[server];
         const previous = snapshotFor(preflight, adapter, server);
         const existing = ownership.clients[adapter.name]?.[server];
-        // Drift is only fatal when the MCP definition (command/args/env) or core
-        // ownership fingerprints diverge. Setup-maintained sidecar fields
-        // (startup/tool timeouts) are re-applied on install and must not block
-        // upgrade just because they are missing from the current config.
+        // Ownership drift is determined purely by MCP semantics (command/args/env)
+        // and scope/source/enabled. Setup-maintained sidecar fields in the raw
+        // config (codex startup_timeout_sec/tool_timeout_sec/sectionFingerprint,
+        // file mode bits) are re-applied by install() on every setup run and
+        // must never block upgrade just because they diverge from what setup
+        // last wrote. Real external edits (different command, moved scope,
+        // disabled server, different args/env) still hard-fail here.
         const coreSnapshotEquals = (a: ClientServerSnapshot, b: ClientServerSnapshot): boolean => {
           if (a.definition ? !b.definition || !definitionEquals(a.definition, b.definition) : Boolean(b.definition)) return false;
           if (a.ownedDefinition ? !b.ownedDefinition || !definitionEquals(a.ownedDefinition, b.ownedDefinition) : Boolean(b.ownedDefinition)) return false;
-          if ((a.source ?? null) !== (b.source ?? null) || (a.scope ?? null) !== (b.scope ?? null) || (a.enabled ?? null) !== (b.enabled ?? null)) return false;
-          const rawA = a.raw as any, rawB = b.raw as any;
-          for (const key of ["sectionFingerprint", "entryFingerprint", "configMode"]) {
-            if ((rawA?.[key] ?? null) !== (rawB?.[key] ?? null)) return false;
-          }
+          if ((a.source ?? null) !== (b.source ?? null)) return false;
+          if ((a.scope ?? null) !== (b.scope ?? null)) return false;
+          if ((a.enabled ?? null) !== (b.enabled ?? null)) return false;
           return true;
         };
         const ownershipDrift = existing ? (existing.applied ? !coreSnapshotEquals(previous, existing.applied) : !definitionEquals(previous.definition, existing.desired)) : false;
@@ -402,7 +403,7 @@ function removeClients(root: string, selected: ClientAdapter[], transaction?: Se
         const resource = `client:${adapter.name}:${server}`;
         setupFailpoint(resource);
         const before = adapter.inspect(server);
-        if (!clientSnapshotEquals(before, entry.applied)) {
+        if (!clientSnapshotEquals(before, entry.applied, { strictSidecars: true })) {
           throw new SetupFailure(
             "ownership",
             "SETUP_OWNERSHIP_CONFLICT",
