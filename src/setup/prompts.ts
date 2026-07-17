@@ -15,6 +15,11 @@ type Copy = {
   cancelled: string;
   detecting: string;
   detected: string;
+  applying: string;
+  applied: string;
+  successInstall: string;
+  successUnset: string;
+  successNoChange: string;
   ciSuggested: string;
   ciCustom: string;
   acceptCi: string;
@@ -36,6 +41,11 @@ const COPY: Record<"zh" | "en", Copy> = {
     cancelled: "已取消，未做任何改动。",
     detecting: "正在检测客户端与有效配置…",
     detected: "客户端检测完成",
+    applying: "正在写入配置并更新客户端…",
+    applied: "配置完成",
+    successInstall: "hy-workflow 配置成功！请重启你的 MCP 客户端（Codex / Claude Code / OpenCode）以加载新工具。",
+    successUnset: "当前项目的 hy-workflow 部署已解除。",
+    successNoChange: "配置已是最新状态，无需改动。",
     ciSuggested: "检测到以下原生 CI 命令",
     ciCustom: "未检测到可靠的原生 CI 命令。请输入一个已验证的 CI 命令",
     acceptCi: "确认将这些命令写入 hy-workflow.json？",
@@ -55,6 +65,11 @@ const COPY: Record<"zh" | "en", Copy> = {
     cancelled: "Cancelled. No changes were made.",
     detecting: "Inspecting clients and effective configuration…",
     detected: "Client inspection complete",
+    applying: "Writing configuration and updating clients…",
+    applied: "Configuration applied",
+    successInstall: "hy-workflow configured successfully! Restart your MCP client (Codex / Claude Code / OpenCode) to load the new tools.",
+    successUnset: "hy-workflow deployment for this project has been removed.",
+    successNoChange: "Configuration already up to date; no changes needed.",
     ciSuggested: "Detected native CI commands",
     ciCustom: "No safe native CI command was detected. Enter one verified CI command",
     acceptCi: "Write these commands to hy-workflow.json?",
@@ -221,6 +236,30 @@ export function detectWithPrompt<T>(work: () => T): T {
     spinner.stop(COPY.zh.detected);
     throw error;
   }
+}
+
+export async function runWithSpinner<T>(message: string, doneMessage: string, work: () => Promise<T>): Promise<T> {
+  const spinner = p.spinner();
+  spinner.start(message);
+  try {
+    const result = await work();
+    spinner.stop(doneMessage);
+    return result;
+  } catch (error) {
+    spinner.stop("失败 / Failed");
+    throw error;
+  }
+}
+
+export function successMessage(action: SetupAction, changedFiles: string[], language: SetupOptions["language"]): string {
+  const copy = COPY[language ?? "zh"];
+  if (action === "unset") return copy.successUnset;
+  if (!changedFiles.length) return copy.successNoChange;
+  return copy.successInstall;
+}
+
+export function failureMessage(language: SetupOptions["language"]): string {
+  return language === "en" ? "Setup failed. See error above." : "配置失败，请查看上方错误信息。";
 }
 
 export function finishPrompt(message: string): void {

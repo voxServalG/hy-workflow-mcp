@@ -4,7 +4,7 @@ import { structuredError } from "./errs/structured.js";
 import { findProjectRoot } from "./runtime/project.js";
 import { createClientAdapters, detectClients, executeSetup } from "./setup/operations.js";
 import { previewArtifactChanges } from "./setup/preflight.js";
-import { beginSetupPrompt, detectWithPrompt, finishPrompt, promptSetupOptions } from "./setup/prompts.js";
+import { beginSetupPrompt, detectWithPrompt, finishPrompt, promptSetupOptions, runWithSpinner, successMessage, failureMessage } from "./setup/prompts.js";
 import { SetupFailure, type SetupAction, type SetupLanguage, type SetupOptions } from "./setup/types.js";
 import { projectReadinessIssues } from "./tools/init.js";
 
@@ -225,10 +225,22 @@ export async function runSetupCli(
         );
       }
     }
-    const result = await executeSetup(projectRoot, options, adapters, { inspectDirectTools: true });
+    let result;
+    if (interactive) {
+      const applyingCopy = options.language === "en"
+        ? { in: "Writing configuration and updating clients…", done: "Configuration applied" }
+        : { in: "正在写入配置并更新客户端…", done: "配置完成" };
+      result = await runWithSpinner(
+        applyingCopy.in,
+        applyingCopy.done,
+        () => executeSetup(projectRoot, options, adapters, { inspectDirectTools: true }),
+      );
+    } else {
+      result = await executeSetup(projectRoot, options, adapters, { inspectDirectTools: true });
+    }
     if (options.json) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    else if (interactive) finishPrompt(result.message);
-    else process.stdout.write(result.message + "\n");
+    else if (interactive) finishPrompt(result.ok ? successMessage(options.action, result.projectFilesChanged, options.language) : failureMessage(options.language));
+    else process.stdout.write((result.ok ? successMessage(options.action, result.projectFilesChanged, options.language) : result.message) + "\n");
     return result.ok ? 0 : 1;
   } catch (error: any) {
     emitError(error instanceof Error ? error : new SetupFailure("preflight", "SETUP_PREFLIGHT_FAILED", String(error)), options.json);
