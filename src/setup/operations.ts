@@ -247,7 +247,21 @@ function installClients(
         const desired = MCP_DEFINITIONS[server];
         const previous = snapshotFor(preflight, adapter, server);
         const existing = ownership.clients[adapter.name]?.[server];
-        const ownershipDrift = existing ? (existing.applied ? !clientSnapshotEquals(previous, existing.applied) : !definitionEquals(previous.definition, existing.desired)) : false;
+        // Drift is only fatal when the MCP definition (command/args/env) or core
+        // ownership fingerprints diverge. Setup-maintained sidecar fields
+        // (startup/tool timeouts) are re-applied on install and must not block
+        // upgrade just because they are missing from the current config.
+        const coreSnapshotEquals = (a: ClientServerSnapshot, b: ClientServerSnapshot): boolean => {
+          if (a.definition ? !b.definition || !definitionEquals(a.definition, b.definition) : Boolean(b.definition)) return false;
+          if (a.ownedDefinition ? !b.ownedDefinition || !definitionEquals(a.ownedDefinition, b.ownedDefinition) : Boolean(b.ownedDefinition)) return false;
+          if ((a.source ?? null) !== (b.source ?? null) || (a.scope ?? null) !== (b.scope ?? null) || (a.enabled ?? null) !== (b.enabled ?? null)) return false;
+          const rawA = a.raw as any, rawB = b.raw as any;
+          for (const key of ["sectionFingerprint", "entryFingerprint", "configMode"]) {
+            if ((rawA?.[key] ?? null) !== (rawB?.[key] ?? null)) return false;
+          }
+          return true;
+        };
+        const ownershipDrift = existing ? (existing.applied ? !coreSnapshotEquals(previous, existing.applied) : !definitionEquals(previous.definition, existing.desired)) : false;
         if (existing && ownershipDrift) {
           const forceRequested = options.forceClientOverwrite?.includes(adapter.name) ?? false;
           if (!forceRequested) {

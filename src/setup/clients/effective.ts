@@ -23,9 +23,12 @@ export function clientSnapshotEquals(left: ClientServerSnapshot, right: ClientSe
   if (left.ownedDefinition ? !right.ownedDefinition || !definitionEquals(left.ownedDefinition, right.ownedDefinition) : Boolean(right.ownedDefinition)) return false;
   if ((left.source ?? null) !== (right.source ?? null) || (left.scope ?? null) !== (right.scope ?? null) || (left.enabled ?? null) !== (right.enabled ?? null)) return false;
   if (JSON.stringify(sourceEvidence(left)) !== JSON.stringify(sourceEvidence(right))) return false;
+  // Only compare raw fingerprint/configMode fields that are not maintained internally
+  // by setup itself (startup/tool timeouts are re-applied by setTimeouts on every install,
+  // so their absence on an otherwise-matching definition must not block upgrade).
   const leftRaw = left.raw as any;
   const rightRaw = right.raw as any;
-  for (const key of ["startup_timeout_sec", "tool_timeout_sec", "sectionFingerprint", "entryFingerprint", "configMode"]) {
+  for (const key of ["sectionFingerprint", "entryFingerprint", "configMode"]) {
     if ((leftRaw?.[key] ?? null) !== (rightRaw?.[key] ?? null)) return false;
   }
   return true;
