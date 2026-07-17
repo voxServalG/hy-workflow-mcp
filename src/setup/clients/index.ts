@@ -67,9 +67,12 @@ export function normalizeDefinition(value: any): McpDefinition | null {
 
 export function definitionEquals(left: McpDefinition | null, right: McpDefinition | null): boolean {
   if (!left || !right) return left === right;
-  const sortedEnv = (value?: Record<string, string>) => Object.fromEntries(Object.entries(value ?? {}).sort(([a], [b]) => a.localeCompare(b)));
-  return JSON.stringify({ command: left.command, args: left.args, env: sortedEnv(left.env) })
-    === JSON.stringify({ command: right.command, args: right.args, env: sortedEnv(right.env) });
+  const norm = (d: McpDefinition) => ({
+    command: d.command,
+    args: d.args?.length ? [...d.args] : [],
+    env: Object.fromEntries(Object.entries(d.env ?? {}).sort(([a], [b]) => a.localeCompare(b))),
+  });
+  return JSON.stringify(norm(left)) === JSON.stringify(norm(right));
 }
 
 export function versionOf(executable: string): string | null {

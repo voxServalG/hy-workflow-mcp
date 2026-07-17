@@ -214,7 +214,15 @@ export async function runSetupCli(
         },
       });
       if (!prompted) return 0;
-      options = { ...prompted, dryRun: parsed.options.dryRun, json: parsed.options.json };
+      // Merge CLI-provided force/migrate flags into the TUI-driven options so
+      // --force-client-overwrite / --migrate-legacy-clients work in interactive mode too.
+      options = {
+        ...prompted,
+        dryRun: parsed.options.dryRun,
+        json: parsed.options.json,
+        forceClientOverwrite: parsed.options.forceClientOverwrite ?? prompted.forceClientOverwrite,
+        migrateLegacyClients: parsed.options.migrateLegacyClients ?? prompted.migrateLegacyClients,
+      };
     } else if (!parsed.options.yes || !parsed.explicitClients) {
       emitError({ type: "validation", subtype: "invalid_arguments", code: "CLI_USAGE", message: "non-interactive use requires --yes and --clients <list|all>", retryable: false }, parsed.options.json);
       return 1;
