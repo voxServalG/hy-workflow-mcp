@@ -541,6 +541,15 @@ function setupResult(
   transactionId?: string,
 ): SetupResult {
   const paths = projectPaths(root);
+  const copy = options.language === "en"
+    ? {
+        changed: `Shared project files changed: ${projectFilesChanged.join(", ")}`,
+        current: "Shared project files already current",
+      }
+    : {
+        changed: `已写入团队产物：${projectFilesChanged.join("、")}`,
+        current: "团队产物已是最新 (already current)",
+      };
   return {
     ok: true,
     action: "setup",
@@ -551,7 +560,7 @@ function setupResult(
     projectFilesChanged,
     localFilesChanged: options.dryRun ? [] : [paths.deployment, paths.registry, paths.clientOwnership],
     dryRun: options.dryRun,
-    message: projectFilesChanged.length ? `Shared project files changed: ${projectFilesChanged.join(", ")}` : "Shared project files already current",
+    message: projectFilesChanged.length ? copy.changed : copy.current,
     transactionId,
     tools: preflight.tools,
     artifactChanges: preflight.artifactChanges,
