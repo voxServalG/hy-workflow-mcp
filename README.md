@@ -209,6 +209,9 @@ hy-workflow setup --yes --clients codex,claude,opencode \
 ```
 或先写好 `hy-workflow.json`（见 [docs/setup.md](./docs/setup.md)）。
 
+**Q4: `hy_verify` 跑测试超时 / MCP client 报 -32001？**
+A: 同步 `hy_verify` 适合 <60s 的快路径。长测试套件用异步 verify-as-oracle：agent 调 `hy_exam_plan` 拿到检查清单和 nonce，用 Bash 逐条跑（没 MCP transport 超时），把 exitCode + 最后 4KB stdout 交给 `hy_exam_submit` 交卷。阅卷检查 nonce、命令字串、exitCode、mustContain 和 git tree hash，通过才写 verifyHash 放行 commit。2 小时内修完只需补交失败条目。
+
 **Q4: 支持 Python / Go / Rust / Bun 吗？**
 A: 支持。setup 识别 `pyproject.toml`/`go.mod`/`Cargo.toml`/`bun.lock`，CI 会自动装对应 toolchain，跑 `pytest`/`go test`/`cargo test`/`bun test`。多语言共存时按 Q3 显式确认。
 

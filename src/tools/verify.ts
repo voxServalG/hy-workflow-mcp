@@ -85,8 +85,8 @@ export async function handleVerify(): Promise<ToolResult> {
       failedChecks,
       implementationManifest: report.implementationManifest,
       suggestedAmendment: report.suggestedAmendment,
-      hint: "Do not call hy_commit. Inspect failed check layers, fix the minimal cause, then rerun hy_verify.",
-      allowedTools: ["hy_edit", "hy_verify", "hy_status"],
+      hint: "Do not call hy_commit. Inspect failed check layers, fix the minimal cause, then rerun hy_verify. If any command exceeds 60s or the full suite exceeds the MCP client timeout, switch to the async exam path (hy_exam_plan → run commands via Bash → hy_exam_submit).",
+      allowedTools: ["hy_edit", "hy_verify", "hy_exam_plan", "hy_status"],
       blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
       recovery: {
         tool: "hy_edit",

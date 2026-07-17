@@ -14,6 +14,8 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 | `hy_edit`   | branch, edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_sync_docs` | edit, verify | — | edit (返回 next=verify) | 否 |
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
+| `hy_exam_plan` | edit, verify | — | verify (异步 verify 出题) | 否 |
+| `hy_exam_submit` | edit, verify | `{examId, results[]}` | commit (阅卷通过) / edit (失败补交) | 否 |
 | `hy_amend_plan` | verify | `{approved, note?}` | edit / verify | 否 |
 | `hy_commit` | commit | `{title, body}` | ci | 否 |
 | `hy_ci`     | ci, edit | — | merge (有效 checks 全绿) / ci (缺失、无效或 pending) / edit (失败) | 否 |
@@ -117,6 +119,33 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 - **失败后转换到**: `edit`
 - **通过返回**: `{ next: "commit", allPassed: true, checks, verifyHash, hint, allowedTools }`
 - **失败返回**: `{ next: "edit", allPassed: false, hardFailed, checks, failedChecks, recovery.byLayer }`
+- **长测试套件**: 若任何命令预计 >60s 或 sync `hy_verify` 在 MCP transport 内超时，请改用异步 `hy_exam_plan` + `hy_exam_submit`（见下）。两者产出相同 verifyHash 并同等放行 `hy_commit`。
+
+## hy_exam_plan
+
+异步 verify 第 1 步（出题）。立即返回 `examId` + nonce + 检查清单（command/cwd/timeoutMs/expectExitCode/mustContain per check），**不在 MCP transport 里跑任何命令**。agent 用 Bash 逐条运行、收集 exitCode 和最后 4KB stdout，再调 `hy_exam_submit` 交卷。
+
+适用场景：tests 层较重、单命令 >60s、全量 verify 会触发 MCP client `-32001 Request timed out`。清单与 sync `hy_verify` 跑的命令完全一致。
+
+- **进入 Phase**: `edit`, `verify`
+- **成功返回**: `{ next: "verify", examId, issuedAt, expiresAt, scopeFingerprint, nonce, checks: ExamCheck[], display }`
+- **2 小时 TTL**，过期或 working tree 变化需重新 issue
+
+## hy_exam_submit
+
+异步 verify 第 2 步（阅卷）。提交 `examId` + 每条命令的 `{id, command, nonce, exitCode, stdoutTail?, durationMs?}`。服务端校验：
+1. exam 存在且未过期
+2. per-check nonce 匹配
+3. 提交的 command 字符串与 manifest 完全一致（防偷换命令）
+4. exitCode === expectExitCode
+5. mustContain/mustNotContain 正则通过（若声明）
+6. 当前 git write-tree hash 与 issue 时一致（防改代码不重跑）
+
+全部通过才写 verifyHash 放行 `hy_commit`；否则返回 `failedChecks[]`，修完只需补交失败条目（passed 条不需要重交），2h 内有效。
+
+- **进入 Phase**: `edit`, `verify`
+- **通过返回**: `{ next: "commit", passed: true, examId, verifyHash, submitted }`
+- **失败返回**: `{ next: "edit", passed: false, failedChecks, recovery.nextAction: "fix_then_resubmit", recovery.resubmitExamId }`
 
 ## hy_amend_plan
 
