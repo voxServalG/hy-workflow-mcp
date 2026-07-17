@@ -190,11 +190,10 @@ setup 生成的 workflow 必须执行 doclint 与 codelint。仓库管理员需�
 
 ## hy_status
 
-只读工具，可任意阶段调用。返回当前 WorkflowState 快照。损坏的 workflow.json 会通过结构化 workflow state 错误返回，而不是暴露原始 JSON parse 异常。
+只读工具，返回 WorkflowState 快照（phase/branch/prNumber/plan/approved/verified/next/hint/setupUpdateCheck/capabilities）。损坏的 workflow.json 会返回结构化错误而不是原始异常。
 
 - **进入 Phase**: 无限制
-- **转换到**: 无（只读）
-- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, capabilities, action? }`；`capabilities` 包含启动时探测到的 git、gh 版本与 gh 认证状态，内部后端明确标为不可用。
+- **返回**: `{ phase, branch, prNumber, plan, approved, verified, next, hint, allowedTools, setupUpdateCheck, capabilities, action? }`
 
 ## Related
 [Architecture](./architecture.md) · [State Machine](./state-machine.md) · [Verify Pipeline](./verify.md)
