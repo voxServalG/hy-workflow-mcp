@@ -13,6 +13,8 @@ import { definitionEquals } from "./clients/index.js";
 import { createOpenCodeAdapter } from "./clients/opencode.js";
 import { inspectSetupTools, runSetupPreflight, type SetupPreflight } from "./preflight.js";
 import { SHARED_PROJECT_FILES, sharedArtifactEvidence, writeSharedArtifacts } from "./shared.js";
+import { migrateLegacyClientConfigs, scanLegacyClientConfigs } from "./legacy-migration.js";
+import { cacheReviewedArtifacts, clearReviewedArtifacts, loadReviewedArtifacts } from "./reviewed-artifacts.js";
 import { setupFailpoint, withSetupTransaction, type ClientResourceEvidence, type SetupTransaction } from "./transaction.js";
 import { internalSetupTestHooks } from "./test-hooks.js";
 import {
@@ -233,6 +235,7 @@ function installClients(
   root: string,
   selected: ClientAdapter[],
   preflight: SetupPreflight,
+  options: SetupOptions,
   transaction?: SetupTransaction,
 ): ClientOutcome {
   const ownership = readOwnership(root);
@@ -246,24 +249,44 @@ function installClients(
         const existing = ownership.clients[adapter.name]?.[server];
         const ownershipDrift = existing ? (existing.applied ? !clientSnapshotEquals(previous, existing.applied) : !definitionEquals(previous.definition, existing.desired)) : false;
         if (existing && ownershipDrift) {
-          throw new SetupFailure(
-            "ownership",
-            "SETUP_OWNERSHIP_CONFLICT",
-            `${adapter.name} ${server} no longer matches the definition owned by hy-workflow.`,
-            "Review the external client edit explicitly; setup will not overwrite it or discard the original restoration snapshot.",
-            { client: adapter.name, server, ownedDesired: existing.desired, applied: existing.applied, current: previous },
-          );
+          const forceRequested = options.forceClientOverwrite?.includes(adapter.name) ?? false;
+          if (!forceRequested) {
+            const conflictSource = previous.sources?.find(s => s.scope === "project")?.source
+              ?? previous.sources?.find(s => s.scope === "user")?.source
+              ?? previous.source
+              ?? "(unknown)";
+            throw new SetupFailure(
+              "ownership",
+              "SETUP_OWNERSHIP_CONFLICT",
+              `${adapter.name} ${server} no longer matches the definition owned by hy-workflow.`,
+              [
+                `Existing entry source: ${conflictSource}`,
+                `To overwrite the user-scope definition owned by hy-workflow, rerun with --force-client-overwrite ${adapter.name}`,
+                "Project-scope (tracked legacy) files are never modified by setup; use --migrate-legacy-clients to back them up first.",
+              ].join("\n"),
+              { client: adapter.name, server, ownedDesired: existing.desired, applied: existing.applied, current: previous, conflictSource },
+            );
+          }
+          // Force path: remove current user-scope entry, then reinstall desired. Project-scope
+          // files are untouched here; if they exist, --migrate-legacy-clients should be used.
+          adapter.remove(server, existing.desired, existing.previous, previous);
+          ownership.clients[adapter.name]![server] = undefined as any;
         }
         const status = plannedStatus(adapter, previous, desired);
         const needsInstall = status !== "unchanged";
         if (existing && !existing.applied && needsInstall) {
-          throw new SetupFailure(
-            "ownership",
-            "SETUP_OWNERSHIP_CONFLICT",
-            `${adapter.name} ${server} has legacy ownership evidence but requires a client rewrite.`,
-            "Reconcile the client entry explicitly. Setup can backfill legacy ownership only when the effective target is already unchanged.",
-            { client: adapter.name, server, current: previous, status },
-          );
+          const forceRequested = options.forceClientOverwrite?.includes(adapter.name) ?? false;
+          if (!forceRequested) {
+            throw new SetupFailure(
+              "ownership",
+              "SETUP_OWNERSHIP_CONFLICT",
+              `${adapter.name} ${server} has legacy ownership evidence but requires a client rewrite.`,
+              `Reconcile the client entry explicitly, or rerun with --force-client-overwrite ${adapter.name} to overwrite the user-scope entry.`,
+              { client: adapter.name, server, current: previous, status },
+            );
+          }
+          adapter.remove(server, existing.desired, existing.previous, previous);
+          ownership.clients[adapter.name]![server] = undefined as any;
         }
         if (needsInstall) {
           const resource = `client:${adapter.name}:${server}`;
@@ -272,7 +295,23 @@ function installClients(
           transaction?.markClient(resource, { action: "install", previous: clientJournalSnapshot(previous), desired: desiredSnapshot, appliedExact: false });
           const mutation: ClientMutation = { adapter, server, previous, rollbackExpected: desiredSnapshot, resource };
           mutations.push(mutation);
-          const actualPrevious = clientCommand(adapter.name, server, "install", () => adapter.install(server, desired, previous));
+          const runInstall = () => adapter.install(server, desired, previous);
+          const runForceReinstall = () => {
+            try { adapter.remove(server, desired, existing?.previous ?? null, previous); } catch { /* best effort */ }
+            return adapter.install(server, desired);
+          };
+          const actualPrevious = clientCommand(adapter.name, server, "install", () => {
+            try {
+              return runInstall();
+            } catch (installError: any) {
+              const forceRequested = options.forceClientOverwrite?.includes(adapter.name) ?? false;
+              if (forceRequested && (installError instanceof SetupFailure)
+                && (installError.subtype === "client_config" || installError.subtype === "client_shadowed" || installError.code === "SETUP_CLIENT_CONFIG_UNSAFE" || installError.code === "SETUP_EFFECTIVE_CONFIG_SHADOWED")) {
+                return runForceReinstall();
+              }
+              throw installError;
+            }
+          });
           mutation.previous = actualPrevious;
           internalSetupTestHooks().afterClientCommandBeforeJournal?.(adapter.name, server);
           // Durable recovery restores the locked preflight baseline. The
@@ -634,6 +673,14 @@ async function executeInstall(
   };
   const initialCandidate = readCandidate();
   assertReadiness(initialCandidate);
+
+  // Migrate legacy project-level client MCP definitions before doing anything else
+  // (back up to .hy-cleanup-backup and ensure user-scope definitions exist).
+  let legacyMigrationReport: { backupDir: string; moved: string[]; installedUserScope: string[] } | null = null;
+  if (options.migrateLegacyClients && !options.dryRun) {
+    legacyMigrationReport = migrateLegacyClientConfigs(root, allAdapters);
+  }
+
   const confirmed = confirmedConfig(root, initialCandidate, options);
   const config = confirmed.config;
   // A mutating setup repeats every safety check after acquiring the global
@@ -660,7 +707,7 @@ async function executeInstall(
     transaction.capture([...projectFiles, paths.deployment, paths.registry, paths.clientOwnership]);
     for (const file of SHARED_PROJECT_FILES) transaction.assertCaptured(path.join(root, file), lockedPreflight.artifactBeforeHashes[file] ?? null);
     const expectedArtifactHashes = lockedPreflight.artifactExpectedHashes;
-    const installed = installClients(root, selected, lockedPreflight, transaction);
+    const installed = installClients(root, selected, lockedPreflight, options, transaction);
     try {
       writeOwnership(root, installed.ownership, transaction);
       transaction.markApplied([paths.clientOwnership]);

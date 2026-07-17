@@ -11,6 +11,8 @@ The public package `@voxstudio/hy-workflow` exposes one bin: `hy-workflow`. Runn
 - `hy-workflow unset`
 - `hy-workflow setup --yes --clients codex,claude,opencode --json`
 - `hy-workflow setup --yes --clients codex --ci-command 'npm ci' --ci-command 'npm test' --json`
+- `hy-workflow setup --yes --clients codex --force-client-overwrite codex --json`
+- `hy-workflow setup --yes --clients codex --migrate-legacy-clients --json`
 - `hy-workflow unset --yes --clients all --remove-global --json`
 - `hy-workflow config --check --json`
 - `hy-workflow config --apply --json --docs-dir '<existing-project-relative-dir>'`
