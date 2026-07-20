@@ -1,11 +1,11 @@
 <p align="center">
-  <h1 align="center">最蠢的模型，进化吧！</h1>
+  <h1 align="center">再笨的模型，也给我守规矩！</h1>
   <p align="center">
-    <strong>MCP 工具级守门员：让任何开发 agent（Claude Code / Codex / OpenCode / Cursor …）在硬边界内干活。</strong>
+    <strong>MCP 工具级守门员：让所有开发 Agent（Claude Code / Codex / OpenCode / Cursor …）在硬边界内写代码。</strong>
   </p>
   <p align="center">
-    不是在 prompt 里<b>恳求</b> agent 别乱改，而是在 <b>MCP 工具层直接 gate</b>：没走 PlanDoc、没锁 scope、没同步 <code>docs/</code>、本地没全绿，<b>agent 根本拿不到 commit / PR / merge 的能力</b>。
-    <br/>单人开发者守不住架构漂移、团队里各 agent 规则不统一——这一层都替你卡死。
+    不是在 Prompt 里<b>恳求</b> Agent 别乱改，而是在 <b>MCP 工具层直接硬拦截</b>：没走 PlanDoc、没锁 Scope、没同步 <code>docs/</code>、本地没全绿，<b>Agent 根本用不了 commit / 提 PR / merge 工具</b>。
+    <br/>单人防不住架构腐化、团队里多个 Agent 规则不统一——这一层全给你卡死。
   </p>
 </p>
 
@@ -27,28 +27,28 @@ npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 
 ---
 
-## 🤡 没有 hy-workflow 的 agent，长这样
+## 🤡 没有 hy-workflow 的 Agent，长这样
 
-| 裸奔 agent / Prompt 级规则 | hy-workflow（MCP 工具级硬 gate） |
+| ❌ 只靠 Prompt 约束 | ✅ hy-workflow（MCP 工具级硬拦截） |
 |---|---|
-| ❌ 你说"只改这两个文件"，它顺手动了 17 个无关文件——prompt 里写死也拦不住 | ✅ **硬 scope lock**：PlanDoc 外的文件 Edit 直接被 MCP gate 拒绝，不是"提醒"是"拒绝" |
-| ❌ 改了代码忘了改文档 / 改了文档忘了改代码，review 时才发现 | ✅ **Docs-as-contract gate**：改完必须 `hy_sync_docs`，文档漂移不许往下走 |
-| ❌ 换个 agent（Claude Code / Codex / Cursor），规则各写一套、互不一致 | ✅ **跨 agent 中立**：一个 MCP server，所有 MCP client 走同一条状态机、同一套 gate |
-| ❌ 改了代码不跑测试，CI 红了就摆烂；长测试套件还容易 MCP 超时 | ✅ 本地必须 compile + lint + tests 全绿；长套件走 `hy_exam_plan/hy_exam_submit` 异步双阶段 |
-| ❌ 把本地 `.env` / `node_modules` / 缓存误塞进 PR；擅自加外部依赖 | ✅ boundary gate 拦截新外部依赖和可疑路径 |
-| ❌ 直接合 main，没有 PR、没有 review | ✅ 必须建分支 → 提 PR → 等 CI 绿 → 才 merge，fail-closed |
-| ❌ plan-first？2026 年每个 agent 都会做，但那是"恳求"——模型想跳还是能跳 | ✅ PlanDoc + approve 是状态机基座，**想跳？工具不给你** |
-| ❌ 单人项目没人 review，自己也管不住架构漂移 | ✅ 守门员替你守边界；solo dev 也是一等客群 |
+| 你说"只改这两个文件"，它顺手动了 17 个无关文件——Prompt 里写死也拦不住 | **硬 Scope 锁**：PlanDoc 外的文件 Edit 直接被 MCP 拒绝，不是"提醒"是"不让你改" |
+| 改了代码忘了改文档 / 改了文档忘了改代码，Review 时才发现 | **Docs-as-contract 校验**：改完必须 `hy_sync_docs`，文档漂移直接拦截 |
+| 换个 Agent（Claude Code / Codex / Cursor），规则各写一套、互不一致 | **跨 Agent 中立**：一个 MCP Server，所有 MCP Client 走同一条状态机、同一套规则 |
+| 改了代码不跑测试，CI 红了再返工；长测试套件还容易 MCP 超时 | 本地必须 compile + contract-lint + tests 全绿；耗时太长的套件走 `hy_exam_plan/hy_exam_submit` 异步两步提交 |
+| 把本地 `.env` / `node_modules` / 缓存误塞进 PR；擅自加外部依赖 | Boundary 校验拦截新外部依赖和可疑路径 |
+| 直接合 main，没有 PR、没有 Review | 必须建分支 → 提 PR → 等 CI 绿 → 才 merge，Fail-closed |
+| 先出计划？2026 年哪个 Agent 都会，但那只是"嘴上答应"——模型真要跳步你拦不住 | PlanDoc + Approve 是状态机基座，**想跳？工具不给你** |
+| 单人项目没人 Review，自己也管不住架构腐化 | 守门员替你守边界；单人开发者同样适配 |
 
 ---
 
 ## ⚡ 30 秒上手
 
 ```bash
-# 1. 装
+# 1. 安装
 npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 
-# 2. 在你项目根跑 setup（中文 TUI）
+# 2. 在项目根目录运行 setup（中文 TUI）
 cd 你的项目
 hy-workflow setup
 ```
@@ -56,47 +56,47 @@ hy-workflow setup
 setup 会自动：
 
 - 🔍 识别项目语言（JS/TS/Python/Go/Rust）、源码目录、主分支、文档目录
-- 🔌 给 Codex / Claude Code / OpenCode 配好 MCP（**只写你本机用户级配置，不往项目里塞 `.opencode/`/`.codex/`**）
-- 📝 在仓库里写入/更新三个**团队共有文件**（要提交到 git）：
+- 🔌 给 Codex / Claude Code / OpenCode 配好 MCP（**只写本机用户级配置，不往项目里塞 `.opencode/`/`.codex/` 这类项目级配置目录**）
+- 📝 在仓库里写入/更新三个**团队共有文件**（需要提交到 Git）：
   - `hy-workflow.json` — 项目工作流配置
   - `.github/workflows/hy-workflow.yml` — CI 跑 doclint + codelint
-  - `AGENTS.md` 里的 `<!-- hy-workflow-rules -->` 托管块 — agent 规则（块外你写的团队指令字节级保留）
-- 🧠 推断你的 CI 命令（`npm test` / `cargo test` / `pytest` …），让你确认
+  - `AGENTS.md` 里的 `<!-- hy-workflow-rules -->` 托管块 — Agent 规则（块外你写的团队指令字节级保留）
+- 🧠 推断你的 CI 命令（`npm test` / `cargo test` / `pytest` …），供你确认
 
 重启 MCP 客户端，然后——
 
-> 直接对 agent 说："帮我给登录接口加 rate limit，先做个计划。"
+> 直接对 Agent 说："帮我给登录接口加 rate limit，先做个计划。"
 
-agent 会自己跑：`hy_read_docs(before_plan)` → `hy_plan` → **停下来把 PlanDoc 摘要给你看** → 你回 `approve` → 建分支 → 改代码 → 同步文档 → 本地验证 → 提 PR。
+Agent 会自己跑：`hy_read_docs(before_plan)` → `hy_plan` → **停下来把 PlanDoc 摘要给你看** → 你回 `approve` → 建分支 → 改代码 → 同步文档 → 本地验证 → 提 PR。
 
 ---
 
 ## 🧩 功能卡片
 
-**真正的差异化（别人在 prompt 里恳求，我们在 MCP 层硬卡）：**
+**真正的差异化（别人在 Prompt 里恳求，我们在 MCP 层硬卡）：**
 
 | | |
 |---|---|
-| 🔒 **Hard scope lock** | 只能改 PlanDoc 里列的文件；多改一个 MCP 直接拒绝 Edit，不是"建议你别改"是"不让你改" |
-| 📝 **Docs-as-contract** | 改代码必须同步 `docs/`，文档漂移 gate 不放行；`docs/` 是契约真相源，lint+test 共同保证代码不偏离文档承诺 |
-| 🤝 **Agent-agnostic** | 一个 MCP server，Claude Code / Codex / OpenCode / Cursor 一套规则全走同一条状态机 |
-| 🌐 **CI fail-closed** | 本地 compile/contract-lint/tests 全绿才 commit，doclint+codelint 固定版本只在 GitHub Actions 跑，零扫描也不绿；长套件走 `hy_exam_plan/hy_exam_submit` 异步双阶段 |
-| 🧑‍💻 **Solo-friendly** | 单人开发者也守得住架构漂移——守门员替你看边界、逼你出计划、逼你同步文档，没 reviewer 也不裸奔 |
+| 🔒 **硬 Scope 锁（Hard Scope Lock）** | 只能改 PlanDoc 里列的文件；多改一个 MCP 直接拒绝 Edit，不是"建议你别改"是"不让你改" |
+| 📝 **Docs-as-contract** | 改代码必须同步 `docs/`，文档漂移校验不放行；`docs/` 是契约真相源，lint+test 共同保证代码不偏离文档承诺 |
+| 🤝 **Agent-agnostic** | 一个 MCP Server，Claude Code / Codex / OpenCode / Cursor 一套规则全走同一条状态机 |
+| 🌐 **CI Fail-closed** | 本地 compile/contract-lint/tests 全绿才 commit，doclint+codelint 固定版本只在 GitHub Actions 跑，零扫描也不绿；耗时太长的套件走 `hy_exam_plan/hy_exam_submit` 异步两步提交 |
+| 🧑‍💻 **Solo-friendly** | 单人开发者也防得住架构腐化——守门员替你看边界、逼你出计划、逼你同步文档，没 Reviewer 也不裸奔 |
 
-**标配基座（2026 年 agent 本该做对的事，我们不拿它当卖点，但默认就做对）：**
+**标准基座（2026 年 Agent 本该做对的事，我们不拿它当卖点，但默认就做对）：**
 
 | | |
 |---|---|
-| 📋 **Plan + approve** | 没有 PlanDoc、没有你 `approve`，agent 一个字节都不改（plan-first 已商品化，这是基线不是差异） |
+| 📋 **Plan + Approve** | 没有 PlanDoc、没有你 `approve`，Agent 一个字节都不改（Plan-first 已商品化，这是基线不是差异） |
 | 🌿 **Branch-per-task** | 建分支 → 改 → PR → CI → merge，永远不直接动 main |
 | 🛟 **Safe-unset** | `hy-workflow unset` 只删本机部署，团队文件一个字节不动 |
-| 🇨🇳 **中文 TUI** | setup 中文交互；海外同事 `--language en` |
+| 🇨🇳 **中文 TUI** | setup 中文交互；海外同事加 `--language en` |
 
 ---
 
 ## 🔄 工作流长这样
 
-打开你的 agent，说一句话，它自己跑这条流水线：
+打开你的 Agent，说一句话，它自己跑这条流水线：
 
 ```mermaid
 sequenceDiagram
@@ -112,18 +112,18 @@ sequenceDiagram
     U-->>A: approve
     A->>D: hy_read_docs(before_approve) 二审计划没飘
     A->>G: hy_branch 建分支
-    A->>A: hy_edit 锁 scope，开始改代码
+    A->>A: hy_edit 锁 Scope，开始改代码
     A->>D: hy_sync_docs 同步文档
-    A->>A: hy_verify 本地 compile+lint+tests
+    A->>A: hy_verify 本地 compile+contract-lint+tests
     A->>G: hy_commit git add+commit+push+建 PR
-    A->>G: hy_ci 等 CI 绿
+    A->>G: hy_ci 等 CI 绿（CI 额外跑 doclint+codelint）
     A->>G: hy_merge 合并 PR
     A->>G: hy_chain rebase 下游分支
     A->>A: hy_reset 回 plan 等下一个任务
 ```
 
 <details>
-<summary>看不惯 mermaid？纯文本版（所有渲染器通用）</summary>
+<summary>看不惯 Mermaid？纯文本版（所有渲染器通用）</summary>
 
 ```
 hy_status
@@ -133,14 +133,14 @@ hy_status
 → hy_read_docs(before_approve)    # 二审没飘
 → hy_approve                      # 你 approve
 → hy_branch                       # 建分支
-→ hy_edit                         # 锁 scope
+→ hy_edit                         # 锁 Scope
 → （agent 改代码 / 文档）
 → hy_read_docs(after_edit)        # 审计 diff
 → hy_sync_docs                    # 同步文档
-→ hy_verify                       # 本地全量校验
-→ hy_amend_plan                   # verify 允许的小范围 scope 修订（需你再 approve）
+→ hy_verify                       # 本地全量校验（compile/contract-lint/tests）
+→ hy_amend_plan                   # verify 允许的小范围 Scope 修订（需你再 approve）
 → hy_commit                       # 提 PR
-→ hy_ci                           # 等 CI 绿
+→ hy_ci                           # 等 CI 绿（CI 额外跑 doclint+codelint）
 → hy_merge                        # 合并
 → hy_chain                        # rebase 下游分支
 → hy_reset                        # 回 plan 等下一个任务
@@ -186,7 +186,7 @@ agent：
   [hy_reset] 下一个任务？
 ```
 
-你只需要在 PlanDoc 那一步看一眼，回一句 `approve`。剩下的 agent 自己跑。
+你只需要在 PlanDoc 那一步看一眼，回一句 `approve`。剩下的 Agent 自己跑。
 
 ---
 
@@ -196,7 +196,7 @@ agent：
 |---|---|---|
 | **setup 团队产物（提交到仓库）** | `hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` 中 `<!-- hy-workflow-rules -->` 托管块 | setup 自动维护；块外自定义指令属于团队，setup 不动 |
 | **runtime/client 产物（不要提交）** | `~/.config/hy-workflow/`、`~/.local/state/hy-workflow/`、`~/.cache/hy-workflow/`、MCP 客户端用户级配置 | 在你本机用户目录；`hy-workflow unset` 清当前项目 |
-| **legacy/compat（不要提交）** | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 各 client 自己的项目级配置，setup 不删，用 `--migrate-legacy-clients` 备份迁移 |
+| **legacy/compat（不要提交）** | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 各 Client 自己的项目级配置，setup 不删，用 `--migrate-legacy-clients` 备份迁移 |
 
 setup 改了团队文件应单独开一个 "setup artifact sync" PR 提交，不要混进业务 PR。
 
@@ -204,10 +204,10 @@ setup 改了团队文件应单独开一个 "setup artifact sync" PR 提交，不
 
 ## ❓ 最常见的几个问题
 
-**Q1: agent 说 "setup update required / tool mismatch" 怎么办？**
+**Q1: Agent 说 "setup update required / tool mismatch" 怎么办？**
 A: 你升级了 `@voxstudio/hy-workflow` 全局包。回项目根目录重跑 `hy-workflow setup`，然后重启 MCP 客户端。0.2.3 起升级场景 setup 会自愈 sidecar 差异，不需要手动清理。如果真遇到旧 entry 卡壳（极个别升级路径），可以加 `--force-client-overwrite codex,claude,opencode` 强制重装 user-scope 定义。
 
-**Q2: agent 说需要 `hy_init` 怎么办？**
+**Q2: Agent 说需要 `hy_init` 怎么办？**
 A: 这个项目还没在你这台机器上初始化。终端跑 `hy-workflow setup`。（`hy_init` 是 MCP 工具，不改项目文件；真正写项目文件的是 setup CLI。）
 
 **Q3: setup 提示 "Project type is mixed; explicit confirmation is required"？**
@@ -218,16 +218,16 @@ hy-workflow setup --yes --clients codex,claude,opencode \
 ```
 或先写好 `hy-workflow.json`（见 [docs/setup.md](./docs/setup.md)）。
 
-**Q4: `hy_verify` 跑测试超时 / MCP client 报 -32001？**
-A: 同步 `hy_verify` 适合 <60s 的快路径。长测试套件用异步 verify-as-oracle：agent 调 `hy_exam_plan` 拿到检查清单和 nonce，用 Bash 逐条跑（没 MCP transport 超时），把 exitCode + 最后 4KB stdout 交给 `hy_exam_submit` 交卷。阅卷检查 nonce、命令字串、exitCode、mustContain 和 git tree hash，通过才写 verifyHash 放行 commit。2 小时内修完只需补交失败条目。
+**Q4: `hy_verify` 跑测试超时 / MCP Client 报 -32001？**
+A: 同步 `hy_verify` 适合 <60s 的快路径。长测试套件用异步 verify-as-oracle：Agent 调 `hy_exam_plan` 拿到检查清单和 nonce，用 Bash 逐条跑（没 MCP transport 超时），把 exitCode + 最后 4KB stdout 交给 `hy_exam_submit` 交卷。阅卷检查 nonce、命令字串、exitCode、mustContain 和 git tree hash，通过才写 verifyHash 放行 commit。2 小时内修完只需补交失败条目。
 
-**Q4: 支持 Python / Go / Rust / Bun 吗？**
+**Q5: 支持 Python / Go / Rust / Bun 吗？**
 A: 支持。setup 识别 `pyproject.toml`/`go.mod`/`Cargo.toml`/`bun.lock`，CI 会自动装对应 toolchain，跑 `pytest`/`go test`/`cargo test`/`bun test`。多语言共存时按 Q3 显式确认。
 
-**Q5: 和 Cursor rules / Claude settings / .cursorrules / AGENTS.md / CLAUDE.md 是什么关系？为什么它们不够？**
-A: 那些全是**提示词级**约定——agent 可以读也可以无视，模型想跳步还是能跳，想改 PlanDoc 外的文件 prompt 里写"别改"也拦不住。hy-workflow 是**工具级强制**：Edit/Write 不在 scope 内直接被 MCP gate 拒，`hy_sync_docs` 没跑过 verify 不放行，`hy_verify` 没绿 commit 工具直接失败。这不是"请你遵守"，是"你不遵守就没工具可用"。两者可以共存——AGENTS.md/CLAUDE.md 负责说明"怎么改"，hy-workflow 负责卡"能不能改"。
+**Q6: 和 Cursor rules / Claude settings / .cursorrules / AGENTS.md / CLAUDE.md 是什么关系？为什么它们不够？**
+A: 那些全是**提示词级**约定——Agent 可以读也可以无视，模型想跳步还是能跳，想改 PlanDoc 外的文件 Prompt 里写"别改"也拦不住。hy-workflow 是**工具级强制**：Edit/Write 不在 Scope 内直接被 MCP 拦截，`hy_sync_docs` 没跑过 verify 不放行，`hy_verify` 没绿 commit 工具直接失败。这不是"请你遵守"，是"你不遵守就没工具可用"。两者可以共存——AGENTS.md/CLAUDE.md 负责说明"怎么改"，hy-workflow 负责卡"能不能改"。
 
-这对 **solo dev 尤其重要**：你没有 reviewer 盯着，模型一旦改嗨你 review 不住。守门员不是给团队加流程，是替你守住你自己守不住的边界。
+这对 **单人开发者尤其重要**：你没有 Reviewer 盯着，模型一旦越界改动，你很难在 Review 时全部发现。守门员不是给团队加流程，是替你守住你自己守不住的边界。
 
 ---
 
@@ -277,16 +277,16 @@ unset 只删你本机 deployment/state/cache 和客户端 MCP 登记，**不删�
 
 ## ✅ 验证有多严
 
-- `hy_verify`：compile → scope → boundary → platform → smoke → tests，一层都不能少
-- setup 生成的 GitHub Actions：先跑你确认的 `ci.commands`，再强制 pinned doclint/codelint
-- CI 没命令 / 命令失败 / doclint/codelint 扫零文件 / 无 checks 或只有 skipped/neutral → **fail closed**
+- `hy_verify`：compile → scope → boundary → platform → smoke → tests，一层都不能少（doclint/codelint 不在本地运行）
+- setup 生成的 GitHub Actions：先跑你确认的 `ci.commands`，再强制跑 pinned 版本 doclint/codelint
+- CI 没命令 / 命令失败 / doclint/codelint 扫零文件 / 无 checks 或只有 skipped/neutral → **Fail-closed**
 - 仓库管理员需在 GitHub ruleset 把 `Verify` check 设为 required（setup 不越权改管理配置）
 
 ---
 
 ## ⭐ Star History
 
-不管你是 solo 守不住架构、还是团队里多套 agent 规则不统一——这个守门员都帮你把 agent 关进硬边界。帮到你了就 Star 一下 🛡️
+不管你是单人防不住架构腐化、还是团队里多套 Agent 规则不统一——这个守门员都帮你把 Agent 关进硬边界。帮到你了就 Star 一下 🛡️
 
 <a href="https://star-history.com/#voxServalG/hy-workflow-mcp&Date">
   <picture>
@@ -305,7 +305,3 @@ unset 只删你本机 deployment/state/cache 和客户端 MCP 登记，**不删�
 ## 📄 许可
 
 MIT
-
-## Dev acceptance baseline
-
-Before changes enter dev, run npm run verify:dev. Short verification stays on hy_verify; long commands use hy_exam_plan, external execution, and hy_exam_submit. Both paths produce an equivalent verifyHash.
