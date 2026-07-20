@@ -197,7 +197,3 @@ setup 生成的 workflow 必须执行 doclint 与 codelint。仓库管理员需�
 
 ## Related
 [Architecture](./architecture.md) · [State Machine](./state-machine.md) · [Verify Pipeline](./verify.md)
-
-## Acceptance command policy
-
-verify:dev and release acceptance are long suites and must use hy_exam_plan plus hy_exam_submit. The agent executes only the exact issued commands; server-side grading remains the verification oracle.
