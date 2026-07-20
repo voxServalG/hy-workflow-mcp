@@ -1,11 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { projectPaths } from "./runtime/user-paths.js";
-import type { CheckItem, PlanDoc, WorkflowState } from "./state.js";
-import { computeImplementationManifestHash, computeVerifyHash } from "./state.js";
-import { CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs } from "./checks.js";
+import { requireRuntimeConfig } from "./config.js";
+import { normalizeCodeExt, PYTHON_CODE_EXTS } from "./code_ext.js";
+import type { CheckItem, ImplementationManifest, PlanDoc, WorkflowState } from "./state.js";
+import { computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash } from "./state.js";
+import { buildImplementationManifest, CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs, findPython } from "./checks.js";
+import { execFileSync } from "node:child_process";
 
 function parsePythonVersionRequirement(value: string): [number, number, number] | null {
   const trimmed = value.trim();
@@ -46,6 +48,8 @@ export interface ExamManifest {
   /** Exam-level nonce (in addition to per-check nonces). */
   nonce: string;
   checks: ExamCheck[];
+  /** Results that already passed every per-check constraint for partial resubmission. */
+  acceptedResults?: ExamResult[];
 }
 
 export interface ExamResult {
@@ -95,26 +99,17 @@ function nonce(): string {
 }
 
 /**
- * Compute a fingerprint of the current git working tree using `git write-tree`
- * (staged + HEAD tracked content). Untracked files are excluded so that
- * generated artifacts (build/, *.pyc) don't invalidate the receipt; the
- * boundary/scope checks still detect real source changes.
+ * Compute a fingerprint of the staged git tree using `git write-tree`.
+ * This is a stable, content-addressed hash of HEAD + staged changes that
+ * is unaffected by untracked files or runtime artifacts.
+ *
+ * The commit gate (hy_commit) independently recomputes the full implementation
+ * manifest/digest/verifyHash and rejects mismatches, so the exam fingerprint
+ * only needs to catch trivial modification-before-submit, not be a perfect
+ * content hash.
  */
 export function computeScopeFingerprint(root: string): string {
-  try {
-    return String(execFileSync("git", ["write-tree"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })).trim();
-  } catch {
-    // Fallback: hash all tracked files
-    const tracked = String(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" })).split("\n").filter(Boolean).sort();
-    const hash = createHash("sha256");
-    for (const rel of tracked) {
-      const abs = path.join(root, rel);
-      if (!fs.existsSync(abs)) continue;
-      hash.update(rel);
-      hash.update(fs.readFileSync(abs));
-    }
-    return hash.digest("hex");
-  }
+  return execFileSync("git", ["write-tree"], { cwd: root, encoding: "utf8" }).trim();
 }
 
 // ── Command derivation ────────────────────────────────────────
@@ -138,6 +133,33 @@ function shellCheck(command: string, layer: ExamCheckLayer, idx: number, suffix?
   };
 }
 
+function configuredCodeDirs(project: Record<string, unknown>): string[] {
+  const value = project.codeDirs;
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map(item => item.trim());
+  if (typeof value === "string") return value.split(",").map(item => item.trim()).filter(Boolean);
+  return [];
+}
+
+function configuredPythonFiles(root: string, codeDirs: string[], extensions: Set<string>): string[] {
+  const files: string[] = [];
+  const walk = (current: string) => {
+    if (!fs.existsSync(current) || !fs.statSync(current).isDirectory()) return;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")) continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (extensions.has(path.extname(entry.name).toLowerCase())) files.push(path.relative(root, full).split(path.sep).join("/"));
+    }
+  };
+  for (const dir of codeDirs) walk(path.resolve(root, dir));
+  return [...new Set(files)].sort();
+}
+
+function shellArgument(value: string): string {
+  const escaped = value.replace(/(["\\$\x60])/g, "\\$1");
+  return `"${escaped}"`;
+}
+
 /**
  * Derive the exam check manifest from current plan + project state. This list
  * of commands matches exactly what runAllChecks would execute in the sync path.
@@ -147,25 +169,22 @@ export function deriveExamChecks(root: string, plan: PlanDoc): ExamCheck[] {
   let idx = 0;
 
   // ── compile (auto-derived) ──
-  // We encode the same detection logic checks.ts uses:
-  //  - TS if tsconfig.json exists
-  //  - Python if codeDirs contain .py files and python -m py_compile is needed
-  // For simplicity and honesty, we only emit the compile commands we can
-  // deterministically predict; dynamic file-list based checks are folded into a
-  // single "compile:python"/"compile:ts" bucket.
-  if (fs.existsSync(path.join(root, "tsconfig.json"))) {
+  const config = requireRuntimeConfig(root);
+  const project = config.project as Record<string, unknown>;
+  const extensions = normalizeCodeExt(project.codeExt);
+  const hasTypeScript = extensions.some(ext => ext === ".ts" || ext === ".tsx");
+  const hasJavaScript = extensions.some(ext => [".js", ".jsx", ".mjs", ".cjs"].includes(ext));
+  if (hasTypeScript || (hasJavaScript && fs.existsSync(path.join(root, "tsconfig.json")))) {
     checks.push(shellCheck("npx tsc --noEmit", "compile", idx++, "ts"));
   }
-  // Python compile: we cannot enumerate files without running python; emit a
-  // best-effort command that mirrors what runPythonCompile does (find + py_compile)
-  const pyExts = new Set([".py"]);
-  const codeDirs = Array.isArray(plan.boundary?.entry_points) ? [] : [];
-  // Use a portable python compile command (compiles all .py under project codeDirs)
-  // as a single shell invocation.
-  checks.push(shellCheck(
-    `python -m compileall -q ${plan.boundary?.entry_points?.join(" ") ?? "."}`,
-    "compile", idx++, "python", undefined, 0,
-  ));
+  const pythonExtensions = new Set(extensions.filter(ext => PYTHON_CODE_EXTS.has(ext)));
+  if (pythonExtensions.size) {
+    const files = configuredPythonFiles(root, configuredCodeDirs(project), pythonExtensions);
+    if (files.length) checks.push(shellCheck(
+      `${findPython()} -m py_compile ${files.map(shellArgument).join(" ")}`,
+      "compile", idx++, "python", undefined, 0,
+    ));
+  }
 
   // ── scope ──
   // Scope is implemented in-process (git diff parsing) — no shell command to run.
@@ -224,6 +243,9 @@ export function issueExam(root: string, plan: PlanDoc): ExamManifest {
 export interface ExamSubmitOutcome {
   passed: boolean;
   verifyHash?: string;
+  implementationManifest?: ImplementationManifest;
+  verifiedImplementationDigest?: string;
+  verifiedManifestHash?: string;
   failedChecks?: Array<{
     id: string;
     reason: "missing_result" | "nonce_mismatch" | "command_mismatch" | "exit_code" | "must_contain" | "must_not_contain" | "source_changed" | "exam_expired" | "unknown_check";
@@ -269,7 +291,9 @@ export function submitExam(
   }
 
   const byId = new Map(exam.checks.map(c => [c.id, c]));
-  const submitted = new Map(results.map(r => [r.id, r]));
+  const submitted = new Map((exam.acceptedResults ?? []).map(r => [r.id, r]));
+  for (const result of results) submitted.set(result.id, result);
+  const acceptedResults: ExamResult[] = [];
 
   for (const check of exam.checks) {
     const r = submitted.get(check.id);
@@ -297,6 +321,7 @@ export function submitExam(
       failed.push({ id: check.id, reason: "must_not_contain", message: `stdout contains forbidden pattern: ${check.mustNotContain}` });
       continue;
     }
+    acceptedResults.push(r);
   }
 
   for (const r of results) {
@@ -306,14 +331,27 @@ export function submitExam(
   }
 
   if (failed.length) {
+    exam.acceptedResults = acceptedResults;
+    exam.expiresAt = new Date(Date.now() + EXAM_TTL_MS).toISOString();
+    saveExam(root, exam);
     return { passed: false, failedChecks: failed };
   }
 
-  // Passed: write verifyHash as if hy_verify sync ran successfully.
-  const next: WorkflowState = { ...state };
-  next.verifiedImplementationDigest = computeScopeFingerprint(root);
-  next.verifiedManifestHash = computeImplementationManifestHash(state.implementationManifest);
+  // Full pass: exam consumed, clear partial cache.
+  delete exam.acceptedResults;
+  saveExam(root, exam);
+
+  // Return the same implementation evidence that sync hy_verify persists.
+  const implementationManifest = buildImplementationManifest(root);
+  const next: WorkflowState = { ...state, implementationManifest };
+  next.verifiedImplementationDigest = computeImplementationDigest(root, implementationManifest);
+  next.verifiedManifestHash = computeImplementationManifestHash(implementationManifest);
   next.verifyHash = computeVerifyHash(next);
-  (next as any).examReceipt = { examId, submittedAt: new Date().toISOString(), checks: results.length };
-  return { passed: true, verifyHash: next.verifyHash };
+  return {
+    passed: true,
+    verifyHash: next.verifyHash,
+    implementationManifest,
+    verifiedImplementationDigest: next.verifiedImplementationDigest ?? undefined,
+    verifiedManifestHash: next.verifiedManifestHash ?? undefined,
+  };
 }

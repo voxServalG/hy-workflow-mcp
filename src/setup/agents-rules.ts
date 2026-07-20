@@ -6,6 +6,7 @@ import { MANAGED_RULES_VERSION } from "../policy/docs.js";
 export const AGENTS_OPEN = "<!-- hy-workflow-rules -->";
 export const AGENTS_CLOSE = "<!-- /hy-workflow-rules -->";
 export const AGENTS_FILE = "AGENTS.md";
+export const ASYNC_VERIFY_GUIDANCE = "Use hy_verify for checks expected under 60 seconds; use hy_exam_plan and hy_exam_submit for long-running acceptance or verification suites. Both paths produce the same verifyHash gate.";
 
 const CANONICAL_SOURCE = new URL("../../AGENTS.md", import.meta.url);
 

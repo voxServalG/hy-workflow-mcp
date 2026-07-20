@@ -47,12 +47,51 @@ export function buildCommitBody(args: { body: string; plan: PlanDoc; verifyHash:
   ].join("\n");
 }
 
+function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown): ToolResult {
+  const rawRecovery = (state.approval as typeof state.approval & { commitRecovery?: unknown } | null)?.commitRecovery;
+  const recovery = parseCommitRecovery(rawRecovery);
+  if (recovery) {
+    return toolResult("commit", {
+      error,
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    });
+  }
+
+  const next = transition(state, "edit");
+  next.verifyHash = null;
+  next.verifiedImplementationDigest = null;
+  next.verifiedManifestHash = null;
+  next.implementationManifest = null;
+  next.documentReads = next.documentReads ? { ...next.documentReads, afterEdit: null } : null;
+  next.syncDocs = null;
+  writeState(next);
+
+  return toolResult("edit", {
+    phase: "edit",
+    error,
+    display: {
+      title: "Verified implementation changed — returned to edit",
+      body: "The approved plan, branch, and scope were preserved. Verification and post-edit document evidence were cleared.",
+    },
+    hint: "Call hy_edit, then hy_read_docs(after_edit), hy_sync_docs, and the appropriate sync or async verify path before hy_commit.",
+    allowedTools: ["hy_edit", "hy_read_docs", "hy_status"],
+    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    recovery: {
+      tool: "hy_edit",
+      instruction: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
+    },
+  });
+}
+
 export async function handleCommit(args: { title: string; body: string }): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "commit");
 
   if (!state.plan) return toolResult("commit", { error: "No plan", allowedTools: ["hy_status"] });
-  if (!state.verifyHash) return toolResult("commit", { error: "Missing verifyHash", hint: "Run hy_verify successfully before hy_commit.", allowedTools: ["hy_verify", "hy_status"] });
+  if (!state.verifyHash) return toolResult("commit", { error: "Missing verifyHash", hint: "Run hy_verify for short suites or hy_exam_plan and hy_exam_submit for long suites before hy_commit.", allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"] });
   if (!state.branch) return toolResult("commit", { error: "No active branch", allowedTools: ["hy_status"] });
 
   const root = projectRoot();
@@ -84,11 +123,11 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         subtype: "scope_drift",
         code: "IMPLEMENTATION_MANIFEST_UNAVAILABLE",
         message: e?.message ?? String(e),
-        hint: "Fix the git manifest error, then rerun hy_verify before hy_commit.",
+        hint: "Fix the git manifest error, then rerun the appropriate sync or async verify path before hy_commit.",
       },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
+      allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }
@@ -96,55 +135,31 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   const currentManifestHash = computeImplementationManifestHash(currentManifest);
   const expectedManifestHash = state.verifiedManifestHash ?? computeImplementationManifestHash(state.implementationManifest);
   if (!expectedManifestHash || currentManifestHash !== expectedManifestHash) {
-    return toolResult("commit", {
-      error: {
-        type: "scope",
-        subtype: "scope_drift",
-        code: "IMPLEMENTATION_MANIFEST_MISMATCH",
-        message: "Implementation file set changed after hy_verify.",
-        hint: "Run hy_read_docs(after_edit), hy_sync_docs, and hy_verify again before hy_commit.",
-        detail: { expected: expectedManifestHash, actual: currentManifestHash },
-      },
-      requires_user: true,
-      stop_here: true,
-      allowedTools: ["hy_read_docs", "hy_verify", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    return evidenceDriftResult(state, {
+      type: "scope", subtype: "scope_drift", code: "IMPLEMENTATION_MANIFEST_MISMATCH",
+      message: "Implementation file set changed after hy_verify.",
+      hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
+      detail: { expected: expectedManifestHash, actual: currentManifestHash },
     });
   }
 
   const currentDigest = computeImplementationDigest(root, currentManifest);
   if (!state.verifiedImplementationDigest || currentDigest !== state.verifiedImplementationDigest) {
-    return toolResult("commit", {
-      error: {
-        type: "verification",
-        subtype: "check_failed",
-        code: "IMPLEMENTATION_DIGEST_MISMATCH",
-        message: "Implementation content changed after hy_verify.",
-        hint: "Run hy_read_docs(after_edit), hy_sync_docs, and hy_verify again before hy_commit.",
-        detail: { expected: state.verifiedImplementationDigest, actual: currentDigest },
-      },
-      requires_user: true,
-      stop_here: true,
-      allowedTools: ["hy_read_docs", "hy_verify", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    return evidenceDriftResult(state, {
+      type: "verification", subtype: "check_failed", code: "IMPLEMENTATION_DIGEST_MISMATCH",
+      message: "Implementation content changed after hy_verify.",
+      hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
+      detail: { expected: state.verifiedImplementationDigest, actual: currentDigest },
     });
   }
 
   const expectedVerifyHash = computeVerifyHash(state);
   if (state.verifyHash !== expectedVerifyHash) {
-    return toolResult("commit", {
-      error: {
-        type: "verification",
-        subtype: "check_failed",
-        code: "VERIFY_HASH_STALE",
-        message: "verifyHash no longer matches the verified plan and implementation snapshot.",
-        hint: "Rerun hy_verify before hy_commit.",
-        detail: { expected: expectedVerifyHash, actual: state.verifyHash },
-      },
-      requires_user: true,
-      stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    return evidenceDriftResult(state, {
+      type: "verification", subtype: "check_failed", code: "VERIFY_HASH_STALE",
+      message: "verifyHash no longer matches the verified plan and implementation snapshot.",
+      hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
+      detail: { expected: expectedVerifyHash, actual: state.verifyHash },
     });
   }
 
@@ -214,7 +229,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
+      allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }
@@ -252,7 +267,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         data: { executor: { commit: inspectedScope.executor }, stagedPaths: inspectedScope.changedPaths },
         requires_user: true,
         stop_here: true,
-        allowedTools: ["hy_verify", "hy_status"],
+        allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
         blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
       });
     }
@@ -280,7 +295,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
+      allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }
@@ -315,7 +330,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
+      allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }
@@ -331,7 +346,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
+      allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }
@@ -348,12 +363,12 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         subtype: "scope_drift",
         code: "IMPLEMENTATION_MANIFEST_UNAVAILABLE_AFTER_COMMIT",
         message: e?.message ?? String(e),
-        hint: "Do not push. Fix the Git manifest error, then rerun hy_verify before hy_commit.",
+        hint: "Do not push. Fix the Git manifest error, then rerun the appropriate sync or async verify path before hy_commit.",
       },
       data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_verify", "hy_status"],
+      allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }
@@ -373,7 +388,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } },
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_read_docs", "hy_verify", "hy_status"],
+      allowedTools: ["hy_read_docs", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
       blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
     });
   }

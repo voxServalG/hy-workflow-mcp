@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { MANAGED_RULES_VERSION } from "../../src/policy/docs.js";
-import { extractManagedBlock, canonicalManagedBlock, planAgentsFile, AGENTS_OPEN, AGENTS_CLOSE } from "../../src/setup/agents-rules.js";
+import { extractManagedBlock, canonicalManagedBlock, planAgentsFile, AGENTS_OPEN, AGENTS_CLOSE, ASYNC_VERIFY_GUIDANCE } from "../../src/setup/agents-rules.js";
 import { makeGitProject } from "../helpers/runtime-home.js";
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -11,6 +11,7 @@ function assert(condition: unknown, message: string): asserts condition {
 const canonical = canonicalManagedBlock();
 assert(canonical.startsWith(AGENTS_OPEN), "canonical block must start with open marker");
 assert(canonical.includes(AGENTS_CLOSE), "canonical block must contain close marker");
+assert(ASYNC_VERIFY_GUIDANCE.includes("hy_exam_plan") && ASYNC_VERIFY_GUIDANCE.includes("hy_exam_submit") && ASYNC_VERIFY_GUIDANCE.includes("verifyHash"), "generated rule source must expose async verify guidance");
 assert(canonical.includes(`hy-workflow-rules-version: ${MANAGED_RULES_VERSION}`), "canonical block must carry current version");
 
 const fresh = extractManagedBlock("prefix\n" + canonical.trimEnd() + "\nsuffix\n");

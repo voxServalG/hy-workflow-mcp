@@ -180,7 +180,7 @@ async function runRepositoryLintPressure(
   return summaries;
 }
 
-function isolatedUserStateFingerprint(workspace: AcceptanceWorkspace): string {
+export function isolatedUserStateFingerprint(workspace: AcceptanceWorkspace): string {
   const hash = createHash("sha256");
   hash.update("home:" + filesFingerprint(workspace.home) + "\n");
   const clientState = workspace.env.HY_ACCEPTANCE_CLIENT_STATE!;
@@ -672,7 +672,7 @@ export async function runRepositoryScenario(
   };
 }
 
-async function createFixture(workspace: AcceptanceWorkspace, name: string, includeConfig = true): Promise<string> {
+export async function createFixture(workspace: AcceptanceWorkspace, name: string, includeConfig = true): Promise<string> {
   const root = join(workspace.repos, name);
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(join(root, "docs"), { recursive: true });

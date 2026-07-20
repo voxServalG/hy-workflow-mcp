@@ -121,7 +121,7 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 
 两工具实现 verify-as-oracle 模式，解决长测试套件触发 MCP `-32001 Request timed out`（90s）。sync `hy_verify` 仍保留为 <60s 快路径。
 - **hy_exam_plan**（出题）：立即返回 `examId`（2h TTL）、`scopeFingerprint`（git write-tree）、per-check `{id, layer, command, timeoutMs, expectExitCode, nonce, mustContain?}`；agent 用 Bash 逐条跑，收集 exitCode + 最后 4KB stdout。
-- **hy_exam_submit**（阅卷）：提交 `{examId, results:[{id, command, nonce, exitCode, stdoutTail?}]}`。校验：(1) exam 未过期；(2) nonce 匹配；(3) command 字串完全一致；(4) exitCode 匹配；(5) mustContain 正则；(6) git write-tree 未变。通过则写 verifyHash 放行 `hy_commit`，与 sync 路径等价；失败返回 `failedChecks[]`，2h 内只需补交失败项。进入 Phase: `edit, verify`；成功 → `commit`，失败 → `edit`（`recovery.nextAction=fix_then_resubmit`）。
+- **hy_exam_submit**（阅卷）：提交 `{examId, results:[{id, command, nonce, exitCode, stdoutTail?}]}`。校验：(1) exam 未过期；(2) nonce 匹配；(3) command 字串完全一致；(4) exitCode 匹配；(5) mustContain 正则；(6) git write-tree 未变。通过则原子写入 implementation manifest、manifest hash、implementation digest 和 verifyHash 放行 `hy_commit`，与 sync 路径等价；失败返回 `failedChecks[]`，2h 内只需补交失败项。进入 Phase: `edit, verify`；成功 → `commit`，失败 → `edit`（`recovery.nextAction=fix_then_resubmit`）。
 
 ## hy_amend_plan
 

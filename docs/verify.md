@@ -31,7 +31,7 @@ Layer 7: tests
 
 ## Command budget and cleanup
 
-Verify commands run through a synchronous cross-platform supervisor rather than a direct shell timeout. Ordinary commands receive 90 seconds, `npm pack` receives 5 minutes, and the normal unit/e2e/contract/Windows/verify suites receive 20 minutes. `npm run test:acceptance` receives the larger of its configured internal budget and the mandatory 45-minute release budget, plus 2 minutes for cleanup. A timeout is reported explicitly instead of as an unknown exit. Before returning, the supervisor terminates the complete detached process group on POSIX or uses `taskkill /T /F` on Windows, so a timed-out npm shell cannot leave descendants mutating `dist/` or holding the worktree. Structured compile invocations such as Python `py_compile` use executable plus argv rather than shell quoting.
+Short commands run through a synchronous cross-platform supervisor; commands expected to exceed 60 seconds use the asynchronous exam path. Ordinary commands receive 90 seconds, `npm pack` receives 5 minutes, and the normal unit/e2e/contract/Windows/verify suites receive 20 minutes. Long acceptance commands are issued by `hy_exam_plan`, executed outside the MCP request with their declared timeout, and graded by `hy_exam_submit`. Async compile checks derive language and source paths from `project.codeExt` plus `project.codeDirs`, matching synchronous verify; they never concatenate `boundary.entry_points` into a compiler command. A timeout is reported explicitly instead of as an unknown exit. Before returning, the supervisor terminates the complete detached process group on POSIX or uses `taskkill /T /F` on Windows, so a timed-out npm shell cannot leave descendants mutating `dist/` or holding the worktree. Structured compile invocations such as Python `py_compile` use executable plus argv rather than shell quoting.
 
 ## CI evidence gate
 
@@ -117,7 +117,7 @@ interface VerifyReport {
 
 ## verifyHash
 
-全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256，取前 12 位 hex。此哈希存入 `WorkflowState.verifyHash`；当前 `hy_commit` 检查 verifyHash 是否存在，确保成功执行过 `hy_verify`。
+全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256，取前 12 位 hex。同步与异步成功路径都把此哈希连同 verifiedManifestHash、verifiedImplementationDigest 和 implementationManifest 写入状态；当前 `hy_commit` 检查 verifyHash 是否存在，确保成功执行过 `hy_verify`。
 
 ## 配置依赖
 
