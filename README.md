@@ -80,7 +80,7 @@ agent 会自己跑：`hy_read_docs(before_plan)` → `hy_plan` → **停下来�
 | 🔒 **Hard scope lock** | 只能改 PlanDoc 里列的文件；多改一个 MCP 直接拒绝 Edit，不是"建议你别改"是"不让你改" |
 | 📝 **Docs-as-contract** | 改代码必须同步 `docs/`，文档漂移 gate 不放行；`docs/` 是契约真相源，lint+test 共同保证代码不偏离文档承诺 |
 | 🤝 **Agent-agnostic** | 一个 MCP server，Claude Code / Codex / OpenCode / Cursor 一套规则全走同一条状态机 |
-| 🌐 **CI fail-closed** | 本地 compile/lint/tests 全绿才 commit，GitHub Actions 跑固定版本 doclint+codelint，零扫描也不绿；长套件走 `hy_exam_plan/hy_exam_submit` 异步双阶段 |
+| 🌐 **CI fail-closed** | 本地 compile/contract-lint/tests 全绿才 commit，doclint+codelint 固定版本只在 GitHub Actions 跑，零扫描也不绿；长套件走 `hy_exam_plan/hy_exam_submit` 异步双阶段 |
 | 🧑‍💻 **Solo-friendly** | 单人开发者也守得住架构漂移——守门员替你看边界、逼你出计划、逼你同步文档，没 reviewer 也不裸奔 |
 
 **标配基座（2026 年 agent 本该做对的事，我们不拿它当卖点，但默认就做对）：**

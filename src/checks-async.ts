@@ -280,36 +280,6 @@ async function runPlatformAsync(plan: PlanDoc, root: string): Promise<CheckResul
   return res;
 }
 
-async function runDocLintAsync(root: string): Promise<CheckResult[]> {
-  const { withRuntimeCompatConfigs } = await import("./config.js");
-  const { DOCLINT_SOURCE, parseDocLintReport } = await import("./checks.js");
-  const r = await withRuntimeCompatConfigs(root, () => execWithOneRetryAsync(`npx --yes --package=${DOCLINT_SOURCE} doclint lint --json`, root));
-  if (!r.ok) {
-    return [fail("doclint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "doclint command failed"}`, true)];
-  }
-  try {
-    const report = JSON.parse(r.stdout || "{}");
-    return [parseDocLintReport(report)];
-  } catch {
-    return [fail("doclint", "lint", "Could not parse doclint report", true)];
-  }
-}
-
-async function runCodeLintAsync(root: string): Promise<CheckResult[]> {
-  const { withRuntimeCompatConfigs } = await import("./config.js");
-  const { CODELINT_SOURCE, parseCodeLintReport } = await import("./checks.js");
-  const r = await withRuntimeCompatConfigs(root, () => execWithOneRetryAsync(`npx --yes --package=${CODELINT_SOURCE} codelint check --json`, root));
-  if (!r.ok) {
-    return [fail("codelint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "codelint command failed"}`, true)];
-  }
-  try {
-    const report = JSON.parse(r.stdout || "{}");
-    return [parseCodeLintReport(report)];
-  } catch {
-    return [fail("codelint", "lint", "Could not parse codelint report", true)];
-  }
-}
-
 async function runWorkflowContractLintAsync(_root: string): Promise<CheckResult[]> {
   const { runContractLint } = await import("./contralint/run.js");
   const report = runContractLint(_root);
@@ -345,8 +315,6 @@ export async function runAllChecksAsync(root: string, state: WorkflowState): Pro
   }
 
   const lintChecks: CheckResult[] = [
-    ...(await runDocLintAsync(root)),
-    ...(await runCodeLintAsync(root)),
     ...(await runWorkflowContractLintAsync(root)),
   ];
   await setImmediatePromise();

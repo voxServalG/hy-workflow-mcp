@@ -321,8 +321,13 @@ export function resolveHeadCommit(root: string): { ok: boolean; hash?: string; e
 
 function remoteBaseRefExists(root: string, baseBranch: string): boolean {
   if (!isSafeGitRefName(baseBranch)) return false;
-  const ref = `refs/remotes/origin/${baseBranch}`;
-  return run("git", ["show-ref", "--verify", "--quiet", ref], root).ok;
+  const localRef = `refs/remotes/origin/${baseBranch}`;
+  const localExists = run("git", ["show-ref", "--verify", "--quiet", localRef], root).ok;
+  if (!localExists) return false;
+  const lsRemote = run("git", ["ls-remote", "--heads", "origin", baseBranch], root);
+  if (!lsRemote.ok) return false;
+  const expected = `refs/heads/${baseBranch}`;
+  return lsRemote.stdout.split(/\r?\n/).some(line => line.trim().endsWith(`\t${expected}`));
 }
 
 export function createBranch(root: string, category: string, topic: string): { ok: boolean; branch: string; error?: GitOperationError } {
