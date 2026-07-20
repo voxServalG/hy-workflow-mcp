@@ -1,11 +1,11 @@
 <p align="center">
   <h1 align="center">最蠢的模型，进化吧！</h1>
   <p align="center">
-    <strong>让任何开发 agent（Claude Code / Codex / OpenCode / Cursor …）听话的工作流守门员。</strong>
+    <strong>MCP 工具级守门员：让任何开发 agent（Claude Code / Codex / OpenCode / Cursor …）在硬边界内干活。</strong>
   </p>
   <p align="center">
-    agent 必须：<b>先读文档 → 先做计划 → 等你批准 → 锁死可改的文件 → 实现 → 同步文档 → 本地验证全绿 → 才能提交 / 提 PR / 等 CI / 合并</b>。
-    <br/>不再跳步、不再乱改文件、不再把本地缓存混进 PR。
+    不是在 prompt 里<b>恳求</b> agent 别乱改，而是在 <b>MCP 工具层直接 gate</b>：没走 PlanDoc、没锁 scope、没同步 <code>docs/</code>、本地没全绿，<b>agent 根本拿不到 commit / PR / merge 的能力</b>。
+    <br/>单人开发者守不住架构漂移、团队里各 agent 规则不统一——这一层都替你卡死。
   </p>
 </p>
 
@@ -29,15 +29,16 @@ npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
 
 ## 🤡 没有 hy-workflow 的 agent，长这样
 
-| 裸奔 agent | 有 hy-workflow |
+| 裸奔 agent / Prompt 级规则 | hy-workflow（MCP 工具级硬 gate） |
 |---|---|
-| ❌ 你说"加个 rate limit"，它直接在 main 上改完就 push | ✅ 先读 `docs/`，出 PlanDoc，等你回 `approve` 才动手 |
-| ❌ scope 不锁，顺手改了 17 个无关文件 | ✅ 只能改 PlanDoc 里列的文件，多一个都不行 |
-| ❌ 改了代码不跑测试，CI 红了就摆烂 | ✅ 本地必须 compile + lint + tests 全绿才允许 commit |
-| ❌ 改了代码忘了改文档 / 改了文档忘了改代码 | ✅ 改完自动 `hy_sync_docs` gate，不同步不许走 |
-| ❌ 把本地 `.env` / `node_modules` / 缓存误塞进 PR | ✅ boundary gate 拦截新外部依赖和可疑路径 |
-| ❌ 直接合 main，没有 PR、没有 review | ✅ 必须建分支 → 提 PR → 等 CI 绿 → 才 merge |
-| ❌ "我以为你要改那个文件" | ✅ 所有决定写进 PlanDoc，可审计、可驳回、可 reset |
+| ❌ 你说"只改这两个文件"，它顺手动了 17 个无关文件——prompt 里写死也拦不住 | ✅ **硬 scope lock**：PlanDoc 外的文件 Edit 直接被 MCP gate 拒绝，不是"提醒"是"拒绝" |
+| ❌ 改了代码忘了改文档 / 改了文档忘了改代码，review 时才发现 | ✅ **Docs-as-contract gate**：改完必须 `hy_sync_docs`，文档漂移不许往下走 |
+| ❌ 换个 agent（Claude Code / Codex / Cursor），规则各写一套、互不一致 | ✅ **跨 agent 中立**：一个 MCP server，所有 MCP client 走同一条状态机、同一套 gate |
+| ❌ 改了代码不跑测试，CI 红了就摆烂；长测试套件还容易 MCP 超时 | ✅ 本地必须 compile + lint + tests 全绿；长套件走 `hy_exam_plan/hy_exam_submit` 异步双阶段 |
+| ❌ 把本地 `.env` / `node_modules` / 缓存误塞进 PR；擅自加外部依赖 | ✅ boundary gate 拦截新外部依赖和可疑路径 |
+| ❌ 直接合 main，没有 PR、没有 review | ✅ 必须建分支 → 提 PR → 等 CI 绿 → 才 merge，fail-closed |
+| ❌ plan-first？2026 年每个 agent 都会做，但那是"恳求"——模型想跳还是能跳 | ✅ PlanDoc + approve 是状态机基座，**想跳？工具不给你** |
+| ❌ 单人项目没人 review，自己也管不住架构漂移 | ✅ 守门员替你守边界；solo dev 也是一等客群 |
 
 ---
 
@@ -72,14 +73,22 @@ agent 会自己跑：`hy_read_docs(before_plan)` → `hy_plan` → **停下来�
 
 ## 🧩 功能卡片
 
+**真正的差异化（别人在 prompt 里恳求，我们在 MCP 层硬卡）：**
+
 | | |
 |---|---|
-| 📋 **Plan-first** | 没有 PlanDoc、没有你 `approve`，agent 一个字节都不改 |
-| 🔒 **Scope-locked** | 只能改 PlanDoc 里列的文件，多改一个直接被 gate 打回 |
-| 📝 **Docs-synced** | 改代码必须同步 `docs/`，文档漂移不许往下走 |
-| ✅ **Verify-gated** | 本地 compile / lint / tests 全绿才允许 commit，CI 绿才允许 merge |
-| 🤝 **Multi-client** | Codex、Claude Code、OpenCode 一套配置全支持 |
-| 🌐 **CI-enforced** | GitHub Actions 跑固定版本 doclint + codelint，零扫描也不许绿 |
+| 🔒 **Hard scope lock** | 只能改 PlanDoc 里列的文件；多改一个 MCP 直接拒绝 Edit，不是"建议你别改"是"不让你改" |
+| 📝 **Docs-as-contract** | 改代码必须同步 `docs/`，文档漂移 gate 不放行；`docs/` 是契约真相源，lint+test 共同保证代码不偏离文档承诺 |
+| 🤝 **Agent-agnostic** | 一个 MCP server，Claude Code / Codex / OpenCode / Cursor 一套规则全走同一条状态机 |
+| 🌐 **CI fail-closed** | 本地 compile/lint/tests 全绿才 commit，GitHub Actions 跑固定版本 doclint+codelint，零扫描也不绿；长套件走 `hy_exam_plan/hy_exam_submit` 异步双阶段 |
+| 🧑‍💻 **Solo-friendly** | 单人开发者也守得住架构漂移——守门员替你看边界、逼你出计划、逼你同步文档，没 reviewer 也不裸奔 |
+
+**标配基座（2026 年 agent 本该做对的事，我们不拿它当卖点，但默认就做对）：**
+
+| | |
+|---|---|
+| 📋 **Plan + approve** | 没有 PlanDoc、没有你 `approve`，agent 一个字节都不改（plan-first 已商品化，这是基线不是差异） |
+| 🌿 **Branch-per-task** | 建分支 → 改 → PR → CI → merge，永远不直接动 main |
 | 🛟 **Safe-unset** | `hy-workflow unset` 只删本机部署，团队文件一个字节不动 |
 | 🇨🇳 **中文 TUI** | setup 中文交互；海外同事 `--language en` |
 
@@ -215,8 +224,10 @@ A: 同步 `hy_verify` 适合 <60s 的快路径。长测试套件用异步 verify
 **Q4: 支持 Python / Go / Rust / Bun 吗？**
 A: 支持。setup 识别 `pyproject.toml`/`go.mod`/`Cargo.toml`/`bun.lock`，CI 会自动装对应 toolchain，跑 `pytest`/`go test`/`cargo test`/`bun test`。多语言共存时按 Q3 显式确认。
 
-**Q5: 和 Cursor rules / Claude Desktop settings / .cursorrules 是什么关系？**
-A: 它们是**提示词级**约定，agent 可以无视；hy-workflow 是**工具级**强制——agent 必须通过 MCP 工具调 gate，没走 gate 就拿不到 commit/PR/merge 的能力。两者可以共存，AGENTS.md 托管块本身就会被所有 client 读。
+**Q5: 和 Cursor rules / Claude settings / .cursorrules / AGENTS.md / CLAUDE.md 是什么关系？为什么它们不够？**
+A: 那些全是**提示词级**约定——agent 可以读也可以无视，模型想跳步还是能跳，想改 PlanDoc 外的文件 prompt 里写"别改"也拦不住。hy-workflow 是**工具级强制**：Edit/Write 不在 scope 内直接被 MCP gate 拒，`hy_sync_docs` 没跑过 verify 不放行，`hy_verify` 没绿 commit 工具直接失败。这不是"请你遵守"，是"你不遵守就没工具可用"。两者可以共存——AGENTS.md/CLAUDE.md 负责说明"怎么改"，hy-workflow 负责卡"能不能改"。
+
+这对 **solo dev 尤其重要**：你没有 reviewer 盯着，模型一旦改嗨你 review 不住。守门员不是给团队加流程，是替你守住你自己守不住的边界。
 
 ---
 
@@ -275,7 +286,7 @@ unset 只删你本机 deployment/state/cache 和客户端 MCP 登记，**不删�
 
 ## ⭐ Star History
 
-帮你驯服 agent 了？Star 一下让更多 agent 不再裸奔 🛡️
+不管你是 solo 守不住架构、还是团队里多套 agent 规则不统一——这个守门员都帮你把 agent 关进硬边界。帮到你了就 Star 一下 🛡️
 
 <a href="https://star-history.com/#voxServalG/hy-workflow-mcp&Date">
   <picture>
