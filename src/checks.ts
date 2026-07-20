@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, WorkflowState } from "./state.js";
 import { getBaseBranch } from "./state.js";
 import { PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
-import { requireRuntimeConfig, withRuntimeCompatConfigs } from "./config.js";
+import { requireRuntimeConfig } from "./config.js";
 import { runContractLint } from "./contralint/run.js";
 
 // ── Result ───────────────────────────────────────────────────
@@ -318,32 +318,6 @@ export function parseCodeLintReport(report: any): CheckResult {
   return passed
     ? ok("codelint", "lint", detail)
     : fail("codelint", "lint", detail, true);
-}
-
-export function runDocLint(root: string): CheckResult[] {
-  const r = withRuntimeCompatConfigs(root, () => execWithOneRetry(`npx --yes --package=${DOCLINT_SOURCE} doclint lint --json`, root));
-  if (!r.ok) {
-    return [fail("doclint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "doclint command failed"}`, true)];
-  }
-  try {
-    const report = JSON.parse(r.stdout || "{}");
-    return [parseDocLintReport(report)];
-  } catch {
-    return [fail("doclint", "lint", "Could not parse doclint report", true)];
-  }
-}
-
-export function runCodeLint(root: string): CheckResult[] {
-  const r = withRuntimeCompatConfigs(root, () => execWithOneRetry(`npx --yes --package=${CODELINT_SOURCE} codelint check --json`, root));
-  if (!r.ok) {
-    return [fail("codelint", "lint", `${formatExit(r)}: ${r.stderr || r.stdout || "codelint command failed"}`, true)];
-  }
-  try {
-    const report = JSON.parse(r.stdout || "{}");
-    return [parseCodeLintReport(report)];
-  } catch {
-    return [fail("codelint", "lint", "Could not parse codelint report", true)];
-  }
 }
 
 export function runWorkflowContractLint(root: string): CheckResult[] {
