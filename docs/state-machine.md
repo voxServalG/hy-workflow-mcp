@@ -183,3 +183,7 @@ interface PlanDoc {
 - [Architecture](./architecture.md)
 - [Tools Reference](./tools.md)
 - [Verify Pipeline](./verify.md)
+
+## Async verify transition
+
+hy_exam_plan keeps the workflow in verify while issuing a two-hour exam. hy_exam_submit moves to commit only after exact evidence and the scope fingerprint pass; failed evidence returns to edit for correction and partial resubmission. This is equivalent to a successful hy_verify and persists the same manifest hash and implementation digest before commit.

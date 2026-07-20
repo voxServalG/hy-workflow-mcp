@@ -3,9 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { projectPaths } from "./runtime/user-paths.js";
-import type { CheckItem, PlanDoc, WorkflowState } from "./state.js";
-import { computeImplementationManifestHash, computeVerifyHash } from "./state.js";
-import { CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs } from "./checks.js";
+import { requireRuntimeConfig } from "./config.js";
+import { normalizeCodeExt, PYTHON_CODE_EXTS } from "./code_ext.js";
+import type { CheckItem, ImplementationManifest, PlanDoc, WorkflowState } from "./state.js";
+import { computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash } from "./state.js";
+import { buildImplementationManifest, CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs, findPython } from "./checks.js";
 
 function parsePythonVersionRequirement(value: string): [number, number, number] | null {
   const trimmed = value.trim();
@@ -138,6 +140,33 @@ function shellCheck(command: string, layer: ExamCheckLayer, idx: number, suffix?
   };
 }
 
+function configuredCodeDirs(project: Record<string, unknown>): string[] {
+  const value = project.codeDirs;
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map(item => item.trim());
+  if (typeof value === "string") return value.split(",").map(item => item.trim()).filter(Boolean);
+  return [];
+}
+
+function configuredPythonFiles(root: string, codeDirs: string[], extensions: Set<string>): string[] {
+  const files: string[] = [];
+  const walk = (current: string) => {
+    if (!fs.existsSync(current) || !fs.statSync(current).isDirectory()) return;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")) continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (extensions.has(path.extname(entry.name).toLowerCase())) files.push(path.relative(root, full).split(path.sep).join("/"));
+    }
+  };
+  for (const dir of codeDirs) walk(path.resolve(root, dir));
+  return [...new Set(files)].sort();
+}
+
+function shellArgument(value: string): string {
+  const escaped = value.replace(/(["\\$\x60])/g, "\\$1");
+  return `"${escaped}"`;
+}
+
 /**
  * Derive the exam check manifest from current plan + project state. This list
  * of commands matches exactly what runAllChecks would execute in the sync path.
@@ -147,25 +176,22 @@ export function deriveExamChecks(root: string, plan: PlanDoc): ExamCheck[] {
   let idx = 0;
 
   // ── compile (auto-derived) ──
-  // We encode the same detection logic checks.ts uses:
-  //  - TS if tsconfig.json exists
-  //  - Python if codeDirs contain .py files and python -m py_compile is needed
-  // For simplicity and honesty, we only emit the compile commands we can
-  // deterministically predict; dynamic file-list based checks are folded into a
-  // single "compile:python"/"compile:ts" bucket.
-  if (fs.existsSync(path.join(root, "tsconfig.json"))) {
+  const config = requireRuntimeConfig(root);
+  const project = config.project as Record<string, unknown>;
+  const extensions = normalizeCodeExt(project.codeExt);
+  const hasTypeScript = extensions.some(ext => ext === ".ts" || ext === ".tsx");
+  const hasJavaScript = extensions.some(ext => [".js", ".jsx", ".mjs", ".cjs"].includes(ext));
+  if (hasTypeScript || (hasJavaScript && fs.existsSync(path.join(root, "tsconfig.json")))) {
     checks.push(shellCheck("npx tsc --noEmit", "compile", idx++, "ts"));
   }
-  // Python compile: we cannot enumerate files without running python; emit a
-  // best-effort command that mirrors what runPythonCompile does (find + py_compile)
-  const pyExts = new Set([".py"]);
-  const codeDirs = Array.isArray(plan.boundary?.entry_points) ? [] : [];
-  // Use a portable python compile command (compiles all .py under project codeDirs)
-  // as a single shell invocation.
-  checks.push(shellCheck(
-    `python -m compileall -q ${plan.boundary?.entry_points?.join(" ") ?? "."}`,
-    "compile", idx++, "python", undefined, 0,
-  ));
+  const pythonExtensions = new Set(extensions.filter(ext => PYTHON_CODE_EXTS.has(ext)));
+  if (pythonExtensions.size) {
+    const files = configuredPythonFiles(root, configuredCodeDirs(project), pythonExtensions);
+    if (files.length) checks.push(shellCheck(
+      `${findPython()} -m py_compile ${files.map(shellArgument).join(" ")}`,
+      "compile", idx++, "python", undefined, 0,
+    ));
+  }
 
   // ── scope ──
   // Scope is implemented in-process (git diff parsing) — no shell command to run.
@@ -224,6 +250,9 @@ export function issueExam(root: string, plan: PlanDoc): ExamManifest {
 export interface ExamSubmitOutcome {
   passed: boolean;
   verifyHash?: string;
+  implementationManifest?: ImplementationManifest;
+  verifiedImplementationDigest?: string;
+  verifiedManifestHash?: string;
   failedChecks?: Array<{
     id: string;
     reason: "missing_result" | "nonce_mismatch" | "command_mismatch" | "exit_code" | "must_contain" | "must_not_contain" | "source_changed" | "exam_expired" | "unknown_check";
@@ -309,11 +338,17 @@ export function submitExam(
     return { passed: false, failedChecks: failed };
   }
 
-  // Passed: write verifyHash as if hy_verify sync ran successfully.
-  const next: WorkflowState = { ...state };
-  next.verifiedImplementationDigest = computeScopeFingerprint(root);
-  next.verifiedManifestHash = computeImplementationManifestHash(state.implementationManifest);
+  // Return the same implementation evidence that sync hy_verify persists.
+  const implementationManifest = buildImplementationManifest(root);
+  const next: WorkflowState = { ...state, implementationManifest };
+  next.verifiedImplementationDigest = computeImplementationDigest(root, implementationManifest);
+  next.verifiedManifestHash = computeImplementationManifestHash(implementationManifest);
   next.verifyHash = computeVerifyHash(next);
-  (next as any).examReceipt = { examId, submittedAt: new Date().toISOString(), checks: results.length };
-  return { passed: true, verifyHash: next.verifyHash };
+  return {
+    passed: true,
+    verifyHash: next.verifyHash,
+    implementationManifest,
+    verifiedImplementationDigest: next.verifiedImplementationDigest ?? undefined,
+    verifiedManifestHash: next.verifiedManifestHash ?? undefined,
+  };
 }

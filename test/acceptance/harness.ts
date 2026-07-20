@@ -335,6 +335,35 @@ export async function packAndInstall(workspace: AcceptanceWorkspace, companionPa
   return archive;
 }
 
+export async function packAndMountOffline(workspace: AcceptanceWorkspace): Promise<string> {
+  const before = new Set(readdirSync(workspace.root));
+  await run("npm", ["pack", "--silent", "--pack-destination", workspace.root], {
+    cwd: workspace.sourceRoot,
+    env: workspace.env,
+    timeoutMs: 240_000,
+  });
+  const packed = readdirSync(workspace.root).find(name => name.endsWith(".tgz") && !before.has(name));
+  if (!packed) throw new Error("npm pack did not produce a local tgz");
+  const archive = realpathSync(join(workspace.root, packed));
+  const listing = await run("tar", ["-tzf", archive], { env: workspace.env, timeoutMs: 30_000 });
+  for (const forbidden of ["package/src/", "package/test/", "package/.hy/", "package/.codex/", "package/.opencode/"]) {
+    if (listing.stdout.includes(forbidden)) throw new Error("Baseline tgz contains forbidden path: " + forbidden);
+  }
+  if (!listing.stdout.includes("package/dist/server.js")) throw new Error("Baseline tgz is missing dist/server.js");
+  await run("tar", ["-xzf", archive, "-C", workspace.root], { env: workspace.env, timeoutMs: 30_000 });
+  const packageRoot = join(workspace.root, "package");
+  chmodSync(join(packageRoot, "dist", "server.js"), 0o755);
+  symlinkSync(join(workspace.sourceRoot, "node_modules"), join(packageRoot, "node_modules"), "dir");
+  const executable = join(workspace.bin, process.platform === "win32" ? "hy-workflow.cmd" : "hy-workflow");
+  if (process.platform === "win32") {
+    writeFileSync(executable, `@echo off\r\n"${process.execPath}" "${join(packageRoot, "dist", "server.js")}" %*\r\n`);
+  } else {
+    symlinkSync(join(packageRoot, "dist", "server.js"), executable);
+  }
+  workspace.env.HY_ACCEPTANCE_PACKAGE_ROOT = packageRoot;
+  return archive;
+}
+
 export async function clonePinned(workspace: AcceptanceWorkspace, repo: AcceptanceRepo): Promise<string> {
   const target = join(workspace.repos, repo.id);
   mkdirSync(target, { recursive: true });

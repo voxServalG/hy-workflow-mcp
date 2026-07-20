@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { issueExam, submitExam, computeScopeFingerprint } from "../../src/verify-exam.js";
-import { readState, writeState } from "../../src/state.js";
+import { computeVerifyHash, readState, writeState } from "../../src/state.js";
+import { handleExamSubmit } from "../../src/tools/exam-submit.js";
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
@@ -23,8 +24,16 @@ try {
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
   execFileSync("git", ["config", "user.name", "test"], { cwd: root });
   writeFileSync(join(root, "README.md"), "# test\n");
-  execFileSync("git", ["add", "README.md"], { cwd: root });
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: [".ts"], codeDirs: ["src"], docsDir: "." },
+    codelint: { lintDirs: ["src"], maxLines: 500 },
+    doclint: { maxLines: 200 },
+    docsGardener: { catalogs: {} },
+    ci: { commands: ["npm test"] },
+  }, null, 2) + "\n");
+  execFileSync("git", ["add", "README.md", "hy-workflow.json"], { cwd: root });
   execFileSync("git", ["commit", "-qm", "init"], { cwd: root });
+  execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: root });
 
   // Seed a minimal plan in state
   const plan = {
@@ -55,6 +64,25 @@ try {
   assert(exam.scopeFingerprint === fingerprint, "exam fingerprint should match current tree");
   assert(/^\d{4}-\d{2}-\d{2}/.test(exam.issuedAt), "issuedAt should be ISO");
   assert(exam.checks.every(c => c.nonce && c.command && c.timeoutMs > 0), "every check has nonce/command/timeout");
+  assert(!exam.checks.some(c => c.id.startsWith("compile:python")), "TypeScript-only config must not receive a Python compile check");
+  assert(!exam.checks.some(c => c.command.includes("compileall")), "compile checks must never synthesize compileall from plan entry points");
+
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "sample.py"), "value = 1\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: [".py"], codeDirs: ["src"], docsDir: "." },
+    codelint: { lintDirs: ["src"], maxLines: 500 }, doclint: { maxLines: 200 }, docsGardener: { catalogs: {} }, ci: { commands: ["npm test"] },
+  }, null, 2) + "\n");
+  const pythonExam = issueExam(root, plan);
+  const pythonCheck = pythonExam.checks.find(c => c.id.startsWith("compile:python"));
+  assert(Boolean(pythonCheck), "Python config with a source file must receive a Python compile check");
+  assert(pythonCheck!.command.includes('-m py_compile "src/sample.py"'), `unexpected Python compile command: ${pythonCheck!.command}`);
+  assert(!pythonCheck!.command.includes("compileall"), "Python exam must use the same py_compile mode as synchronous verify");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
+    project: { baseBranch: "main", codeExt: [".ts"], codeDirs: ["src"], docsDir: "." },
+    codelint: { lintDirs: ["src"], maxLines: 500 }, doclint: { maxLines: 200 }, docsGardener: { catalogs: {} }, ci: { commands: ["npm test"] },
+  }, null, 2) + "\n");
+  rmSync(join(root, "src"), { recursive: true, force: true });
 
   // Build results where all pass
   const results = exam.checks.map(c => ({
@@ -69,6 +97,18 @@ try {
   const outcome = submitExam(root, readState(), exam.examId, results);
   assert(outcome.passed === true, `exam should pass: ${JSON.stringify(outcome.failedChecks)}`);
   assert(outcome.verifyHash && outcome.verifyHash.length === 12, "verifyHash should be 12-char hex");
+  assert(Boolean(outcome.implementationManifest), "passed exam should return implementation manifest");
+  assert(Boolean(outcome.verifiedManifestHash), "passed exam should return manifest hash");
+  assert(Boolean(outcome.verifiedImplementationDigest), "passed exam should return implementation digest");
+  assert(outcome.verifyHash === computeVerifyHash({ ...readState(), implementationManifest: outcome.implementationManifest, verifiedManifestHash: outcome.verifiedManifestHash, verifiedImplementationDigest: outcome.verifiedImplementationDigest }), "exam verifyHash should bind returned evidence");
+
+  const handled = await handleExamSubmit({ examId: exam.examId, results });
+  assert(handled.ok === true, "exam handler should advance after a passing submission");
+  const persisted = readState();
+  assert(persisted.phase === "commit", "passing exam should advance to commit");
+  assert(persisted.verifiedManifestHash === outcome.verifiedManifestHash, "handler should persist exam manifest hash");
+  assert(persisted.verifiedImplementationDigest === outcome.verifiedImplementationDigest, "handler should persist exam implementation digest");
+  assert(persisted.verifyHash === computeVerifyHash(persisted), "persisted exam state should satisfy commit verifyHash recomputation");
 
   // Nonce mismatch
   const bad = [{ ...results[0], nonce: "wrong-nonce" }];
