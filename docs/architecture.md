@@ -106,3 +106,7 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 - [State Machine](./state-machine.md)
 - [Tools Reference](./tools.md)
 - [Verify Pipeline](./verify.md)
+
+## Dual verification execution
+
+The server remains the oracle for both paths: hy_verify supervises short commands, while hy_exam_plan issues exact long-running checks and hy_exam_submit validates nonce, command, exit code, output constraints, and git-tree fingerprint before producing the same verifyHash.

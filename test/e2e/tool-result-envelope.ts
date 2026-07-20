@@ -141,7 +141,7 @@ try {
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/envelope" });
   const commitResult = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:missing-verify", commitResult);
-  if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verifyHash")) {
+  if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verifyHash") || !commitResult.allowedTools?.includes("hy_exam_plan") || !commitResult.allowedTools?.includes("hy_exam_submit")) {
     throw new Error("hy_commit missing verifyHash precondition should include error and hint");
   }
 

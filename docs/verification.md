@@ -19,3 +19,7 @@ Verification has two layers of meaning:
 - npm run verify
 
 Ordinary CI runs build, contract lint, tests, confirmed native project checks, doclint, and codelint. The package repository also runs an independent Windows Smoke job that builds and tests the installed tarball through setup, repeated setup, and unset. npm release additionally runs the full acceptance pressure matrix before publish; no skipped mandatory case is success.
+
+## Project acceptance
+
+npm run verify:dev adds the offline packed-tarball acceptance baseline before code enters dev. Because it is long-running, execute it through hy_exam_plan and hy_exam_submit; keep hy_verify as the under-60-second path.

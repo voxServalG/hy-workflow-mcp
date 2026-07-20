@@ -21,7 +21,7 @@ export const VALID_TRANSITIONS: Record<Phase, Phase[]> = {
   branch: ["branch", "edit", "done"],
   edit: ["edit", "verify", "commit", "done"],
   verify: ["verify", "edit", "commit", "done"],
-  commit: ["commit", "ci", "done"],
+  commit: ["commit", "edit", "ci", "done"],
   ci: ["ci", "edit", "merge", "done"],
   merge: ["merge", "chain", "done"],
   chain: ["chain", "done"],
