@@ -294,3 +294,7 @@ unset 只删你本机 deployment/state/cache 和客户端 MCP 登记，**不删�
 ## 📄 许可
 
 MIT
+
+## Dev acceptance baseline
+
+Before changes enter dev, run npm run verify:dev. Short verification stays on hy_verify; long commands use hy_exam_plan, external execution, and hy_exam_submit. Both paths produce an equivalent verifyHash.

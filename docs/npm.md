@@ -46,3 +46,10 @@ npm trust github @voxstudio/hy-workflow --file npm-publish.yml --repo voxServalG
 The first command publishes only to npm; it does not create or upload a GitHub build artifact. After the trusted publisher is confirmed, future GitHub Releases use OIDC only and the workflow enforces tag, branch ancestry, and prerelease-channel consistency before running the release gate.
 
 These rules are enforced by `src/contralint/rules/npm.ts` and `test/contract/npm-package.ts`.
+
+## Acceptance scripts
+
+- test:acceptance:baseline: offline packed-tarball gate for dev.
+- test:acceptance:pressure: five-public-repository release pressure.
+- test:acceptance: compatibility alias for pressure.
+- verify:dev: normal verify plus the dev baseline.

@@ -42,3 +42,7 @@ The MCP surface is canonical in `src/commands/catalog.ts` and registered by `src
 Contract lint checks that README, tool docs, server registration, and tests agree on this surface.
 
 Ordinary development preserves the complete documentation sequence: `hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_ci -> hy_merge -> hy_chain -> hy_reset`.
+
+## Long verification commands
+
+Use hy_verify only for short suites. For verify:dev or acceptance, call hy_exam_plan, execute its exact commands outside the MCP transport, then submit bounded evidence with hy_exam_submit.

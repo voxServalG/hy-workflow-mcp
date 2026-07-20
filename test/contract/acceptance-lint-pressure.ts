@@ -78,4 +78,7 @@ for (const token of ["prepareLintPressurePackages", "LINT_PREPARATION_TIMEOUT_MS
   assert(scenarios.includes(token), `real-repository lint pressure scenario is missing ${token}`);
 }
 
+const packageScripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+assert(packageScripts["test:acceptance:pressure"]?.includes("--profile release"), "baseline must not weaken release lint pressure");
+
 console.log("acceptance-lint-pressure: report, timeout, installed-package, baseline, and compatibility-restoration contracts pass");

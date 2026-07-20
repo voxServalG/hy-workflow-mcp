@@ -42,3 +42,7 @@ Every tool returns an output envelope with `ok`, `phase`, `next`, `status`, `dat
 ## Recovery
 
 If hy_plan returns `requires_user`, show the full `summary` and wait for approve. If hy_verify fails, use `recovery.byLayer` and return to hy_edit. If hy_ci is pending or has an API problem, stop and retry hy_ci later. If a permission or auth error includes `permission_violations`, `missing_scopes`, or `console_url`, report those fields clearly before asking the user or operator to act. If hy_merge, hy_chain, hy_reset, or another destructive step fails, stop and report the structured recovery instructions before doing anything else.
+
+## Long suites
+
+For verify:dev and acceptance, use hy_exam_plan, execute every issued command exactly, and call hy_exam_submit. Do not send a long suite through synchronous hy_verify.
