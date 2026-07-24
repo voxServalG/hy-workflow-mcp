@@ -47,7 +47,7 @@ if (process.platform !== "win32") {
     await client.connect(transport);
     const tools = await client.listTools();
     const elapsed = Date.now() - started;
-    assert(tools.tools.length === 17, `MCP surface should remain 17 tools, got ${tools.tools.length}`);
+    assert(tools.tools.length === 14, `MCP surface should remain 14 tools, got ${tools.tools.length}`);
     assert(elapsed < 2_000, `MCP must connect before slow gh auth probing, took ${elapsed}ms`);
   } finally {
     await client.close();
