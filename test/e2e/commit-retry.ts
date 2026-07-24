@@ -304,11 +304,12 @@ exec "${realGit}" "$@"
   git(workflowRoot, ["reset", "--hard", committedHead]);
 
   const secondAttempt = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
-  assert(secondAttempt.next === "ci" && secondAttempt.reused === true && secondAttempt.prNumber === 190, `second attempt should reuse the exact PR and advance to ci: ${JSON.stringify(secondAttempt)}`);
+  assert(secondAttempt.next === "commit" && secondAttempt.reused === true && secondAttempt.prNumber === 190, `second attempt should reuse the exact PR: ${JSON.stringify(secondAttempt)}`);
   assert(secondAttempt.data?.commit?.action === "recovered_verified_head" && secondAttempt.data?.commit?.sha === committedHead, `second attempt should recover the same verified HEAD: ${JSON.stringify(secondAttempt.data)}`);
   assert(git(workflowRoot, ["rev-list", "--count", "HEAD"]) === String(Number(commitCountBefore) + 1), "retry must not create an empty commit");
   assert(git(workflowRoot, ["rev-parse", "HEAD"]) === committedHead, "retry must keep the exact commit object ID");
-  assert(readState().phase === "ci" && readState().prNumber === 190, "successful recovery should persist ci state and PR number");
+  assert(readState().phase === "commit", "successful recovery should persist commit state with PR number");
+  assert(readState().prNumber === 190, "PR number should be persisted");
   const pushCalls = readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push "));
   assert(pushCalls.length === 2 && pushCalls.every(line => line.includes(`${committedHead}:refs/heads/feat/retry`)), `both pushes must use the exact verified SHA refspec: ${JSON.stringify(pushCalls)}`);
   const workflowPrCalls = calls();
@@ -358,7 +359,7 @@ exec "${realGit}" "$@"
   assert(!readFileSync(gitLog, "utf-8").split("\n").some(line => line.startsWith("push ")), "OID mismatch must stop before push");
 
   const unboundState = readState();
-  unboundState.phase = "ci";
+  unboundState.phase = "commit";
   unboundState.plan = null;
   unboundState.approval = null;
   writeState(unboundState);

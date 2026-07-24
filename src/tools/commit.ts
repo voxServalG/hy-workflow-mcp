@@ -1,7 +1,7 @@
 import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computeImplementationManifestHash, computePlanHash, computeVerifyHash, currentBranch, type PlanDoc } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { requireRuntimeConfig } from "../config.js";
-import { commitScope, push, createPr, inspectScopedWorktree, resolveHeadCommit, resolveOriginRepository, parseCommitRecovery, type CommitRecoveryRecord } from "../git.js";
+import { commitScope, push, createPr, inspectScopedWorktree, resolveHeadCommit, resolveOriginRepository, parseCommitRecovery, checkCi, type CommitRecoveryRecord } from "../git.js";
 import { toolResult, type ToolResult } from "./_base.js";
 
 function markdownFenceFor(value: string): string {
@@ -56,7 +56,7 @@ function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -78,7 +78,7 @@ function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown
     },
     hint: "Call hy_edit, then hy_read_docs(after_edit), hy_sync_docs, and the appropriate sync or async verify path before hy_commit.",
     allowedTools: ["hy_edit", "hy_read_docs", "hy_status"],
-    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_commit", "hy_merge"],
     recovery: {
       tool: "hy_edit",
       instruction: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
@@ -109,7 +109,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -128,7 +128,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -170,7 +170,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -184,7 +184,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
   const origin = resolveOriginRepository(root);
@@ -195,7 +195,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_commit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
   const repository = origin.repository;
@@ -230,7 +230,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
   const matchingRecovery: CommitRecoveryRecord | null = sameVerificationRecovery
@@ -251,7 +251,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         requires_user: true,
         stop_here: true,
         allowedTools: ["hy_commit", "hy_status"],
-        blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+        blockedTools: ["hy_merge"],
       });
     }
     if (inspectedScope.changedPaths.length) {
@@ -268,7 +268,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         requires_user: true,
         stop_here: true,
         allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-        blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+        blockedTools: ["hy_merge"],
       });
     }
     c = {
@@ -296,7 +296,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -331,7 +331,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
   if (noScopedChanges && matchingRecovery && resolvedHead.hash !== matchingRecovery.commitOid) {
@@ -347,7 +347,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -369,7 +369,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
   const beforePaths = [...currentManifest.changed].sort();
@@ -389,7 +389,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_read_docs", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_merge"],
     });
   }
 
@@ -422,7 +422,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         requires_user: true,
         stop_here: true,
         allowedTools: ["hy_status"],
-        blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+        blockedTools: ["hy_merge"],
       });
     }
   }
@@ -433,25 +433,143 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   const pr = createPr(root, args.title, body, baseBranch, state.branch, commitHash, repository);
   if (!pr.ok) return toolResult("commit", { error: pr.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash } }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR lookup or creation failure, then retry hy_commit. The retry will reuse the verified commit and must not create a duplicate PR." }, allowedTools: ["hy_commit", "hy_status"] });
 
-  const next = transition(activeState, "ci");
-  next.prNumber = pr.prNumber ?? null;
-  next.plan!.pr_number = next.prNumber;
-  writeState(next);
+  activeState.prNumber = pr.prNumber ?? null;
+  activeState.plan!.pr_number = activeState.prNumber;
+  writeState(activeState);
   const action = pr.reused ? "reused" : "created";
 
-  return toolResult("ci", {
-    prNumber: pr.prNumber,
+  // ── CI polling (absorbed from ci.ts) ──────────────────────
+  const FAILURE_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"]);
+  const DEFAULT_TIMEOUT_SECONDS = 600;
+  const DEFAULT_INTERVAL_SECONDS = 10;
+  const MAX_TIMEOUT_SECONDS = 1800;
+  const timeoutSeconds = Math.min(Math.max(DEFAULT_TIMEOUT_SECONDS, 0), MAX_TIMEOUT_SECONDS);
+  const intervalSeconds = Math.min(Math.max(DEFAULT_INTERVAL_SECONDS, 2), timeoutSeconds);
+  const deadline = Date.now() + timeoutSeconds * 1000;
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  let ciResult = checkCi(root, activeState.prNumber);
+  while (ciResult.ok && !ciResult.allGreen && !ciResult.noChecks && !ciResult.noEffectiveChecks) {
+    const checks = ciResult.checks || [];
+    const failedNames = checks.filter((c: any) => FAILURE_CONCLUSIONS.has(c.conclusion)).map((c: any) => c.name);
+    if (failedNames.length || Date.now() >= deadline) break;
+    await sleep(Math.min(intervalSeconds * 1000, Math.max(deadline - Date.now(), 0)));
+    ciResult = checkCi(root, activeState.prNumber);
+  }
+
+  if (!ciResult.ok) {
+    return toolResult("commit", {
+      prNumber: activeState.prNumber,
+      url: pr.url,
+      reused: Boolean(pr.reused),
+      error: ciResult.error,
+      data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor }, checks: ciResult.checks },
+      requires_user: true,
+      stop_here: true,
+      display: { title: "CI query failed", body: `PR #${activeState.prNumber} was created but CI status could not be read.` },
+      hint: "Retry hy_commit to re-check CI status; it will not create a duplicate commit or PR.",
+      allowedTools: ["hy_commit", "hy_status"],
+      message: `PR #${activeState.prNumber} ${action}. CI query failed — retry hy_commit.`,
+    });
+  }
+
+  if (ciResult.noChecks || ciResult.noEffectiveChecks) {
+    const reason = ciResult.noChecks
+      ? "No CI checks were reported"
+      : ciResult.requiredCheckAmbiguous
+        ? "Multiple provenance-verified Verify checks were reported"
+        : ciResult.requiredCheckMissing
+          ? "No Verify check from the bound hy-workflow Actions run was reported"
+          : "The required Verify check was skipped or neutral";
+    return toolResult("commit", {
+      prNumber: activeState.prNumber,
+      url: pr.url,
+      reused: Boolean(pr.reused),
+      allGreen: false,
+      noChecks: Boolean(ciResult.noChecks),
+      noEffectiveChecks: Boolean(ciResult.noEffectiveChecks),
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "CI_CHECKS_REQUIRED",
+        message: `${reason} for PR #${activeState.prNumber}; merge is blocked.`,
+        hint: "Ensure exactly one .github/workflows/hy-workflow.yml Actions run for the verified PR commit reports Verify as SUCCESS, then retry hy_commit.",
+        retryable: true,
+      },
+      display: { title: "CI checks required", body: `${reason} for PR #${activeState.prNumber}.` },
+      requires_user: true,
+      stop_here: true,
+      allowedTools: ["hy_commit", "hy_status"],
+      blockedTools: ["hy_merge"],
+      recovery: { tool: "hy_commit", instruction: "Ensure the required Verify check completes successfully, then rerun hy_commit." },
+      message: `${reason}. Merge remains blocked — retry hy_commit.`,
+    });
+  }
+
+  if (!ciResult.allGreen) {
+    const checks = ciResult.checks || [];
+    const failedNames = checks.filter((c: any) => FAILURE_CONCLUSIONS.has(c.conclusion)).map((c: any) => c.name);
+
+    if (!failedNames.length) {
+      return toolResult("commit", {
+        prNumber: activeState.prNumber,
+        url: pr.url,
+        reused: Boolean(pr.reused),
+        allGreen: false,
+        pending: true,
+        checks,
+        timeoutSeconds,
+        display: { title: "CI still pending", body: `PR #${activeState.prNumber} checks are still running.` },
+        requires_user: true,
+        stop_here: true,
+        hint: "CI is still pending after bounded polling. Retry hy_commit later; it will resume polling without creating duplicate commits.",
+        allowedTools: ["hy_commit", "hy_status"],
+        blockedTools: ["hy_merge"],
+        recovery: { tool: "hy_commit", instruction: "Wait for pending CI checks, then rerun hy_commit to continue polling." },
+        message: `CI is still pending after ${timeoutSeconds}s. Retry hy_commit after checks complete.`,
+      });
+    }
+
+    const editState = transition(activeState, "edit");
+    writeState(editState);
+
+    return toolResult("edit", {
+      prNumber: activeState.prNumber,
+      url: pr.url,
+      allGreen: false,
+      checks,
+      failedChecks: failedNames,
+      data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor } },
+      requires_user: true,
+      stop_here: true,
+      display: { title: "CI not all green", body: `Failed checks: ${failedNames.join(", ")}. Returned to edit phase.` },
+      hint: "CI is not green. Read failed checks before editing. After fixes, run hy_verify, then hy_commit again.",
+      allowedTools: ["hy_edit", "hy_verify", "hy_status"],
+      blockedTools: ["hy_merge"],
+      recovery: { tool: "hy_edit", instruction: "Fix CI failures locally, rerun hy_verify, then hy_commit." },
+      message: `CI not all green. Failed: ${failedNames.join(", ")}. Fix issues and re-run hy_commit.`,
+    });
+  }
+
+  // CI all green — advance to merge
+  const next = transition(activeState, "merge");
+  writeState(next);
+
+  return toolResult("merge", {
+    prNumber: activeState.prNumber,
     url: pr.url,
     reused: Boolean(pr.reused),
-    data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash }, prAction: action, repository: pr.repository, headRefOid: pr.headRefOid },
+    allGreen: true,
+    data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor }, checks: ciResult.checks, prAction: action },
     display: {
-      title: pr.reused ? "Pull request reused" : "Pull request created",
-      body: `PR #${pr.prNumber} ${action}.`,
-      urls: pr.url ? [pr.url] : [],
+      title: "CI passed — ready to merge",
+      body: `PR #${activeState.prNumber}: the required Verify check and all effective CI checks passed.`,
     },
-    hint: "Show the PR URL briefly, then continue to hy_ci. Do not stop here unless a later tool reports CI or merge problems.",
-    allowedTools: ["hy_ci", "hy_status"],
-    blockedTools: ["hy_merge", "hy_chain"],
-    message: `PR #${pr.prNumber} ${action}. Waiting for CI...`,
+    hint: "Continue to hy_merge. The approved workflow does not stop after CI success.",
+    allowedTools: ["hy_merge", "hy_status"],
+    message: `PR #${activeState.prNumber} ${action}. Required Verify and all effective CI checks passed. Ready to merge.`,
   });
 }

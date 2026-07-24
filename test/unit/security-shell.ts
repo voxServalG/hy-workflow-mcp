@@ -7,8 +7,6 @@ import { buildImplementationManifest } from "../../src/checks.js";
 import { buildSuggestedCommand, checkConfig } from "../../src/config.js";
 import { checkCi, checkout, createBranch, createPr, isSafeGitRefName, mergePr, push } from "../../src/git.js";
 import { readState, statePath, writeState, type WorkflowState } from "../../src/state.js";
-import { handleChain } from "../../src/tools/chain.js";
-
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
 }
@@ -116,13 +114,8 @@ try {
     project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
     codelint: { lintDirs: ["src"] },
   }, null, 2) + "\n", "utf-8");
-  writeState({ ...baseState("chain") });
-  const chain = await handleChain({ branches: [`topic;touch${"${IFS}"}${sentinel}`] });
-  assert(chain.next === "chain", `dangerous chain branch should stay in chain, got ${JSON.stringify(chain)}`);
-  assert(chain.requires_user && chain.stop_here, `dangerous chain branch should stop, got ${JSON.stringify(chain)}`);
-  assert(!existsSync(sentinel), "dangerous chain branch must not execute shell payload");
-
-  writeFileSync(statePath(), JSON.stringify({ ...baseState("ci"), prNumber: `1;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
+  writeState({ ...baseState("merge") });
+  writeFileSync(statePath(), JSON.stringify({ ...baseState("commit"), prNumber: `1;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
   try {
     readState();
     throw new Error("invalid prNumber should fail state read");

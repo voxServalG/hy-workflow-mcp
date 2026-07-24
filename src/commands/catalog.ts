@@ -19,11 +19,8 @@ export const COMMAND_CONTRACTS: CommandContract[] = [
   { name: "hy_exam_plan", handlerFile: "src/tools/exam-plan.ts", docsFile: "docs/tools.md", phase: "edit, verify", description: "Async verify step 1: issue an exam manifest (checks list + nonces) without running commands", destructive: false },
   { name: "hy_exam_submit", handlerFile: "src/tools/exam-submit.ts", docsFile: "docs/tools.md", phase: "edit, verify", description: "Async verify step 2: submit agent-run check results; server validates nonces, commands, exit codes, and tree fingerprint before stamping verifyHash", destructive: false },
   { name: "hy_amend_plan", handlerFile: "src/tools/amend_plan.ts", docsFile: "docs/tools.md", phase: "verify", description: "Apply approved scope amendments", destructive: false },
-  { name: "hy_commit", handlerFile: "src/tools/commit.ts", docsFile: "docs/tools.md", phase: "commit", description: "Commit approved scope and create PR", destructive: true },
-  { name: "hy_ci", handlerFile: "src/tools/ci.ts", docsFile: "docs/tools.md", phase: "ci", description: "Poll GitHub checks", destructive: false },
-  { name: "hy_merge", handlerFile: "src/tools/merge.ts", docsFile: "docs/tools.md", phase: "merge", description: "Merge the approved PR", destructive: true },
-  { name: "hy_chain", handlerFile: "src/tools/chain.ts", docsFile: "docs/tools.md", phase: "chain", description: "Rebase downstream branches", destructive: true },
-  { name: "hy_reset", handlerFile: "src/tools/reset.ts", docsFile: "docs/tools.md", phase: "any", description: "Reset workflow runtime state", destructive: true },
+  { name: "hy_commit", handlerFile: "src/tools/commit.ts", docsFile: "docs/tools.md", phase: "commit", description: "Commit approved scope, create PR, and poll CI until green", destructive: true },
+  { name: "hy_merge", handlerFile: "src/tools/merge.ts", docsFile: "docs/tools.md", phase: "merge", description: "Merge the approved PR and auto-rebase downstream branches", destructive: true },
   { name: "hy_status", handlerFile: "src/tools/status.ts", docsFile: "docs/tools.md", phase: "any", description: "Inspect workflow state", destructive: false },
 ];
 

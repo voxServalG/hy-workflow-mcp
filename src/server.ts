@@ -22,11 +22,8 @@ import { handleAmendPlan } from "./tools/amend_plan.js";
 import { handleExamPlan } from "./tools/exam-plan.js";
 import { handleExamSubmit } from "./tools/exam-submit.js";
 import { handleCommit } from "./tools/commit.js";
-import { handleCi } from "./tools/ci.js";
 import { handleMerge } from "./tools/merge.js";
-import { handleChain } from "./tools/chain.js";
 import { handleStatus } from "./tools/status.js";
-import { handleReset } from "./tools/reset.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
 import { configHelp, recoverRuntimeCompatConfigs, runConfigCli } from "./config.js";
 import { findProjectRoot } from "./runtime/project.js";
@@ -45,7 +42,7 @@ const SYSTEM_PROMPT = `
 ## 硬性流程（必须严格按顺序，禁止跳过）
 
   首次使用: hy_init → hy_read_docs(before_plan) → hy_plan → ...
-  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_ci → hy_merge → hy_chain → hy_reset
+  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_merge
 
 ### 流程规则
 
@@ -62,11 +59,8 @@ const SYSTEM_PROMPT = `
 7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
 8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或团队 workflow/template 文件内同步，完成后再 hy_verify。
 9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 生成的 GitHub Actions workflow 必须执行 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
-10. hy_commit — git add + commit + push + gh pr create，PR 正文嵌入 plan 摘要。
-11. hy_ci — 等待 CI，红色回 hy_edit，全绿进 hy_merge；没有 checks 或只有 skipped/neutral checks 时 fail closed，保持在 ci。
-12. hy_merge — 合并 PR，删除远程分支。
-13. hy_chain — rebase 下游分支。
-14. hy_reset — PR 合并并完成 hy_chain 后清理 workflow 派生状态，回到 plan。
+10. hy_commit — git add + commit + push + gh pr create + 自动轮询 CI 直到全绿或失败。PR 正文嵌入 plan 摘要；CI 全绿直接进 hy_merge，失败回 hy_edit，pending 可重试 hy_commit。
+11. hy_merge — 合并 PR + 删除远程分支 + 自动 rebase 下游 Agent 分支。任务完成后下一个 hy_plan 自动复位。
 
 ### 禁止操作
 
@@ -82,10 +76,6 @@ const SYSTEM_PROMPT = `
 - unset 只解除本机部署，不删除两个团队文件
 - 旧用户 config 与含 mode 的 deployment manifest 仅只读兼容，不恢复第二套模式
 - GitHub workflow 必须运行 doclint 与 codelint；仓库管理员需把 Verify check 配为 required，setup 不修改 ruleset
-
-### hy_reset
-
-hy_reset 可在任意阶段调用，重置到 plan 阶段并清空当前工作数据。用于 PR 已合并且 hy_chain 完成后的正常收尾；也可在用户明确要求放弃当前开发任务时使用。
 
 ---
 
@@ -115,14 +105,14 @@ hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和
 按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。hy_edit 后必须先调用 hy_read_docs({stage:"after_edit"})，再调用 hy_sync_docs，最后才调用 hy_verify。
 **每完成一步，用简短语句向用户汇报当前进度**（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
 
-任务完成标准不是 hy_commit，而是 PR 合并到 baseBranch 后调用 hy_chain（无下游分支时传空数组）并 hy_reset 回到 plan。
-hy_commit → hy_ci → hy_merge → hy_chain → hy_reset 中间除非工具返回 error、requires_user 或 stop_here（例如 CI 红、CI pending/API 异常、push/PR/merge/rebase 失败），否则不要停下。
+任务完成标准是 PR 合并到 baseBranch 后 hy_merge 自动 rebase 下游分支并返回 done。下一个 hy_plan 会自动复位状态。
+hy_commit → hy_merge 中间除非工具返回 error、requires_user 或 stop_here，否则不要停下。
 
 ## 失败处理
 
 hy_verify 失败: 编辑修复后重新 hy_verify。
-hy_ci 有红:   停下并展示结构化失败信息；编辑修复后重新 hy_verify → hy_commit → hy_ci。
-hy_ci pending/API 异常: 停下并展示结构化状态；不要进入 edit，等待后重试 hy_ci。
+hy_commit CI 轮询有红: 停下并展示结构化失败信息；编辑修复后重新 hy_verify → hy_commit。
+hy_commit CI pending/超时: 停下并展示状态；等待后重试 hy_commit（不重复 commit/push）。
 
 hy_status 随时可查看当前阶段。
 
@@ -336,7 +326,7 @@ const TOOLS = [
   },
   {
     name: "hy_commit",
-    description: "git add + commit + push + gh pr create。PR 正文嵌入 plan 摘要；成功后继续 hy_ci，不默认停下。",
+    description: "git add + commit + push + gh pr create + 自动轮询 CI 直到全绿或失败。PR 正文嵌入 plan 摘要；CI 全绿直接返回 next=merge，失败返回 edit，pending 可重试。",
     inputSchema: {
       type: "object",
       properties: {
@@ -348,42 +338,13 @@ const TOOLS = [
     },
   },
   {
-    name: "hy_ci",
-    description: "按 timeoutSeconds/intervalSeconds bounded polling CI 状态。全绿时继续 hy_merge；CI 红、超时仍 pending 或 API 异常时结构化停下。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        timeoutSeconds: { type: "number", description: "Maximum seconds to poll pending checks before returning pending status. Defaults to 600, capped at 1800." },
-        intervalSeconds: { type: "number", description: "Seconds between CI polling attempts. Defaults to 10, minimum 2." },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
     name: "hy_merge",
-    description: "全绿并经用户确认后合并 PR + 删除分支。返回下一步 hy_chain guidance。",
+    description: "全绿并经用户确认后合并 PR + 删除分支 + 自动 rebase 下游 Agent 分支。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "hy_chain",
-    description: "依次 rebase 所有下游分支。返回 done display 和恢复提示。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        branches: { type: "array", items: { type: "string" } },
-      },
-      required: ["branches"],
-      additionalProperties: false,
-    },
   },
   {
     name: "hy_status",
     description: "查看当前工作流阶段。返回 phase、allowedTools 和下一步提示。",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "hy_reset",
-    description: "重置到 plan 阶段，清空当前工作数据（branch/pr/plan/verifyHash）。用于 PR 合并并完成 hy_chain 后的正常收尾，也可在用户明确放弃任务后调用。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ];
@@ -450,11 +411,8 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
     case "hy_exam_submit": return handleExamSubmit(args as any);
     case "hy_amend_plan": return handleAmendPlan(args as any);
     case "hy_commit":  return handleCommit(args as any);
-    case "hy_ci":      return handleCi(args as any);
     case "hy_merge":   return handleMerge();
-    case "hy_chain":   return handleChain(args as any);
     case "hy_status":  return handleStatus();
-    case "hy_reset":   return handleReset();
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }

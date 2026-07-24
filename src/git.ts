@@ -948,6 +948,11 @@ export function checkout(root: string, branch: string): { ok: boolean; error?: u
   return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
+export function listLocalBranches(root: string): string[] {
+  const r = run("git", ["branch", "--format=%(refname:short)"], root);
+  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean) : [];
+}
+
 export function pull(root: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
   const required = requireGitExecutor();
   if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
