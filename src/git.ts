@@ -21,6 +21,11 @@ function run(cmd: string, args: string[], cwd?: string): RunResult {
   }
 }
 
+export function trackedFiles(root: string): string[] {
+  const r = run("git", ["ls-files"], root);
+  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean) : [];
+}
+
 function writeTempFile(content: string): string {
   const tmpPath = path.join(os.tmpdir(), `hy-commit-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
   fs.writeFileSync(tmpPath, content, "utf-8");
