@@ -6,7 +6,6 @@ import { chdir, cwd } from "node:process";
 import { handlePlan } from "../../src/tools/plan.js";
 import { handleVerify } from "../../src/tools/verify.js";
 import { handleCommit } from "../../src/tools/commit.js";
-import { handleCi } from "../../src/tools/ci.js";
 import { handleMerge } from "../../src/tools/merge.js";
 import { handleStatus } from "../../src/tools/status.js";
 import { handleApprove } from "../../src/tools/approve.js";
@@ -158,11 +157,6 @@ try {
   if (branchMismatchCommit.error?.code !== "GIT_BRANCH_MISMATCH") {
     throw new Error(`hy_commit should reject current branch mismatch, got ${JSON.stringify(branchMismatchCommit)}`);
   }
-
-  writeState(baseState("ci"));
-  const ciResult = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
-  assertEnvelope("hy_ci", ciResult);
-  if (!ciResult.error) throw new Error("hy_ci without PR should report error");
 
   writeState(baseState("merge"));
   const mergeResult = await handleMerge();

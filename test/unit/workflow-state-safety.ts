@@ -7,7 +7,7 @@ import { buildImplementationManifest } from "../../src/checks.js";
 import { computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash, readState, statePath, writeState } from "../../src/state.js";
 import { handleApprove } from "../../src/tools/approve.js";
 import { handleCommit } from "../../src/tools/commit.js";
-import { handleReset } from "../../src/tools/reset.js";
+import { handlePlan } from "../../src/tools/plan.js";
 import { handleStatus } from "../../src/tools/status.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
@@ -71,7 +71,7 @@ try {
   chdir(root);
 
   writeState({
-    ...baseState("ci"),
+    ...baseState("commit"),
     branch: "fix/old",
     prNumber: 123,
     plan: basePlan(),
@@ -86,15 +86,18 @@ try {
   });
   assert(statePath().startsWith(runtimeHome), `workflow state should live under isolated user state: ${statePath()}`);
   assert(!existsSync(join(root, ".git", "hy-workflow", "workflow.json")), "writeState must not create project-local git state");
-  await handleReset();
+  // Auto-reset via hy_plan from done phase: should clear all derived state and return to plan
+  writeState({ ...readState(), phase: "done" as const });
+  const resetResult = await handlePlan({ task: "new task after reset", plan: null });
   const resetState = readState();
-  assert(resetState.phase === "plan", "reset should return to plan");
+  assert(resetState.phase === "plan", `auto-reset should return to plan, got ${resetState.phase}`);
   assert(resetState.approval === null, "reset should clear stale approval");
   assert(resetState.pendingAmendment === null, "reset should clear pending amendments");
   assert(resetState.implementationManifest === null, "reset should clear implementation manifest");
   assert(resetState.documentReads === null, "reset should clear document reads");
   assert(resetState.syncDocs === null, "reset should clear sync docs");
   assert(resetState.verifiedImplementationDigest === null, "reset should clear verified implementation digest");
+  assert(resetResult.next === "plan", `reset should stop at plan (missing before_plan baseline), got ${JSON.stringify(resetResult)}`);
 
   writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
   const rejected = await handleApprove({ approved: "needs changes", note: "reject" });
@@ -149,12 +152,12 @@ const nonGit = mkdtempSync(join(tmpdir(), "hy-no-git-"));
 try {
   chdir(nonGit);
   try {
-    await handleReset();
-    throw new Error("reset outside git should fail");
+    await handlePlan({ task: "test", plan: null });
+    throw new Error("plan outside git should fail");
   } catch (error) {
     assertErrorCode(error, "PROJECT_ROOT_NOT_FOUND");
   }
-  assert(!existsSync(join(nonGit, ".git", "hy-workflow", "workflow.json")), "reset outside git should not create fake .git runtime state");
+  assert(!existsSync(join(nonGit, ".git", "hy-workflow", "workflow.json")), "plan outside git should not create fake .git runtime state");
 } finally {
   chdir(originalCwd);
 }
