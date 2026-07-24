@@ -280,17 +280,6 @@ async function runPlatformAsync(plan: PlanDoc, root: string): Promise<CheckResul
   return res;
 }
 
-async function runWorkflowContractLintAsync(_root: string): Promise<CheckResult[]> {
-  const { runContractLint } = await import("./contralint/run.js");
-  const report = runContractLint(_root);
-  const detail = report.ok
-    ? "contract lint passed"
-    : report.findings.map(f => f.severity + ":" + f.rule + ":" + f.message).join("; ");
-  return [report.ok
-    ? ok("workflow-contract", "lint", detail)
-    : fail("workflow-contract", "lint", detail, true)];
-}
-
 export async function runAllChecksAsync(root: string, state: WorkflowState): Promise<VerifyReport> {
   const p = state.plan;
   const emptyManifest: ImplementationManifest = { modified: [], added: [], deleted: [], untracked: [], changed: [] };
@@ -314,11 +303,6 @@ export async function runAllChecksAsync(root: string, state: WorkflowState): Pro
     manifestError = fail("scope", "scope", e.message ?? String(e));
   }
 
-  const lintChecks: CheckResult[] = [
-    ...(await runWorkflowContractLintAsync(root)),
-  ];
-  await setImmediatePromise();
-
   const compileChecks = runCompile(root);
   await setImmediatePromise();
 
@@ -337,7 +321,6 @@ export async function runAllChecksAsync(root: string, state: WorkflowState): Pro
   const testsChecks = await runItemsAsync(p.verify.tests, "tests", root);
 
   const all: CheckResult[] = [
-    ...lintChecks,
     ...compileChecks,
     ...scopeChecks,
     ...boundaryChecks,

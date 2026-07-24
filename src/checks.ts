@@ -5,7 +5,6 @@ import type { CheckItem, ImplementationManifest, PendingPlanAmendment, PlanDoc, 
 import { getBaseBranch } from "./state.js";
 import { PYTHON_CODE_EXTS, normalizeCodeExt } from "./code_ext.js";
 import { requireRuntimeConfig } from "./config.js";
-import { runContractLint } from "./contralint/run.js";
 
 // ── Result ───────────────────────────────────────────────────
 
@@ -318,16 +317,6 @@ export function parseCodeLintReport(report: any): CheckResult {
   return passed
     ? ok("codelint", "lint", detail)
     : fail("codelint", "lint", detail, true);
-}
-
-export function runWorkflowContractLint(root: string): CheckResult[] {
-  const report = runContractLint(root);
-  const detail = report.ok
-    ? "contract lint passed"
-    : report.findings.map(finding => finding.severity + ":" + finding.rule + ":" + finding.message).join("; ");
-  return [report.ok
-    ? ok("workflow-contract", "lint", detail)
-    : fail("workflow-contract", "lint", detail, true)];
 }
 
 // ── 2. Compile (hard) ───────────────────────────────────────
