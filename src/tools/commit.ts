@@ -563,7 +563,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     url: pr.url,
     reused: Boolean(pr.reused),
     allGreen: true,
-    data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor }, checks: ciResult.checks, prAction: action },
+    data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash }, checks: ciResult.checks, prAction: action },
     display: {
       title: "CI passed — ready to merge",
       body: `PR #${activeState.prNumber}: the required Verify check and all effective CI checks passed.`,
