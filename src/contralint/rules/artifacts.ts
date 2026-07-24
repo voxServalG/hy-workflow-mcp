@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { trackedFiles } from "../../adapters/git.js";
+import { trackedFiles } from "../../git.js";
 import { isLocalArtifact, TRACKED_PROJECT_ARTIFACTS } from "../../policy/artifacts.js";
 import { readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";

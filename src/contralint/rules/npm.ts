@@ -1,6 +1,6 @@
 import { exists, readText } from "../files.js";
 import { npmPackDryRun, readPackageJson } from "../../npm/package.js";
-import { trackedFiles } from "../../adapters/git.js";
+import { trackedFiles } from "../../git.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const REQUIRED_SCRIPTS = ["clean", "build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "test:acceptance", "test:windows", "verify", "prepack", "prepublishOnly"];

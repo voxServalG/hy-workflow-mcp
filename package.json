@@ -1,6 +1,6 @@
 {
   "name": "@voxstudio/hy-workflow",
-  "version": "0.4.1-next.1",
+  "version": "0.4.1-next.2",
   "description": "MCP server enforcing a closed-loop workflow for LLM-assisted development",
   "type": "module",
   "main": "dist/server.js",
@@ -52,8 +52,7 @@
     "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "dotenv": "^16.0.0",
-    "jsonc-parser": "^3.3.1",
-    "openai": "^4.0.0"
+    "jsonc-parser": "^3.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

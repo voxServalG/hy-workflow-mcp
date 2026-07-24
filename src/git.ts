@@ -21,6 +21,11 @@ function run(cmd: string, args: string[], cwd?: string): RunResult {
   }
 }
 
+export function trackedFiles(root: string): string[] {
+  const r = run("git", ["ls-files"], root);
+  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean) : [];
+}
+
 function writeTempFile(content: string): string {
   const tmpPath = path.join(os.tmpdir(), `hy-commit-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
   fs.writeFileSync(tmpPath, content, "utf-8");
@@ -941,6 +946,11 @@ export function checkout(root: string, branch: string): { ok: boolean; error?: u
   if (branchError) return { ok: false, error: branchError, executor: required.executor };
   const r = run("git", ["checkout", branch], root);
   return { ok: r.ok, error: r.stderr, executor: required.executor };
+}
+
+export function listLocalBranches(root: string): string[] {
+  const r = run("git", ["branch", "--format=%(refname:short)"], root);
+  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean) : [];
 }
 
 export function pull(root: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {

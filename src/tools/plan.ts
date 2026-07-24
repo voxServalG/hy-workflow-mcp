@@ -217,6 +217,24 @@ function buildSummary(p: PlanDoc): string {
 
 export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown }): Promise<ToolResult> {
   const state = readState();
+
+  // Auto-reset from terminal phases: clear derived state so the new task starts fresh.
+  if (state.phase === "done" || state.phase === "merge") {
+    state.phase = "plan";
+    state.branch = null;
+    state.prNumber = null;
+    state.plan = null;
+    state.approval = null;
+    state.verifyHash = null;
+    state.verifiedImplementationDigest = null;
+    state.verifiedManifestHash = null;
+    state.pendingAmendment = null;
+    state.implementationManifest = null;
+    state.documentReads = null;
+    state.syncDocs = null;
+    writeState(state);
+  }
+
   assertPhase(state, "plan");
 
   const task = (args.task ?? "").trim();

@@ -14,10 +14,7 @@ const EXPECTED_TOOL_LITERALS = [
   "hy_exam_submit",
   "hy_amend_plan",
   "hy_commit",
-  "hy_ci",
   "hy_merge",
-  "hy_chain",
-  "hy_reset",
   "hy_status",
 ];
 

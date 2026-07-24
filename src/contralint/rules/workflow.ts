@@ -14,10 +14,7 @@ const DOCUMENT_GATE_SEQUENCE = [
   "hy_sync_docs",
   "hy_verify",
   "hy_commit",
-  "hy_ci",
   "hy_merge",
-  "hy_chain",
-  "hy_reset",
 ];
 
 const DOCUMENT_GATE_CONTRACT_FILES = [
@@ -63,7 +60,7 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
       findings.push({
         rule: "workflow",
         severity: "hard_fail",
-        message: "Agent contract must preserve the complete hy_status -> docs/plan/approve -> branch/edit/docs/verify -> commit/CI/merge/chain/reset order.",
+        message: "Agent contract must preserve the complete hy_status -> docs/plan/approve -> branch/edit/docs/verify -> commit/merge order.",
         file,
         detail: { expected: DOCUMENT_GATE_SEQUENCE },
       });

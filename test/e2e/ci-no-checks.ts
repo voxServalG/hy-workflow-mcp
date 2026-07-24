@@ -3,8 +3,7 @@ import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
-import { handleCi } from "../../src/tools/ci.js";
-import { classifyVerifyChecks, isVerifyCheckIdentity, type CiCheck } from "../../src/git.js";
+import { checkCi, classifyVerifyChecks, isVerifyCheckIdentity, type CiCheck } from "../../src/git.js";
 import { readState, statePath, writeState, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
@@ -18,7 +17,7 @@ function ciCheck(name: string, conclusion: string, provenanceVerified = false, w
 function baseState(): WorkflowState {
   return {
     version: "1",
-    phase: "ci",
+    phase: "commit",
     branch: "fix/no-checks",
     prNumber: 123,
     plan: null,
@@ -49,52 +48,35 @@ try {
   chdir(root);
 
   writeState(baseState());
-  const result = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
+  const result = checkCi(root, 123);
 
-  if (result.next !== "ci" || result.phase !== "ci") {
-    throw new Error(`no checks should remain in ci, got ${JSON.stringify(result)}`);
+  if (!result.noChecks || result.allGreen) {
+    throw new Error(`no checks should fail closed, got ${JSON.stringify(result)}`);
   }
-  if (!result.noChecks || result.allGreen || result.error?.code !== "CI_CHECKS_REQUIRED") {
-    throw new Error(`no checks should return a structured fail-closed result, got ${JSON.stringify(result)}`);
-  }
-  if (!result.requires_user || !result.stop_here || !result.blockedTools?.includes("hy_merge")) {
-    throw new Error(`no checks should stop and block merge, got ${JSON.stringify(result)}`);
-  }
-  if (readState().phase !== "ci") {
-    throw new Error("no checks must preserve ci phase");
+  if (readState().phase !== "commit") {
+    throw new Error("no checks must preserve commit phase");
   }
 
   process.env.HY_TEST_CI_RESULT = "neutral";
   writeState(baseState());
-  const neutral = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
-  if (neutral.next !== "ci" || neutral.phase !== "ci" || !neutral.noEffectiveChecks) {
-    throw new Error(`only skipped/neutral checks should remain in ci, got ${JSON.stringify(neutral)}`);
-  }
-  if (!neutral.requires_user || !neutral.stop_here || neutral.error?.code !== "CI_CHECKS_REQUIRED") {
+  const neutral = checkCi(root, 123);
+  if (!neutral.noEffectiveChecks || neutral.allGreen) {
     throw new Error(`only skipped/neutral checks should fail closed, got ${JSON.stringify(neutral)}`);
-  }
-  if (readState().phase !== "ci") {
-    throw new Error("only skipped/neutral checks must preserve ci phase");
   }
 
   process.env.HY_TEST_CI_RESULT = "unrelated";
   writeState(baseState());
-  const unrelated = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
-  if (unrelated.next !== "ci" || unrelated.phase !== "ci" || !unrelated.noEffectiveChecks || !unrelated.requiredCheckMissing || unrelated.allGreen) {
+  const unrelated = checkCi(root, 123);
+  if (!unrelated.noEffectiveChecks || !unrelated.requiredCheckMissing || unrelated.allGreen) {
     throw new Error(`unrelated green checks without Verify must fail closed, got ${JSON.stringify(unrelated)}`);
   }
-  if (unrelated.error?.code !== "CI_CHECKS_REQUIRED" || !unrelated.requires_user || !unrelated.stop_here) {
-    throw new Error(`unrelated green checks must require Verify, got ${JSON.stringify(unrelated)}`);
-  }
-  if (!String(unrelated.error?.message).includes("Verify")) throw new Error(`missing Verify result must name the required check: ${JSON.stringify(unrelated)}`);
 
   process.env.HY_TEST_CI_RESULT = "spoof";
   writeState(baseState());
-  const spoof = await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
-  if (!spoof.requiredCheckMissing || spoof.allGreen || spoof.next !== "ci" || spoof.error?.code !== "CI_CHECKS_REQUIRED") {
+  const spoof = checkCi(root, 123);
+  if (!spoof.requiredCheckMissing || spoof.allGreen) {
     throw new Error(`third-party green named Verify must not substitute for the real workflow: ${JSON.stringify(spoof)}`);
   }
-  if (readState().phase !== "ci") throw new Error("spoofed Verify must preserve ci phase");
 
   const verifyRed = classifyVerifyChecks([
     ciCheck("Verify", "FAILURE", true, "hy-workflow"),
@@ -131,9 +113,10 @@ try {
 
   delete process.env.HY_TEST_CI_RESULT;
   const sentinel = join(root, "ci-injection-sentinel");
-  writeFileSync(statePath(), JSON.stringify({ ...baseState(), phase: "ci", prNumber: `123;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
+  writeFileSync(statePath(), JSON.stringify({ ...baseState(), phase: "commit", prNumber: `123;touch${"${IFS}"}${sentinel}` }, null, 2) + "\n", "utf-8");
   try {
-    await handleCi({ timeoutSeconds: 0, intervalSeconds: 2 });
+    readState();
+    throw new Error("invalid prNumber should fail state read");
     throw new Error("invalid prNumber should fail before gh execution");
   } catch (e: any) {
     if (e.code !== "WORKFLOW_STATE_INVALID_PR_NUMBER") {
