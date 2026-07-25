@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
-import { computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash, readState, statePath, writeState } from "../../src/state.js";
+import { computeImplementationDigest, readState, statePath, writeState } from "../../src/state.js";
 import { handleApprove } from "../../src/tools/approve.js";
 import { handleCommit } from "../../src/tools/commit.js";
 import { handlePlan } from "../../src/tools/plan.js";
@@ -76,9 +76,7 @@ try {
     prNumber: 123,
     plan: basePlan(),
     approval: { time: "old", note: "old" },
-    verifyHash: "old",
     verifiedImplementationDigest: "old-digest",
-    verifiedManifestHash: "old-manifest",
     pendingAmendment: { reason: "old", scope: { changes: { add: [], remove: [] }, new_files: { add: [], remove: [] }, delete: { add: [], remove: [] } }, warnings: ["old"] },
     implementationManifest: { modified: ["README.md"], added: [], deleted: [], untracked: [], changed: ["README.md"] },
     documentReads: { beforeApprove: null },
@@ -130,17 +128,16 @@ try {
     ...baseState("commit"),
     branch: "fix/expected",
     plan: basePlan(),
+    approval: { time: new Date().toISOString(), note: "approved" },
     implementationManifest: manifest,
     verifiedImplementationDigest: computeImplementationDigest(root, manifest),
-    verifiedManifestHash: computeImplementationManifestHash(manifest),
   };
-  commitState.verifyHash = computeVerifyHash(commitState);
   writeState(commitState);
   writeFileSync(join(root, "README.md"), "changed after verify\n");
   const drift = await handleCommit({ title: "test", body: "test" });
   assert(drift.error?.code === "IMPLEMENTATION_DIGEST_MISMATCH", `expected digest mismatch, got ${JSON.stringify(drift)}`);
 
-  const branchMismatchState: WorkflowState = { ...commitState, verifyHash: computeVerifyHash(commitState), branch: "fix/not-current" };
+  const branchMismatchState: WorkflowState = { ...commitState, branch: "fix/not-current" };
   writeState(branchMismatchState);
   const mismatch = await handleCommit({ title: "test", body: "test" });
   assert(mismatch.error?.code === "GIT_BRANCH_MISMATCH", `expected branch mismatch, got ${JSON.stringify(mismatch)}`);

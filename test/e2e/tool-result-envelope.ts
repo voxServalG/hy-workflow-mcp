@@ -140,18 +140,18 @@ try {
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/envelope" });
   const commitResult = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:missing-verify", commitResult);
-  if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verifyHash") || !commitResult.allowedTools?.includes("hy_exam_plan") || !commitResult.allowedTools?.includes("hy_exam_submit")) {
-    throw new Error("hy_commit missing verifyHash precondition should include error and hint");
+  if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verified implementation digest") || !commitResult.allowedTools?.includes("hy_exam_plan") || !commitResult.allowedTools?.includes("hy_exam_submit")) {
+    throw new Error("hy_commit missing digest precondition should include error and hint");
   }
 
-  writeState({ ...baseState("commit"), plan: basePlan(), verifyHash: "abc123" });
+  writeState({ ...baseState("commit"), plan: basePlan(), verifiedImplementationDigest: "abc123" });
   const noBranchCommit = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:no-branch", noBranchCommit);
   if (!noBranchCommit.error?.message.includes("No active branch")) {
     throw new Error(`hy_commit without branch should report No active branch, got ${JSON.stringify(noBranchCommit)}`);
   }
 
-  writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/not-current", verifyHash: "abc123" });
+  writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/not-current", verifiedImplementationDigest: "abc123" });
   const branchMismatchCommit = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:branch-mismatch", branchMismatchCommit);
   if (branchMismatchCommit.error?.code !== "GIT_BRANCH_MISMATCH") {

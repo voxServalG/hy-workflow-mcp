@@ -132,7 +132,7 @@ export function isValidGitObjectId(value: unknown): value is string {
 export type CommitRecoveryRecord = {
   version: 1;
   commitOid: string;
-  verifyHash: string;
+  implementationDigest: string;
   branch: string;
   baseBranch: string;
   repository: string;
@@ -146,8 +146,8 @@ export function parseCommitRecovery(value: unknown): CommitRecoveryRecord | null
   if (
     record.version !== 1
     || !isValidGitObjectId(record.commitOid)
-    || typeof record.verifyHash !== "string"
-    || !record.verifyHash
+    || typeof record.implementationDigest !== "string"
+    || !record.implementationDigest
     || !isSafeGitRefName(record.branch)
     || !isSafeGitRefName(record.baseBranch)
     || typeof record.repository !== "string"
@@ -285,7 +285,7 @@ function activeCommitRecovery(root: string): ActiveRecoveryResult {
       required: false,
       identityError: verifiedCommitIdentityMissing({
         reason: "plan_missing",
-        verifyHash: state.verifyHash,
+        implementationDigest: state.verifiedImplementationDigest,
         branch: state.branch,
       }),
     };
@@ -300,10 +300,10 @@ function activeCommitRecovery(root: string): ActiveRecoveryResult {
   } catch (caught: any) {
     return { ok: false, error: caught as GitOperationError };
   }
-  if (!record || record.verifyHash !== state.verifyHash || record.branch !== state.branch || record.baseBranch !== baseBranch) {
+  if (!record || record.implementationDigest !== state.verifiedImplementationDigest || record.branch !== state.branch || record.baseBranch !== baseBranch) {
     return {
       ok: false,
-      error: verifiedCommitIdentityMissing({ verifyHash: state.verifyHash, branch: state.branch, baseBranch, recovery: raw ?? null }),
+      error: verifiedCommitIdentityMissing({ implementationDigest: state.verifiedImplementationDigest, branch: state.branch, baseBranch, recovery: raw ?? null }),
     };
   }
   return { ok: true, required: true, record };

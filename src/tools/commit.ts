@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computeImplementationManifestHash, computePlanHash, computeVerifyHash, currentBranch, type PlanDoc } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computePlanHash, currentBranch, type PlanDoc } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { requireRuntimeConfig } from "../config.js";
 import { commitScope, push, createPr, inspectScopedWorktree, resolveHeadCommit, resolveOriginRepository, parseCommitRecovery, checkCi, type CommitRecoveryRecord } from "../git.js";
@@ -48,22 +48,8 @@ export function buildCommitBody(args: { body: string; plan: PlanDoc; verifyHash:
 }
 
 function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown): ToolResult {
-  const rawRecovery = (state.approval as typeof state.approval & { commitRecovery?: unknown } | null)?.commitRecovery;
-  const recovery = parseCommitRecovery(rawRecovery);
-  if (recovery) {
-    return toolResult("commit", {
-      error,
-      requires_user: true,
-      stop_here: true,
-      allowedTools: ["hy_status"],
-      blockedTools: ["hy_merge"],
-    });
-  }
-
   const next = transition(state, "edit");
-  next.verifyHash = null;
   next.verifiedImplementationDigest = null;
-  next.verifiedManifestHash = null;
   next.implementationManifest = null;
   next.documentReads = next.documentReads ? { ...next.documentReads, afterEdit: null } : null;
   next.syncDocs = null;
@@ -91,7 +77,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   assertPhase(state, "commit");
 
   if (!state.plan) return toolResult("commit", { error: "No plan", allowedTools: ["hy_status"] });
-  if (!state.verifyHash) return toolResult("commit", { error: "Missing verifyHash", hint: "Run hy_verify for short suites or hy_exam_plan and hy_exam_submit for long suites before hy_commit.", allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"] });
+  if (!state.verifiedImplementationDigest) return toolResult("commit", { error: "Missing verified implementation digest", hint: "Run hy_verify for short suites or hy_exam_plan and hy_exam_submit for long suites before hy_commit.", allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"] });
   if (!state.branch) return toolResult("commit", { error: "No active branch", allowedTools: ["hy_status"] });
 
   const root = projectRoot();
@@ -132,37 +118,6 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     });
   }
 
-  const currentManifestHash = computeImplementationManifestHash(currentManifest);
-  const expectedManifestHash = state.verifiedManifestHash ?? computeImplementationManifestHash(state.implementationManifest);
-  if (!expectedManifestHash || currentManifestHash !== expectedManifestHash) {
-    return evidenceDriftResult(state, {
-      type: "scope", subtype: "scope_drift", code: "IMPLEMENTATION_MANIFEST_MISMATCH",
-      message: "Implementation file set changed after hy_verify.",
-      hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
-      detail: { expected: expectedManifestHash, actual: currentManifestHash },
-    });
-  }
-
-  const currentDigest = computeImplementationDigest(root, currentManifest);
-  if (!state.verifiedImplementationDigest || currentDigest !== state.verifiedImplementationDigest) {
-    return evidenceDriftResult(state, {
-      type: "verification", subtype: "check_failed", code: "IMPLEMENTATION_DIGEST_MISMATCH",
-      message: "Implementation content changed after hy_verify.",
-      hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
-      detail: { expected: state.verifiedImplementationDigest, actual: currentDigest },
-    });
-  }
-
-  const expectedVerifyHash = computeVerifyHash(state);
-  if (state.verifyHash !== expectedVerifyHash) {
-    return evidenceDriftResult(state, {
-      type: "verification", subtype: "check_failed", code: "VERIFY_HASH_STALE",
-      message: "verifyHash no longer matches the verified plan and implementation snapshot.",
-      hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
-      detail: { expected: expectedVerifyHash, actual: state.verifyHash },
-    });
-  }
-
   if (!state.approval) {
     return toolResult("commit", {
       error: "Missing approval state",
@@ -174,6 +129,25 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     });
   }
 
+  // ── Recovery parse (before digest — skip integrity when worktree is clean after prior commit) ──
+  const rawRecovery = (state.approval as typeof state.approval & { commitRecovery?: unknown }).commitRecovery;
+  const parsedRecovery = parseCommitRecovery(rawRecovery);
+  const sameDigestRecovery: CommitRecoveryRecord | null = parsedRecovery?.implementationDigest === state.verifiedImplementationDigest ? parsedRecovery : null;
+
+  // ── Implementation integrity (skipped on matching recovery — clean worktree after prior commit) ──
+  if (!sameDigestRecovery) {
+    const currentDigest = computeImplementationDigest(root, currentManifest);
+    if (!state.verifiedImplementationDigest || currentDigest !== state.verifiedImplementationDigest) {
+      return evidenceDriftResult(state, {
+        type: "verification", subtype: "check_failed", code: "IMPLEMENTATION_DIGEST_MISMATCH",
+        message: "Implementation content changed after hy_verify.",
+        hint: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
+        detail: { expected: state.verifiedImplementationDigest, actual: currentDigest },
+      });
+    }
+  }
+
+  // ── Config and recovery identity (runs after digest) ──
   let baseBranch: string;
   try {
     requireRuntimeConfig(root);
@@ -200,15 +174,10 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   }
   const repository = origin.repository;
 
-  const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: state.verifyHash });
-
-  const rawRecovery = (state.approval as typeof state.approval & { commitRecovery?: unknown }).commitRecovery;
-  const parsedRecovery = parseCommitRecovery(rawRecovery);
-  const sameVerificationRecovery: CommitRecoveryRecord | null = parsedRecovery?.verifyHash === state.verifyHash ? parsedRecovery : null;
-  if (sameVerificationRecovery && (
-    sameVerificationRecovery.branch !== state.branch
-    || sameVerificationRecovery.baseBranch !== baseBranch
-    || sameVerificationRecovery.repository !== repository
+  if (sameDigestRecovery && (
+    sameDigestRecovery.branch !== state.branch
+    || sameDigestRecovery.baseBranch !== baseBranch
+    || sameDigestRecovery.repository !== repository
   )) {
     return toolResult("commit", {
       error: {
@@ -219,12 +188,12 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         hint: "Do not create another commit from the old verification. Restore the recorded Git identity or rerun the edit, document, and verify gates.",
         detail: {
           expected: {
-            branch: sameVerificationRecovery.branch,
-            baseBranch: sameVerificationRecovery.baseBranch,
-            repository: sameVerificationRecovery.repository,
+            branch: sameDigestRecovery.branch,
+            baseBranch: sameDigestRecovery.baseBranch,
+            repository: sameDigestRecovery.repository,
           },
           actual: { branch: state.branch, baseBranch, repository },
-          verifyHash: state.verifyHash,
+          implementationDigest: state.verifiedImplementationDigest,
         },
       },
       requires_user: true,
@@ -233,12 +202,15 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       blockedTools: ["hy_merge"],
     });
   }
-  const matchingRecovery: CommitRecoveryRecord | null = sameVerificationRecovery
-    && sameVerificationRecovery.branch === state.branch
-    && sameVerificationRecovery.baseBranch === baseBranch
-    && sameVerificationRecovery.repository === repository
-    ? sameVerificationRecovery
+  const matchingRecovery: CommitRecoveryRecord | null = sameDigestRecovery
+    && sameDigestRecovery.branch === state.branch
+    && sameDigestRecovery.baseBranch === baseBranch
+    && sameDigestRecovery.repository === repository
+    ? sameDigestRecovery
     : null;
+
+  const digest = state.verifiedImplementationDigest ?? "none";
+  const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: digest });
 
   let c: ReturnType<typeof commitScope>;
   let noScopedChanges: boolean;
@@ -291,7 +263,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         code: "COMMIT_RECOVERY_STATE_MISSING",
         message: "No scoped worktree changes remain, but no matching verified commit recovery record exists.",
         hint: "Do not create an empty commit or guess from HEAD. Return to edit/verify so a real verified commit can be recorded.",
-        detail: { verifyHash: state.verifyHash, branch: state.branch, baseBranch, repository, recovery: rawRecovery ?? null },
+        detail: { implementationDigest: state.verifiedImplementationDigest, branch: state.branch, baseBranch, repository, recovery: rawRecovery ?? null },
       },
       requires_user: true,
       stop_here: true,
@@ -398,7 +370,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     const commitRecovery: CommitRecoveryRecord = {
       version: 1,
       commitOid: commitHash,
-      verifyHash: state.verifyHash,
+      implementationDigest: state.verifiedImplementationDigest ?? "",
       branch: state.branch,
       baseBranch,
       repository,
