@@ -15,6 +15,7 @@ const EXPECTED_TOOL_LITERALS = [
   "hy_amend_plan",
   "hy_commit",
   "hy_merge",
+  "hy_reset",
   "hy_status",
 ];
 

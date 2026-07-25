@@ -158,7 +158,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   const state = readState();
 
   // Auto-reset from terminal phases: clear derived state so the new task starts fresh.
-  if (state.phase === "done" || state.phase === "merge") {
+  if (state.phase === "done" || state.phase === "merge" || state.phase === "commit") {
     state.phase = "plan";
     state.branch = null;
     state.prNumber = null;
