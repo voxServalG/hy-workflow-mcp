@@ -1,7 +1,9 @@
+import * as path from "node:path";
 import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
 import { normalizePlanDoc, validatePlanScopePaths } from "../plan_validation.js";
+import { REQUIRED_SECTIONS } from "../output/contract.js";
 
 type CheckItem = PlanDoc["verify"]["smoke"][number];
 type TestCategory = {
@@ -86,132 +88,69 @@ function cleanSentence(text: string): string {
   return /[。.!?]$/.test(trimmed) ? trimmed : `${trimmed}。`;
 }
 
-function allScopePaths(p: PlanDoc): string[] {
-  return [...p.scope.new_files, ...p.scope.changes, ...p.scope.delete];
-}
-
-function unique(items: string[]): string[] {
-  return Array.from(new Set(items.filter(Boolean)));
-}
-
-function inlineCodeList(items: string[], max = 4): string {
-  const shown = items.slice(0, max).map(item => `\`${item}\``).join("、");
-  return items.length > max ? `${shown} 等 ${items.length} 项` : shown;
-}
-
-function pathKind(path: string): "runtime" | "test" | "docs" | "config" | "artifact" | "other" {
-  if (path.startsWith("src/")) return "runtime";
-  if (path.startsWith("test/") || path.startsWith("tests/")) return "test";
-  if (path.startsWith("docs/") || path === "README.md") return "docs";
-  if (path.startsWith("dist/")) return "artifact";
-  if (path.startsWith(".github/") || path.startsWith("templates/") || path.startsWith("src/setup/") || path === "src/setup-cli.ts" || path === "package.json" || path === "hy-workflow.json" || path === ".gitignore") return "config";
-  return "other";
-}
-
-function describeScopeEffect(p: PlanDoc): string {
-  const kinds = new Set(allScopePaths(p).map(pathKind));
-  const has = (kind: ReturnType<typeof pathKind>) => kinds.has(kind);
-  let effect: string;
-
-  if (has("runtime") && has("test") && has("docs")) {
-    effect = "运行时代码、测试覆盖和文档说明会保持一致，用户可见行为、回归验证和公开契约同步更新";
-  } else if (has("runtime") && has("test")) {
-    effect = "运行时代码会体现本次行为变化，并由测试覆盖对应回归场景";
-  } else if (has("runtime") && has("docs")) {
-    effect = "运行时代码和用户可读说明会同步更新，公开契约反映新的行为边界";
-  } else if (has("runtime")) {
-    effect = "运行时代码会体现本次计划声明的行为变化";
-  } else if (has("docs") && has("test")) {
-    effect = "文档契约和验证覆盖会同步更新，后续变更能被测试守住";
-  } else if (has("docs")) {
-    effect = "文档体系会呈现本次计划声明的信息结构和用户可读说明，代码行为保持不变";
-  } else if (has("test")) {
-    effect = "测试体系会覆盖本次计划声明的验证场景，生产代码行为保持不变";
-  } else if (has("config")) {
-    effect = "项目配置、入口或自动化契约会反映本次计划声明的运行边界";
-  } else if (has("artifact")) {
-    effect = "发布或构建产物会与本次计划声明的分发边界保持一致";
-  } else {
-    effect = "计划 scope 内的项目文件会达到本次任务声明的目标状态";
+function extractTitle(task: string): { title: string; why: string } {
+  const arrow = task.indexOf("→");
+  if (arrow > 0) {
+    const t = cleanSentence(task.slice(0, arrow)).trim();
+    const w = cleanSentence(task.slice(arrow + 1)).trim();
+    if (t.length >= 6) return { title: t, why: w };
   }
+  const dot = task.indexOf("。");
+  if (dot > 10) return { title: cleanSentence(task.slice(0, dot)), why: cleanSentence(task.slice(dot + 1)) };
+  return { title: cleanSentence(task).slice(0, 120), why: "" };
+}
 
-  if (p.scope.delete.length) {
-    effect += "，计划删除项会从项目中移除";
+function pathKind(p: string): string {
+  if (p.startsWith("src/")) return "代码";
+  if (p.startsWith("test/") || p.startsWith("tests/")) return "测试";
+  if (p.startsWith("docs/") || p === "README.md") return "文档";
+  return "其他";
+}
+
+function addPathGroups(lines: string[], paths: string[], _action: string): void {
+  if (!paths.length) { lines.push("- 无"); return; }
+  const groups = new Map<string, string[]>();
+  for (const f of paths) {
+    const dir = path.dirname(f) + "/";
+    if (!groups.has(dir)) groups.set(dir, []);
+    groups.get(dir)!.push(path.basename(f));
   }
-  return effect;
-}
-
-function describeVerificationState(p: PlanDoc): string {
-  const commands = unique([...p.verify.smoke, ...p.verify.tests].map(check => check.command));
-  if (!commands.length) return "验证通过时，计划声明的检查应证明该项目状态成立。";
-  return `验证通过时，${inlineCodeList(commands, 3)} 均应 exit 0，证明该项目状态成立。`;
-}
-
-function buildExpectedState(p: PlanDoc): string {
-  const paths = unique(allScopePaths(p));
-  const keyPaths = paths.length ? inlineCodeList(paths, 4) : "PlanDoc 声明的 scope";
-  return [
-    `计划应用后，项目应满足：${cleanSentence(p.task)}`,
-    `${describeScopeEffect(p)}。`,
-    `主要落点：${keyPaths}。`,
-    `边界状态：${cleanSentence(p.boundary.dependency_dag)}`,
-    describeVerificationState(p),
-  ].join(" ");
+  for (const [dir, files] of groups) {
+    lines.push(`- ${pathKind(paths[0])} (${dir}): ${files.join(", ")}`);
+  }
 }
 
 function buildSummary(p: PlanDoc): string {
   const lines: string[] = [];
-  lines.push("## Plan");
+  const { title, why } = extractTitle(p.task);
+  lines.push(`## ${title}`);
   lines.push("");
-  lines.push(`**现在状态**: ${p.task}`);
+  const whyText = why || cleanSentence(p.task).slice(0, 200);
+  if (whyText) { lines.push(`> **为什么**: ${whyText}`); lines.push(""); }
+  lines.push("### 改动");
+  addPathGroups(lines, p.scope.changes, "change");
+  addPathGroups(lines, p.scope.new_files, "new");
+  addPathGroups(lines, p.scope.delete, "delete");
   lines.push("");
-  lines.push(`**期望状态**: ${buildExpectedState(p)}`);
+  const dag = p.boundary.dependency_dag;
+  lines.push(`> **影响**: ${dag.length > 120 ? dag.slice(0, 120) + "..." : dag}`);
   lines.push("");
-
-  lines.push("### Scope");
-  lines.push(`**将要增加** (${plural(p.scope.new_files.length, "file")}):`);
-  addPathList(lines, p.scope.new_files, "new");
+  lines.push("### 验证");
+  for (const ep of p.boundary.entry_points) lines.push(`- [ ] \`${ep}\``);
   lines.push("");
-  lines.push(`**将要改动** (${plural(p.scope.changes.length, "file")}):`);
-  addPathList(lines, p.scope.changes, "change");
-  lines.push("");
-  lines.push(`**将要删除** (${plural(p.scope.delete.length, "file")}):`);
-  addPathList(lines, p.scope.delete, "delete");
-
-  lines.push("");
-  lines.push("### Boundary");
-  lines.push(`**影响范围**: ${p.boundary.dependency_dag}`);
-  lines.push("");
-  lines.push(`**外部依赖**: ${p.boundary.no_new_external ? "本次不会新增外部依赖。" : "本次计划会新增或调整外部依赖，需要额外确认。"}`);
-  lines.push("");
-  lines.push("**关键检查入口**:");
-  p.boundary.entry_points.forEach(ep => lines.push(`- \`${ep}\``));
-
-  lines.push("");
-  lines.push("### Verify");
-  const plat = p.verify.platform;
-  lines.push("**测试平台搭建**:");
-  lines.push(`- Python version: ${plat.python_version}`);
-  if (plat.setup.length) plat.setup.forEach(command => lines.push(`- command: \`${command}\``));
-  else lines.push("- command: 无需额外搭建命令");
-  for (const category of classifyChecks(p.verify.smoke, p.verify.tests)) {
+  if (p.risks.length) {
+    lines.push("### 风险");
+    for (const r of p.risks) lines.push(`- ${r.length > 200 ? r.slice(0, 200) + "..." : r}`);
     lines.push("");
-    lines.push(`**${category.title}**: ${category.explanation}`);
-    if (category.checks.length) category.checks.forEach(check => addCheck(lines, check));
-    else lines.push("- 本次计划未声明这一层级的测试。");
   }
-
-  lines.push("");
-  lines.push("### Risks");
-  p.risks.forEach(r => lines.push(`- ${r}`));
-
-  lines.push("");
-  lines.push("### Discussion");
-  p.discussion.split(/\n{2,}/).map(paragraph => paragraph.trim()).filter(Boolean).forEach(paragraph => {
-    lines.push(paragraph);
+  if (p.discussion.length) {
+    lines.push("<details>");
+    lines.push("<summary>讨论 + 备选方案</summary>");
     lines.push("");
-  });
-
+    lines.push(p.discussion);
+    lines.push("");
+    lines.push("</details>");
+  }
   return lines.join("\n").trimEnd();
 }
 
@@ -489,10 +428,11 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     display: {
       title: "Plan ready for approval",
       body: summary,
+      requiredSections: [...REQUIRED_SECTIONS],
     },
     requires_user: true,
     stop_here: true,
-    hint: "You MUST show display.body to the user and wait for explicit approval. After the user approves, call hy_read_docs with stage before_approve before hy_approve. Do not call hy_approve before the document audit exists.",
+    hint: "You MUST display the ENTIRE display.body to the user, matching ALL requiredSections anchors in order. Do not skip any section. Wait for explicit approval before calling hy_approve.",
     allowedTools: ["hy_read_docs", "hy_approve", "hy_status"],
     blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
     recovery: {

@@ -50,7 +50,7 @@ const SYSTEM_PROMPT = `
 
 1. hy_read_docs(before_plan) — 在 hy_plan 前由 agent 自动调用，不需要人类审核。读取 hy-workflow.json project.docsDir 指向的文档系统，形成规划事实基线，用于发现约束、术语、相关文件、未知点和验证期望。
 2. hy_plan — 调用时传入 {task, plan}。你需要先基于 before_plan 的文档事实基线构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 gate 校验 PlanDoc 质量，通过后方可进入 approve。
-   **重要**: hy_plan 返回后，必须原样完整输出 summary 字段的内容向用户展示，不能摘要、压缩、改写。禁止在用户查看前自行推进到下一步。
+   **重要**: hy_plan 返回后，必须逐段完整输出 display.body 给用户，对照 display.requiredSections 确保每段都不遗漏。禁止压缩、改写、只输出标题。全部展示完毕后才等用户 approve。
 3. hy_read_docs(before_approve) — 在用户表达 approve 后、调用 hy_approve 前由 agent 自动调用，不需要人类审核。读取文档系统并对当前 PlanDoc 做事实对齐审计；若发现事实偏移、scope 漏项、验证不足或风险缺失，必须驳回并重新 hy_plan，不得调用 hy_approve。
 4. hy_approve — 用户审视 plan。传 approved="approve" 放行，其他内容=驳回。
    **重要**: 严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。收到用户批准后，先自动调用 hy_read_docs({stage:'before_approve'}) 完成 agent 侧审计，再调用 hy_approve。before_approve 不是新增人类审核 gate。犹豫时反问用户确认。用户明确拒绝时，将拒绝理由填入 approved 参数传回。
@@ -83,12 +83,10 @@ const SYSTEM_PROMPT = `
 
 调用 hy_plan({task: "描述你要做的任务", plan: { ... PlanDoc JSON ... }})。构造 PlanDoc 时：
 - 先调用 hy_read_docs({stage:"before_plan", task}) 建立文档事实基线，再用 Read/Glob/Grep 了解项目结构，确认每个文件路径存在
-- task：描述解决的**问题**和**动机**，不是操作步骤列表
+- task 格式：现状 → 期望（从什么现状到什么期望，≤80字）。一句话说清楚改变，动机和理由放在 body/notes
 - dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
-- entry_points：覆盖编译+lint+测试，每条对应一个验证维度
 - entry_points、smoke.command、tests.command 必须是纯 shell 命令，命令后不得加括号说明、冒号说明或自然语言说明
-- 说明文字统一写到 description 字段；PlanDoc JSON 字符串尽量避免未转义的反斜杠、反引号、引号和换行
-- risks：每条含场景+影响+缓解措施，不写一句话标签
+- risks 格式：场景：… → 影响：… → 缓解：…（三项用 → 分隔，每个风险 ≤200 字）
 - discussion：含至少一个备选方案及否定理由
 
 PlanDoc 通过 6 道 gate 校验后写入状态，进入 approve。
@@ -151,7 +149,7 @@ const TOOLS = [
   },
   {
     name: "hy_plan",
-    description: "分析任务 → LLM 使用工作区上下文构造 PlanDoc JSON → 服务端 6 道 gate 校验。成功返回 summary/display/requires_user/stop_here，必须展示给用户并等待 approve。",
+    description: "分析任务 → 构造 PlanDoc JSON → 6 道 gate 校验。成功返回 display.body 含 6 个必须展示的节（标题·为什么·改动·影响·验证·风险），对照 display.requiredSections 逐段完整输出，禁止省略。",
     inputSchema: {
       type: "object",
       properties: {
