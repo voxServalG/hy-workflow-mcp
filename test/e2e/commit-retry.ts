@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
 import { checkCi, commitScope, createPr, mergePr } from "../../src/git.js";
-import { computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { computeImplementationDigest, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { handleCommit } from "../../src/tools/commit.js";
 
 function git(root: string, args: string[]): string {
@@ -265,12 +265,9 @@ exec "${realGit}" "$@"
     prNumber: null,
     plan,
     approval: { time: new Date().toISOString(), note: "approved" },
-    verifyHash: null,
     implementationManifest: manifest,
-    verifiedManifestHash: computeImplementationManifestHash(manifest),
     verifiedImplementationDigest: computeImplementationDigest(workflowRoot, manifest),
   };
-  state.verifyHash = computeVerifyHash(state);
   writeState(state);
   resetScenario("workflow-retry");
   writeFileSync(gitLog, "", "utf-8");

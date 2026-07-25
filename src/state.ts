@@ -202,9 +202,10 @@ export interface WorkflowState {
   prNumber: number | null;
   plan: PlanDoc | null;
   approval: Approval | null;
-  verifyHash: string | null;
-  verifiedImplementationDigest?: string | null;
+  // deprecated — kept optional for reading historical state.json, no longer written
+  verifyHash?: string | null;
   verifiedManifestHash?: string | null;
+  verifiedImplementationDigest?: string | null;
   pendingAmendment?: PendingPlanAmendment | null;
   implementationManifest?: ImplementationManifest | null;
   documentReads?: DocumentReads | null;
@@ -322,9 +323,7 @@ function initialState(): WorkflowState {
     prNumber: null,
     plan: null,
     approval: null,
-    verifyHash: null,
     verifiedImplementationDigest: null,
-    verifiedManifestHash: null,
     pendingAmendment: null,
     implementationManifest: null,
     documentReads: null,
@@ -436,20 +435,6 @@ export class StateError extends Error {
 
 // ── Hash ─────────────────────────────────────────────────────
 
-export function computeVerifyHash(state: WorkflowState): string {
-  const payload = JSON.stringify({
-    plan: state.plan?.task,
-    scope: state.plan?.scope,
-    boundary: state.plan?.boundary,
-    rubrics: state.plan?.verify,
-    implementationDigest: state.verifiedImplementationDigest ?? null,
-    manifestHash: state.verifiedManifestHash ?? computeImplementationManifestHash(state.implementationManifest),
-  });
-  const hash = createHash("sha256");
-  hash.update(payload);
-  return hash.digest("hex").slice(0, 12);
-}
-
 function shortHash(value: string): string {
   const hash = createHash("sha256");
   hash.update(value);
@@ -458,17 +443,6 @@ function shortHash(value: string): string {
 
 function sorted(values: string[] | undefined): string[] {
   return [...(values ?? [])].sort();
-}
-
-export function computeImplementationManifestHash(manifest: ImplementationManifest | null | undefined): string | null {
-  if (!manifest) return null;
-  return shortHash(JSON.stringify({
-    modified: sorted(manifest.modified),
-    added: sorted(manifest.added),
-    deleted: sorted(manifest.deleted),
-    untracked: sorted(manifest.untracked),
-    changed: sorted(manifest.changed),
-  }));
 }
 
 export function computeImplementationDigest(root: string, manifest: ImplementationManifest): string {

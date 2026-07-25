@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash, documentReadHealth } from "../state.js";
+import { readState, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, documentReadHealth } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { runAllChecksAsync } from "../checks-async.js";
 import { implementationDigest } from "./sync_docs.js";
@@ -110,8 +110,6 @@ export async function handleVerify(): Promise<ToolResult> {
   next.pendingAmendment = null;
   next.implementationManifest = report.implementationManifest;
   next.verifiedImplementationDigest = computeImplementationDigest(root, report.implementationManifest);
-  next.verifiedManifestHash = computeImplementationManifestHash(report.implementationManifest);
-  next.verifyHash = computeVerifyHash(next);
   writeState(next);
 
   return toolResult("commit", {
@@ -120,10 +118,10 @@ export async function handleVerify(): Promise<ToolResult> {
     status: report.status,
     checks: report.checks,
     implementationManifest: report.implementationManifest,
-    verifyHash: next.verifyHash,
+    verifyHash: next.verifiedImplementationDigest,
     hint: "Verification passed. Call hy_commit next to create the PR; do not edit files without rerunning hy_verify.",
     allowedTools: ["hy_commit", "hy_status"],
-    blockedTools: ["hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_merge"],
     message: `All ${report.total} checks passed. Ready to commit.`,
   });
 }

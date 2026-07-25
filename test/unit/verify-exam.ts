@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
 import { issueExam, submitExam, computeScopeFingerprint } from "../../src/verify-exam.js";
-import { computeVerifyHash, readState, writeState } from "../../src/state.js";
+import { readState, writeState } from "../../src/state.js";
 import { handleExamSubmit } from "../../src/tools/exam-submit.js";
 
 function assert(condition: unknown, message: string): void {
@@ -81,12 +81,9 @@ try {
   assert(handled.ok === true, `exam should pass: ${JSON.stringify(handled)}`);
   const persisted = readState();
   assert(persisted.phase === "commit", "passing exam should advance to commit");
-  assert(persisted.verifyHash && persisted.verifyHash.length === 12, "verifyHash should be 12-char hex");
   assert(Boolean(persisted.implementationManifest), "passed exam should persist implementation manifest");
-  assert(Boolean(persisted.verifiedManifestHash), "passed exam should persist manifest hash");
-  assert(Boolean(persisted.verifiedImplementationDigest), "passed exam should persist implementation digest");
-  assert(persisted.verifyHash === computeVerifyHash(persisted), "persisted exam state should satisfy commit verifyHash recomputation");
-  const outcome = { verifyHash: persisted.verifyHash, implementationManifest: persisted.implementationManifest, verifiedManifestHash: persisted.verifiedManifestHash, verifiedImplementationDigest: persisted.verifiedImplementationDigest };
+  assert(persisted.verifiedImplementationDigest && persisted.verifiedImplementationDigest.length === 12, "implementation digest should be 12-char hex");
+  const outcome = { implementationManifest: persisted.implementationManifest, verifiedImplementationDigest: persisted.verifiedImplementationDigest };
 
   // Now reconfigure for Python in a separate working tree state
   mkdirSync(join(root, "src"), { recursive: true });
@@ -108,7 +105,7 @@ try {
   rmSync(join(root, "src"), { recursive: true, force: true });
 
   // Reset phase back to edit for failure-path tests
-  writeState({ ...readState(), phase: "edit", verifyHash: null, verifiedManifestHash: null, verifiedImplementationDigest: null, implementationManifest: null });
+  writeState({ ...readState(), phase: "edit", verifiedImplementationDigest: null, implementationManifest: null });
 
   // Nonce mismatch
   const bad = [{ ...results[0], nonce: "wrong-nonce" }];
