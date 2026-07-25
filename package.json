@@ -1,6 +1,6 @@
 {
   "name": "@voxstudio/hy-workflow",
-  "version": "0.4.1-next.3",
+  "version": "0.4.1-next.4",
   "description": "MCP server enforcing a closed-loop workflow for LLM-assisted development",
   "type": "module",
   "main": "dist/server.js",
