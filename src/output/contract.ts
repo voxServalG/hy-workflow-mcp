@@ -46,3 +46,14 @@ export const ERROR_ENVELOPE_FIELDS = [
 
 export type OutputControlField = typeof OUTPUT_CONTROL_FIELDS[number];
 export type ErrorEnvelopeField = typeof ERROR_ENVELOPE_FIELDS[number];
+
+// Sections that hy_plan requires agents to display to users in full.
+// Each section has an anchor (markdown heading prefix) and a label.
+export const REQUIRED_SECTIONS = [
+  { anchor: "## Plan",     label: "一句话：现状 → 期望" },
+  { anchor: "> **为什么**", label: "为什么要改" },
+  { anchor: "### 改动",     label: "改什么文件" },
+  { anchor: "> **影响**",   label: "影响谁" },
+  { anchor: "### 验证",     label: "验证清单" },
+  { anchor: "### 风险",     label: "风险和缓解" },
+] as const;
