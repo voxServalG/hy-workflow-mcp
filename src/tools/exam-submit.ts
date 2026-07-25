@@ -64,20 +64,17 @@ export async function handleExamSubmit(args: Args): Promise<ToolResult> {
   // Passed: advance to commit phase same as sync hy_verify
   const next = transition(state, "commit");
   next.implementationManifest = outcome.implementationManifest;
-  next.verifyHash = outcome.verifyHash ?? null;
   next.verifiedImplementationDigest = outcome.verifiedImplementationDigest ?? null;
-  next.verifiedManifestHash = outcome.verifiedManifestHash ?? null;
   writeState(next);
 
   return toolResult("commit", {
     passed: true,
     next: "commit",
     examId: args.examId,
-    verifyHash: outcome.verifyHash,
     submitted: args.results.length,
     display: {
       title: "All checks passed via exam",
-      body: `All ${args.results.length} submitted checks passed. verifyHash=${outcome.verifyHash}. Ready to hy_commit.`,
+      body: `All ${args.results.length} submitted checks passed. Ready to hy_commit.`,
     },
     allowedTools: ["hy_commit", "hy_status"],
   });

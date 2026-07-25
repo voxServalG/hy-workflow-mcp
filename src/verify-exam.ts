@@ -5,7 +5,7 @@ import { projectPaths } from "./runtime/user-paths.js";
 import { requireRuntimeConfig } from "./config.js";
 import { normalizeCodeExt, PYTHON_CODE_EXTS } from "./code_ext.js";
 import type { CheckItem, ImplementationManifest, PlanDoc, WorkflowState } from "./state.js";
-import { computeImplementationDigest, computeImplementationManifestHash, computeVerifyHash } from "./state.js";
+import { computeImplementationDigest } from "./state.js";
 import { buildImplementationManifest, CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs, findPython } from "./checks.js";
 import { execFileSync } from "node:child_process";
 
@@ -242,10 +242,8 @@ export function issueExam(root: string, plan: PlanDoc): ExamManifest {
 
 export interface ExamSubmitOutcome {
   passed: boolean;
-  verifyHash?: string;
   implementationManifest?: ImplementationManifest;
   verifiedImplementationDigest?: string;
-  verifiedManifestHash?: string;
   failedChecks?: Array<{
     id: string;
     reason: "missing_result" | "nonce_mismatch" | "command_mismatch" | "exit_code" | "must_contain" | "must_not_contain" | "source_changed" | "exam_expired" | "unknown_check";
@@ -343,15 +341,10 @@ export function submitExam(
 
   // Return the same implementation evidence that sync hy_verify persists.
   const implementationManifest = buildImplementationManifest(root);
-  const next: WorkflowState = { ...state, implementationManifest };
-  next.verifiedImplementationDigest = computeImplementationDigest(root, implementationManifest);
-  next.verifiedManifestHash = computeImplementationManifestHash(implementationManifest);
-  next.verifyHash = computeVerifyHash(next);
+  const digest = computeImplementationDigest(root, implementationManifest);
   return {
     passed: true,
-    verifyHash: next.verifyHash,
     implementationManifest,
-    verifiedImplementationDigest: next.verifiedImplementationDigest ?? undefined,
-    verifiedManifestHash: next.verifiedManifestHash ?? undefined,
+    verifiedImplementationDigest: digest,
   };
 }
