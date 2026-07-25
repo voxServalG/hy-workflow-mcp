@@ -21,6 +21,7 @@ export const COMMAND_CONTRACTS: CommandContract[] = [
   { name: "hy_amend_plan", handlerFile: "src/tools/amend_plan.ts", docsFile: "docs/tools.md", phase: "verify", description: "Apply approved scope amendments", destructive: false },
   { name: "hy_commit", handlerFile: "src/tools/commit.ts", docsFile: "docs/tools.md", phase: "commit", description: "Commit approved scope, create PR, and poll CI until green", destructive: true },
   { name: "hy_merge", handlerFile: "src/tools/merge.ts", docsFile: "docs/tools.md", phase: "merge", description: "Merge the approved PR and auto-rebase downstream branches", destructive: true },
+  { name: "hy_reset", handlerFile: "src/tools/reset.ts", docsFile: "docs/tools.md", phase: "any", description: "Recovery: reset workflow state to plan", destructive: true },
   { name: "hy_status", handlerFile: "src/tools/status.ts", docsFile: "docs/tools.md", phase: "any", description: "Inspect workflow state", destructive: false },
 ];
 

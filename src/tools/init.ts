@@ -147,6 +147,22 @@ export async function handleInit(): Promise<ToolResult> {
   const root = projectRoot();
   assertSafeRuntimeBoundary(root);
   const state = readState();
+
+  // Auto-reset stuck terminal state before the phase check.
+  if (state.phase === "commit" || state.phase === "merge" || state.phase === "done") {
+    state.phase = "plan";
+    state.branch = null;
+    state.prNumber = null;
+    state.plan = null;
+    state.approval = null;
+    state.verifiedImplementationDigest = null;
+    state.pendingAmendment = null;
+    state.implementationManifest = null;
+    state.documentReads = null;
+    state.syncDocs = null;
+    writeState(state);
+  }
+
   assertPhase(state, "init", "plan");
   const setupCheck = checkSetupStamp(root);
   if (setupCheck.status !== "current") {

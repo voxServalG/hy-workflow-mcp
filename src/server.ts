@@ -23,6 +23,7 @@ import { handleExamPlan } from "./tools/exam-plan.js";
 import { handleExamSubmit } from "./tools/exam-submit.js";
 import { handleCommit } from "./tools/commit.js";
 import { handleMerge } from "./tools/merge.js";
+import { handleReset } from "./tools/reset.js";
 import { handleStatus } from "./tools/status.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
 import { configHelp, recoverRuntimeCompatConfigs, runConfigCli } from "./config.js";
@@ -61,6 +62,7 @@ const SYSTEM_PROMPT = `
 9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 生成的 GitHub Actions workflow 必须执行 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
 10. hy_commit — git add + commit + push + gh pr create + 自动轮询 CI 直到全绿或失败。PR 正文嵌入 plan 摘要；CI 全绿直接进 hy_merge，失败回 hy_edit，pending 可重试 hy_commit。
 11. hy_merge — 合并 PR + 删除远程分支 + 自动 rebase 下游 Agent 分支。任务完成后下一个 hy_plan 自动复位。
+12. hy_reset — 恢复工具。当 state 卡死在 commit/merge 等非 plan 阶段、或用户命令放弃当前任务时，从任意 phase 重置到 plan。正常流程不需要调它（hy_plan 从 commit/merge/done 进入时自动复位）。
 
 ### 禁止操作
 
@@ -341,6 +343,11 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "hy_reset",
+    description: "恢复工具：从任意 phase 重置到 plan，清空当前工作数据（branch/pr/plan/verifyHash）。用于 state 卡死时的显式恢复，也可在用户明确放弃任务后调用。",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "hy_status",
     description: "查看当前工作流阶段。返回 phase、allowedTools 和下一步提示。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -410,6 +417,7 @@ async function dispatch(name: string, args: Record<string, any>): Promise<any> {
     case "hy_amend_plan": return handleAmendPlan(args as any);
     case "hy_commit":  return handleCommit(args as any);
     case "hy_merge":   return handleMerge();
+    case "hy_reset":   return handleReset();
     case "hy_status":  return handleStatus();
     default: throw new Error(`Unknown tool: ${name}`);
   }
