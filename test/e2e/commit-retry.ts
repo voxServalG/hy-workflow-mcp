@@ -111,7 +111,9 @@ fi
 if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
   oid="$(git rev-parse HEAD)"
   if [ "$HY_TEST_PR_SCENARIO" = "ci-stale" ]; then oid="0000000000000000000000000000000000000000"; fi
-  printf '{"state":"OPEN","baseRefName":"main","headRefName":"feat/retry","headRefOid":"%s","isCrossRepository":false}' "$oid"
+  state="OPEN"
+  if [ -f "$HY_TEST_RACE_MARKER.merged" ]; then state="MERGED"; fi
+  printf '{"state":"%s","baseRefName":"main","headRefName":"feat/retry","headRefOid":"%s","isCrossRepository":false}' "$state" "$oid"
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
@@ -138,7 +140,10 @@ if [ "$1" = "api" ]; then
   printf '{"id":%s,"name":"hy-workflow","path":"%s","head_sha":"%s","event":"%s","repository":{"full_name":"o/r"}}' "$run_id" "$workflow_path" "$oid" "$event"
   exit 0
 fi
-if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "merge" ]; then exit 0; fi
+if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "merge" ]; then
+  : > "$HY_TEST_RACE_MARKER.merged"
+  exit 0
+fi
 exit 3
 `, "utf-8");
   const realGit = execFileSync("which", ["git"], { encoding: "utf-8" }).trim();
@@ -167,6 +172,7 @@ exec "${realGit}" "$@"
     writeFileSync(log, "", "utf-8");
     rmSync(raceMarker, { force: true });
     rmSync(`${raceMarker}.post-failed`, { force: true });
+    rmSync(`${raceMarker}.merged`, { force: true });
   }
   const expectedOid = git(root, ["rev-parse", "HEAD"]);
 

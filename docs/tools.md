@@ -19,7 +19,7 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 | `hy_amend_plan` | verify | `{approved, note?}` | edit / verify | 否 |
 | `hy_commit` | commit | `{title, body}` | ci | 否 |
 | `hy_ci`     | ci, edit | — | merge (有效 checks 全绿) / ci (缺失、无效或 pending) / edit (失败) | 否 |
-| `hy_merge`  | merge | — | chain | 否 |
+| `hy_merge`  | merge | — | done（当前 handler 完成远端确认和安全下游同步）/ merge（恢复或人工处理） | 否 |
 | `hy_chain`  | chain | `{branches: string[]}` | done | 否 |
 | `hy_reset`  | 任意 | — | plan | 否 |
 | `hy_status` | 任意 | — | — | 是 |
@@ -158,11 +158,23 @@ setup 生成的 workflow 必须在确认的原生 CI 后离线执行内置 docli
 
 ## hy_merge
 
-通过已安装且已认证的 `gh` 在 merge 前再次读取并精确比较 PR repository/base/head/headRefOid，然后执行 `gh pr merge --match-head-commit <verified-oid> --merge --delete-branch`。origin 必须仍匹配 recovery record；`GH_REPO` 与 `GH_HOST` 会被忽略。`data.executor` 报告执行器。PR number 必须是正整数，并通过 argv 传给 `gh`；损坏运行态不会被当作命令片段执行。
+通过已安装且已认证的 `gh` 在 merge 前再次读取并精确比较 immutable PR identity：repository、PR number、base、head 和 verified head OID。只有 OPEN lifecycle 与 fresh Git evidence 都允许时，才执行唯一的 `gh pr merge --match-head-commit <verified-oid> --merge --delete-branch` mutation。origin 必须仍匹配 recovery record；`GH_REPO` 与 `GH_HOST` 会被忽略。PR number 必须是正整数并通过 argv 传给 `gh`，损坏运行态不会被当作命令片段执行。
+
+merge recovery receipt 分开保存 immutable identity 与 mutable lifecycle。mutation 前先持久化 attempted receipt，远端合入确认后再持久化 confirmed receipt；`executePrMerge` 是唯一 merge mutation，同一 receipt 最多调用一次。mutation 命令无论成功、失败还是发生普通工具/进程中断，重试都先通过 `reconcileMerge` 检查 postcondition；confirmed receipt 只恢复后置同步。
+
+若 GitHub lifecycle 暂不可读，`fetchRemoteBaseEvidence` 使用 **fresh-fetch ancestry** 固定远端 base 的 `baseOid` 并检查 verified head。这个 **read-only Git fallback** 只读 fetch/ref/ancestry，绝不直接 merge 或 push base；命中时返回 `data.outcome: "already_integrated"`、`data.evidence: "git"`。本次 mutation 后由 GitHub 与 Git 共同确认时返回 `merged_now`；调用前 GitHub MERGED 与 Git ancestry 已经一致时返回 `already_merged`。成功结果都包含 `data.executor`，明确本次实际使用的 `gh`/`git` 能力。
+
+正常 attempted receipt 只收录真实 stacked branches：受管 agent branch 必须排除 base/head，verified head 与 fresh `preparedBaseOid` 都必须是候选 commit 的祖先，而且 snapshot 时 local OID 必须等于 remote OID。legacy 状态没有 receipt、但 fresh Git evidence 已证明远端合入时，只重建 agent-prefix、verified ancestry 和 local=remote 共同证明的 stack；unrelated branch 忽略，真实 stack ref 漂移返回 `POST_MERGE_SYNC_INCOMPLETE`。
+
+confirmed receipt 首次同步时要求 fresh remote base 包含 verified OID 与确认时的 base OID，再把该 tip 固定为 `syncBaseOid`；每次恢复要求 remote tip 仍与 pin 完全相等。base drift 以 retryable `POST_MERGE_SYNC_INCOMPLETE` fail closed。每个候选先持久化 `rebasing`，通过 **detached staging** 从 recorded OID 对 `syncBaseOid` rebase，再持久化 `resultOid`；随后用 local ref **compare-and-swap** 安装，并用 recorded remote OID 执行 exact `force-with-lease`。`pending`、`rebasing`、`rebased`、`pushed` 进度允许重试只继续 remaining work，且不会覆盖被其他参与者移动的 local/remote ref。
+
+整个 handler 由 project-specific merge operation lock 串行化；活 owner 返回 retryable `MERGE_LOCK_BUSY`，同 host dead owner 可 stale-recover，退出时按 token best-effort release。owner pid/host/time/token 只提供共享同一本地状态根和工作树的进程互斥，不是跨主机锁。receipt 与 lock 只承诺已完成状态写入后的工具/进程中断恢复，不承诺断电或缺少 `fsync` 时的 durability。
+
+未确认返回 `PR_MERGE_OUTCOME_UNCONFIRMED`；已确认但同步未完成返回 `POST_MERGE_SYNC_INCOMPLETE`。identity/OID、local CAS 或 downstream remote lease 漂移是不可重试的状态完整性错误，应由用户检查后调用 `hy_reset` 或显式修复。base evidence/ancestry drift 与普通暂时性 GitHub/origin/本地 Git 故障保留 receipt 并允许在修复后重试 `hy_merge`，但不会自动循环。
 
 - **进入 Phase**: `merge`
-- **转换到**: `chain`
-- **返回**: `{ next: "chain", prNumber, display, hint }` 或 `{ error, requires_user: true, stop_here: true, recovery }`
+- **转换到**: 当前 handler 完成下游同步后直接 `done`；`chain` 只保留给 legacy state
+- **返回**: `{ phase: "done", next: "done", prNumber, data: { outcome, evidence, executor, baseOid, completed, remaining }, display, hint }` 或 `{ phase: "merge", next: "merge", error, data, requires_user: true, stop_here: true, recovery }`
 
 ---
 

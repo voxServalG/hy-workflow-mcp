@@ -1,10 +1,12 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { PHASES, VALID_TRANSITIONS, isPhase, type Phase } from "./runtime/state-machine.js";
 import { configuredBaseBranch, currentGitBranch, findProjectRoot, resolveGitPrivatePath } from "./runtime/project.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { atomicWriteJson, ensureParent, projectPaths } from "./runtime/user-paths.js";
+import { parseMergeReceipt, type MergeReceipt } from "./merge-recovery.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -210,6 +212,7 @@ export interface WorkflowState {
   implementationManifest?: ImplementationManifest | null;
   documentReads?: DocumentReads | null;
   syncDocs?: SyncDocsRecord | null;
+  mergeReceipt?: MergeReceipt | null;
 }
 
 // ── State path ───────────────────────────────────────────────
@@ -228,6 +231,66 @@ export interface LegacyRuntimeDiagnostic {
 
 export function statePath(): string {
   return projectPaths(projectRoot()).workflowState;
+}
+
+export type MergeLockOwner = { pid: number; host: string; createdAt: string; token: string };
+export type MergeLockResult =
+  | { ok: true; path: string; owner: MergeLockOwner; release: () => void }
+  | { ok: false; path: string; owner: MergeLockOwner | null; cause?: string };
+
+function readMergeLockOwner(file: string): MergeLockOwner | null {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    if (!Number.isSafeInteger(value.pid) || (value.pid as number) <= 0 || typeof value.host !== "string" || !value.host || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt)) || typeof value.token !== "string" || !value.token) return null;
+    return value as MergeLockOwner;
+  } catch { return null; }
+}
+
+function mergeLockOwnerAlive(owner: MergeLockOwner): boolean {
+  if (owner.host !== os.hostname()) return true;
+  try { process.kill(owner.pid, 0); return true; }
+  catch (caught: any) { return caught?.code === "EPERM"; }
+}
+
+export function acquireMergeLock(graceMs = 60_000): MergeLockResult {
+  const lock = `${statePath()}.merge.lock`;
+  const ownerFile = path.join(lock, "owner.json");
+  const owner: MergeLockOwner = { pid: process.pid, host: os.hostname(), createdAt: new Date().toISOString(), token: randomUUID() };
+  ensureParent(lock);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let created = false;
+    try {
+      fs.mkdirSync(lock);
+      created = true;
+      atomicWriteJson(ownerFile, owner);
+      return {
+        ok: true,
+        path: lock,
+        owner,
+        release: () => {
+          const current = readMergeLockOwner(ownerFile);
+          if (current?.token !== owner.token) return;
+          const tombstone = `${lock}.release-${owner.token}`;
+          try { fs.renameSync(lock, tombstone); fs.rmSync(tombstone, { recursive: true, force: true }); }
+          catch (caught: any) { if (caught?.code !== "ENOENT") throw caught; }
+        },
+      };
+    } catch (caught: any) {
+      if (created) {
+        try { fs.rmSync(lock, { recursive: true, force: true }); } catch {}
+        return { ok: false, path: lock, owner: null, cause: caught?.message ?? String(caught) };
+      }
+      if (caught?.code !== "EEXIST") return { ok: false, path: lock, owner: null, cause: caught?.message ?? String(caught) };
+      const current = readMergeLockOwner(ownerFile);
+      let age = 0;
+      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
+      if (!((current && !mergeLockOwnerAlive(current)) || (!current && age > graceMs))) return { ok: false, path: lock, owner: current };
+      const tombstone = `${lock}.stale-${owner.token}`;
+      try { fs.renameSync(lock, tombstone); fs.rmSync(tombstone, { recursive: true, force: true }); }
+      catch (reclaim: any) { if (reclaim?.code !== "ENOENT") return { ok: false, path: lock, owner: current, cause: reclaim?.message ?? String(reclaim) }; }
+    }
+  }
+  return { ok: false, path: lock, owner: readMergeLockOwner(ownerFile) };
 }
 
 export function scopePath(): string {
@@ -328,6 +391,7 @@ function initialState(): WorkflowState {
     implementationManifest: null,
     documentReads: null,
     syncDocs: null,
+    mergeReceipt: null,
   };
 }
 
@@ -343,6 +407,13 @@ function normalizeNullablePrNumber(value: unknown, file: string): number | null 
   if (value === null || value === undefined) return null;
   if (Number.isSafeInteger(value) && (value as number) > 0) return value as number;
   structuredWorkflowStateError("WORKFLOW_STATE_INVALID_PR_NUMBER", `Workflow state has an invalid prNumber in ${file}.`, { file, prNumber: value });
+}
+
+function normalizeMergeReceipt(value: unknown, file: string): MergeReceipt | null {
+  if (value === null || value === undefined) return null;
+  const receipt = parseMergeReceipt(value);
+  if (!receipt) structuredWorkflowStateError("WORKFLOW_STATE_INVALID_MERGE_RECEIPT", `Workflow state has an invalid mergeReceipt in ${file}.`, { file });
+  return receipt;
 }
 
 function normalizeState(raw: unknown, file: string): WorkflowState {
@@ -371,6 +442,7 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
     implementationManifest: (isObject(raw.implementationManifest) ? raw.implementationManifest : null) as ImplementationManifest | null,
     documentReads: (isObject(raw.documentReads) ? raw.documentReads : null) as DocumentReads | null,
     syncDocs: (isObject(raw.syncDocs) ? raw.syncDocs : null) as SyncDocsRecord | null,
+    mergeReceipt: normalizeMergeReceipt(raw.mergeReceipt, file),
   };
 }
 

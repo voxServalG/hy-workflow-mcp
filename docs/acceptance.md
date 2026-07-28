@@ -12,6 +12,15 @@ test/acceptance/baseline-matrix.json 用六个确定性 fixture 覆盖 Node/main
 
 新增重大 bug 时，修复 PR 必须先增加能复现该 bug 的事故 fixture/oracle；优先扩展现有 pairwise fixture，只有出现新的独立项目维度才增加 fixture。baseline 不负责公网兼容压力，也不允许以减少 release 场景换取速度。
 
+`INC-MERGE-UNKNOWN-OUTCOME` 是 merge recovery 的离线确定性事故 oracle，不增加新的项目矩阵维度。它必须覆盖以下不变量：
+
+- immutable identity（repository、PR number、base、head、verified head OID）不随 GitHub lifecycle 变化；mutation 前持久化 attempted receipt，远端合入确认后再持久化 confirmed receipt，后续重试不能第二次调用 merge mutation。
+- merge mutation 实际成功但命令报错或工具进程中断时，reconciliation 能从 GitHub postcondition 或 fresh Git ancestry 恢复。GitHub lifecycle 不可用时，只有 fresh fetch 后 verified head 是 immutable `baseOid` 的祖先，才返回 `already_integrated` 与 `evidence: "git"`；非祖先或 fetch 不可用时返回 `PR_MERGE_OUTCOME_UNCONFIRMED`。
+- 正常 pre-mutation candidate 必须同时满足 agent branch 约束、verified-head ancestry、fresh prepared-base ancestry，以及 snapshot 时 local OID 等于 remote OID。legacy no-receipt 已集成恢复只重建由 agent prefix、verified-head ancestry 与 local=remote 证明的真实 stacked branch；unrelated branch 忽略，真实 stack 的 local/remote 漂移返回 `POST_MERGE_SYNC_INCOMPLETE` 且不覆盖。
+- confirmed receipt 首次同步要求 fresh remote base 包含 verified OID 与确认时的 base OID，再固定 exact `syncBaseOid`；后续恢复要求 remote tip 仍与 pin 完全相等，否则以 retryable `POST_MERGE_SYNC_INCOMPLETE` fail closed。每个候选通过 `detached staging` rebase，先持久化 `rebasing` 意图和 `resultOid`，再用 local ref `compare-and-swap` 安装结果，最后以 exact `force-with-lease` 更新远端。local 或 remote OID 漂移都不能被覆盖。
+- 远端已确认但同步失败时返回 `POST_MERGE_SYNC_INCOMPLETE`，并准确报告 completed/remaining work；重试只继续未完成同步。成功结果分别为 `merged_now`、`already_merged` 或 `already_integrated`，并报告实际 `data.executor`。
+- `read-only Git fallback` 从不 merge 或 push base。事故 oracle 覆盖完成状态写入后的普通工具/进程中断，不把尚未声明的断电、内核崩溃或 `fsync` durability 当作已验证保证。
+
 ## Release acceptance pressure
 
 npm run test:acceptance 保持兼容入口，等价于 npm run test:acceptance:pressure。它是发布专用、允许联网、45 分钟预算的完整压力门禁，不属于 npm test 或日常 dev baseline。runner 测试同一个 canonical tarball，并安装固定的 @voxstudio/docs-gardener@1.0.0-next.0。

@@ -2,10 +2,13 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertProjectBoundary, parseJsonOutput, run, type AcceptanceWorkspace } from "./harness.js";
 import { writeFixture } from "./baseline-harness.js";
+import { runMergeRecoveryIncident } from "./merge-recovery-incident.js";
 
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 
 export async function runBaselineFixture(workspace: AcceptanceWorkspace, fixture: any): Promise<Record<string, unknown>> {
+  if (fixture.kind === "merge-recovery") return runMergeRecoveryIncident(workspace, fixture);
+  if (fixture.kind !== undefined && fixture.kind !== "project-shape") throw new Error(`Unknown baseline fixture kind: ${fixture.kind}`);
   const started = Date.now();
   const root = join(workspace.repos, fixture.id);
   mkdirSync(root, { recursive: true });

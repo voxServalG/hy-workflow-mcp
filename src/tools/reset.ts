@@ -15,6 +15,7 @@ export async function handleReset(): Promise<ToolResult> {
   state.implementationManifest = null;
   state.documentReads = null;
   state.syncDocs = null;
+  state.mergeReceipt = null;
 
   writeState(state);
 

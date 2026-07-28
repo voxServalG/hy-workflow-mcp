@@ -24,6 +24,33 @@ const DOCUMENT_GATE_CONTRACT_FILES = [
   "docs/skills/core/SKILL.md",
 ];
 
+const MERGE_RECOVERY_SOURCE_TOKENS = [
+  "acquireMergeLock",
+  "fetchRemoteBaseEvidence",
+  "reconcileMerge",
+  "executePrMerge",
+  "checkoutDetached",
+  "updateBranchRefCas",
+  "pushForceWithLease",
+  "syncBaseOid",
+  "isAgentBranch",
+  'state = "rebasing"',
+  "already_integrated",
+  'evidence: "git"',
+  '"--no-tags"',
+  "--force-with-lease=",
+  "refs/remotes/origin/",
+  "baseOid",
+  "isAncestor",
+] as const;
+
+const MERGE_RECOVERY_DOC_TOKENS = [
+  "fresh-fetch ancestry",
+  "read-only Git fallback",
+  "detached staging",
+  "compare-and-swap",
+] as const;
+
 function containsOrderedTokens(text: string, tokens: string[]): boolean {
   let cursor = 0;
   for (const token of tokens) {
@@ -63,6 +90,45 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
         message: "Agent contract must preserve the complete hy_status -> docs/plan/approve -> branch/edit/docs/verify -> commit/merge order.",
         file,
         detail: { expected: DOCUMENT_GATE_SEQUENCE },
+      });
+    }
+  }
+  const mergeSource = [
+    readText(context.root, "src/git.ts"),
+    readText(context.root, "src/merge-recovery.ts"),
+    readText(context.root, "src/tools/merge.ts"),
+  ].join("\n");
+  for (const token of MERGE_RECOVERY_SOURCE_TOKENS) {
+    if (!mergeSource.includes(token)) {
+      findings.push({
+        rule: "workflow",
+        severity: "hard_fail",
+        message: `Merge recovery implementation omits ${token}.`,
+        file: "src/git.ts",
+      });
+    }
+  }
+  const mergeMutations = mergeSource.match(/\[\s*"pr"\s*,\s*"merge"/g) ?? [];
+  if (mergeMutations.length !== 1) {
+    findings.push({
+      rule: "workflow",
+      severity: "hard_fail",
+      message: `Merge recovery must have exactly one gh pr merge mutation site; found ${mergeMutations.length}.`,
+      file: "src/git.ts",
+    });
+  }
+  const mergeDocs = [
+    readText(context.root, "docs/state-machine.md"),
+    readText(context.root, "docs/tools.md"),
+    readText(context.root, "docs/architecture.md"),
+  ].join("\n");
+  for (const token of MERGE_RECOVERY_DOC_TOKENS) {
+    if (!mergeDocs.includes(token)) {
+      findings.push({
+        rule: "workflow",
+        severity: "amend_required",
+        message: `Merge recovery documentation omits ${token}.`,
+        file: "docs/state-machine.md",
       });
     }
   }

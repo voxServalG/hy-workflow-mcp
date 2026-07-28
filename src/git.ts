@@ -6,8 +6,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { requireGhExecutor, requireGitExecutor, type ExecutorCapability } from "./executors.js";
 import { requireRuntimeConfig } from "./config.js";
+import { parsePullRequestSnapshot, type GitIntegrationEvidence, type MergeIdentity, type PullRequestEvidence } from "./merge-recovery.js";
 
-type RunResult = { ok: boolean; stdout: string; stderr: string };
+type RunResult = { ok: boolean; stdout: string; stderr: string; exitCode: number | null };
 
 function run(cmd: string, args: string[], cwd?: string): RunResult {
   try {
@@ -15,9 +16,9 @@ function run(cmd: string, args: string[], cwd?: string): RunResult {
     delete env.GH_REPO;
     delete env.GH_HOST;
     const stdout = execFileSync(cmd, args, { cwd, env, encoding: "utf-8", timeout: 120_000, stdio: ["pipe", "pipe", "pipe"] });
-    return { ok: true, stdout: stdout.trim(), stderr: "" };
+    return { ok: true, stdout: stdout.trim(), stderr: "", exitCode: 0 };
   } catch (e: any) {
-    return { ok: false, stdout: e.stdout?.trim() ?? "", stderr: e.stderr?.trim() ?? e.message ?? "" };
+    return { ok: false, stdout: e.stdout?.trim() ?? "", stderr: e.stderr?.trim() ?? e.message ?? "", exitCode: Number.isInteger(e.status) ? e.status : null };
   }
 }
 
@@ -253,11 +254,155 @@ function repositoryChangedError(expected: string, actual: string): GitOperationE
   );
 }
 
+function validateMergeIdentityInput(identity: MergeIdentity): GitOperationError | null {
+  if (!REPOSITORY_SELECTOR.test(identity.repository)) {
+    return error("workflow_state", "invalid_phase", "MERGE_INPUT_INVALID", "Merge repository identity is invalid.", "Return to hy_verify and hy_commit to rebuild the exact PR identity.", { identity });
+  }
+  const pr = validatePrNumber(identity.prNumber);
+  if (!pr.ok) return pr.error;
+  const baseError = validateRef("baseBranch", identity.baseBranch);
+  if (baseError) return baseError;
+  const headError = validateRef("headBranch", identity.headBranch);
+  if (headError) return headError;
+  if (identity.baseBranch === identity.headBranch || !isValidGitObjectId(identity.verifiedOid)) {
+    return error("workflow_state", "invalid_phase", "MERGE_INPUT_INVALID", "Merge branch or verified commit identity is invalid.", "Return to hy_verify and hy_commit to rebuild the exact PR identity.", { identity });
+  }
+  return null;
+}
+export type GitOidResult = { ok: true; oid: string; executor?: ExecutorCapability } | { ok: false; missing: boolean; error: GitOperationError; executor?: ExecutorCapability };
+export type GitBooleanResult = { ok: true; value: boolean; executor?: ExecutorCapability } | { ok: false; error: GitOperationError; executor?: ExecutorCapability };
+export type GitActionResult = { ok: true; oid?: string; executor?: ExecutorCapability } | { ok: false; error: GitOperationError; executor?: ExecutorCapability };
+export type GitBranchesResult = { ok: true; branches: string[]; executor?: ExecutorCapability } | { ok: false; error: GitOperationError; executor?: ExecutorCapability };
+export function resolveRefOid(root: string, ref: string): GitOidResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, missing: false, error: required.error as GitOperationError, executor: required.executor };
+  const refError = validateRef("ref", ref);
+  if (refError) return { ok: false, missing: false, error: refError, executor: required.executor };
+  const result = run("git", ["rev-parse", "--verify", `${ref}^{commit}`], root);
+  if (result.ok && isValidGitObjectId(result.stdout)) return { ok: true, oid: result.stdout, executor: required.executor };
+  return {
+    ok: false,
+    missing: result.exitCode === 128,
+    error: error("io", "io_failure", "GIT_REF_OID_UNAVAILABLE", `Could not resolve ${ref} to an immutable commit.`, "Restore the expected Git ref and retry.", { ref, exitCode: result.exitCode }, result.stderr || result.stdout),
+    executor: required.executor,
+  };
+}
+export function resolveRemoteBranchOid(root: string, branch: string): GitOidResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, missing: false, error: required.error as GitOperationError, executor: required.executor };
+  const branchError = validateRef("branch", branch);
+  if (branchError) return { ok: false, missing: false, error: branchError, executor: required.executor };
+  const remoteRef = `refs/heads/${branch}`;
+  const result = run("git", ["ls-remote", "--heads", "origin", remoteRef], root);
+  if (!result.ok) {
+    return { ok: false, missing: false, error: error("io", "io_failure", "REMOTE_BRANCH_QUERY_FAILED", `Could not inspect origin/${branch}.`, "Restore origin access and retry.", { branch, exitCode: result.exitCode }, result.stderr), executor: required.executor };
+  }
+  const rows = result.stdout.split(/\r?\n/).map(row => row.trim()).filter(Boolean);
+  if (!rows.length) {
+    return { ok: false, missing: true, error: error("io", "io_failure", "REMOTE_BRANCH_MISSING", `origin/${branch} does not exist.`, "Refresh workflow state before retrying.", { branch }), executor: required.executor };
+  }
+  const parsed = rows.length === 1 ? rows[0].split(/\s+/) : [];
+  if (parsed.length !== 2 || parsed[1] !== remoteRef || !isValidGitObjectId(parsed[0])) {
+    return { ok: false, missing: false, error: error("io", "io_failure", "REMOTE_BRANCH_QUERY_INVALID", `origin/${branch} returned invalid ref evidence.`, "Repair the remote ref or Git client before retrying.", { branch, output: result.stdout }), executor: required.executor };
+  }
+  return { ok: true, oid: parsed[0], executor: required.executor };
+}
+export function isAncestorCommit(root: string, ancestorOid: string, descendantOid: string): GitBooleanResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  if (!isValidGitObjectId(ancestorOid) || !isValidGitObjectId(descendantOid)) {
+    return { ok: false, error: invalidGitObjectIdError(!isValidGitObjectId(ancestorOid) ? ancestorOid : descendantOid), executor: required.executor };
+  }
+  const result = run("git", ["merge-base", "--is-ancestor", ancestorOid, descendantOid], root);
+  if (result.ok) return { ok: true, value: true, executor: required.executor };
+  if (result.exitCode === 1) return { ok: true, value: false, executor: required.executor };
+  return { ok: false, error: error("io", "io_failure", "GIT_ANCESTRY_CHECK_FAILED", "Could not determine commit ancestry.", "Restore the local object database and retry.", { ancestorOid, descendantOid, exitCode: result.exitCode }, result.stderr), executor: required.executor };
+}
+export function fetchRemoteBaseEvidence(root: string, identity: MergeIdentity): { evidence: GitIntegrationEvidence; executor?: ExecutorCapability } {
+  const unavailable = (reason: string, head: GitIntegrationEvidence["head"] = { status: "unavailable", reason }): { evidence: GitIntegrationEvidence } => ({
+    evidence: { status: "unavailable", repository: identity.repository, baseBranch: identity.baseBranch, verifiedOid: identity.verifiedOid, reason, head },
+  });
+  const identityError = validateMergeIdentityInput(identity);
+  if (identityError) return unavailable(identityError.message);
+  const required = requireGitExecutor();
+  if (!required.ok) return { ...unavailable(String((required.error as GitOperationError).message)), executor: required.executor };
+  const origin = resolveOriginRepository(root);
+  if (!origin.ok) return { ...unavailable(origin.error.message), executor: required.executor };
+  if (origin.repository !== identity.repository) return { ...unavailable(repositoryChangedError(identity.repository, origin.repository).message), executor: required.executor };
+  const remoteHead = resolveRemoteBranchOid(root, identity.headBranch);
+  const head: GitIntegrationEvidence["head"] = remoteHead.ok
+    ? { status: "present", oid: remoteHead.oid }
+    : remoteHead.missing ? { status: "missing" } : { status: "unavailable", reason: remoteHead.error.message };
+  const remoteBaseRef = `refs/remotes/origin/${identity.baseBranch}`;
+  const refspec = `+refs/heads/${identity.baseBranch}:${remoteBaseRef}`;
+  const fetched = run("git", ["fetch", "--no-tags", "origin", refspec], root);
+  if (!fetched.ok) return { ...unavailable(`Fresh base fetch failed: ${fetched.stderr || "unknown Git error"}`, head), executor: required.executor };
+  const base = resolveRefOid(root, remoteBaseRef);
+  if (!base.ok) return { ...unavailable(base.error.message, head), executor: required.executor };
+  const ancestor = isAncestorCommit(root, identity.verifiedOid, base.oid);
+  if (!ancestor.ok) return { ...unavailable(ancestor.error.message, head), executor: required.executor };
+  return {
+    evidence: {
+      status: "available",
+      repository: identity.repository,
+      baseBranch: identity.baseBranch,
+      verifiedOid: identity.verifiedOid,
+      baseOid: base.oid,
+      containsVerifiedOid: ancestor.value,
+      head,
+    },
+    executor: required.executor,
+  };
+}
+export function inspectPullRequestForMerge(root: string, identity: MergeIdentity): { evidence: PullRequestEvidence; executor?: ExecutorCapability } {
+  const identityError = validateMergeIdentityInput(identity);
+  if (identityError) return { evidence: { status: "unavailable", reason: identityError.message } };
+  const required = requireBoundGhExecutor();
+  if (!required.ok) return { evidence: { status: "unavailable", reason: String((required.error as GitOperationError).message) }, executor: required.executor };
+  let reason = "GitHub PR inspection failed.";
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = run("gh", ["pr", "view", String(identity.prNumber), "--repo", identity.repository, "--json", "state,baseRefName,headRefName,headRefOid,isCrossRepository"], root);
+    if (!result.ok) {
+      reason = `GitHub PR inspection failed (${attempt}/3): ${result.stderr || "unknown gh error"}`;
+      continue;
+    }
+    try {
+      const data = JSON.parse(result.stdout) as Record<string, unknown>;
+      const snapshot = parsePullRequestSnapshot({
+        identity: {
+          repository: identity.repository,
+          prNumber: identity.prNumber,
+          baseBranch: data.baseRefName,
+          headBranch: data.headRefName,
+          headOid: data.headRefOid,
+          isCrossRepository: data.isCrossRepository,
+        },
+        lifecycle: { state: data.state },
+      });
+      if (snapshot) return { evidence: { status: "available", snapshot }, executor: required.executor };
+      reason = `GitHub PR inspection returned invalid identity or lifecycle data (${attempt}/3).`;
+    } catch (caught: any) {
+      reason = `GitHub PR inspection returned invalid JSON (${attempt}/3): ${caught?.message ?? String(caught)}`;
+    }
+  }
+  return { evidence: { status: "unavailable", reason }, executor: required.executor };
+}
+export function executePrMerge(root: string, identity: MergeIdentity): GitActionResult {
+  const identityError = validateMergeIdentityInput(identity);
+  if (identityError) return { ok: false, error: identityError };
+  const required = requireBoundGhExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  const origin = resolveOriginRepository(root);
+  if (!origin.ok) return { ok: false, error: origin.error, executor: required.executor };
+  if (origin.repository !== identity.repository) return { ok: false, error: repositoryChangedError(identity.repository, origin.repository), executor: required.executor };
+  const result = run("gh", ["pr", "merge", String(identity.prNumber), "--repo", identity.repository, "--match-head-commit", identity.verifiedOid, "--merge", "--delete-branch"], root);
+  if (result.ok) return { ok: true, executor: required.executor };
+  return { ok: false, error: error("io", "io_failure", "PR_MERGE_COMMAND_FAILED", `GitHub merge command for PR #${identity.prNumber} did not confirm success.`, "Reconcile the persisted merge receipt before any retry; do not invoke the merge mutation again until the outcome is known.", { identity, exitCode: result.exitCode }, result.stderr), executor: required.executor };
+}
 type ActiveRecoveryResult =
   | { ok: true; required: false; identityError: GitOperationError }
   | { ok: true; required: true; record: CommitRecoveryRecord }
   | { ok: false; error: GitOperationError };
-
 function verifiedCommitIdentityMissing(detail: Record<string, unknown>): GitOperationError {
   return error(
     "workflow_state",
@@ -268,7 +413,6 @@ function verifiedCommitIdentityMissing(detail: Record<string, unknown>): GitOper
     detail,
   );
 }
-
 function activeCommitRecovery(root: string): ActiveRecoveryResult {
   let state;
   try {
@@ -290,7 +434,6 @@ function activeCommitRecovery(root: string): ActiveRecoveryResult {
       }),
     };
   }
-
   const raw = (state.approval as ({ commitRecovery?: unknown } | null))?.commitRecovery;
   const record = parseCommitRecovery(raw);
   let baseBranch: string;
@@ -308,7 +451,29 @@ function activeCommitRecovery(root: string): ActiveRecoveryResult {
   }
   return { ok: true, required: true, record };
 }
-
+export type ResolveMergeIdentityResult = { ok: true; identity: MergeIdentity; executor?: ExecutorCapability }
+  | { ok: false; error: GitOperationError; executor?: ExecutorCapability };
+export function resolveMergeIdentity(root: string, prNumber: unknown): ResolveMergeIdentityResult {
+  const valid = validatePrNumber(prNumber);
+  if (!valid.ok) return { ok: false, error: valid.error };
+  const recovery = activeCommitRecovery(root);
+  if (!recovery.ok) return { ok: false, error: recovery.error };
+  if (!recovery.required) return { ok: false, error: recovery.identityError };
+  const origin = resolveOriginRepository(root);
+  if (!origin.ok) return { ok: false, error: origin.error, executor: origin.executor };
+  if (origin.repository !== recovery.record.repository) {
+    return { ok: false, error: repositoryChangedError(recovery.record.repository, origin.repository), executor: origin.executor };
+  }
+  const identity: MergeIdentity = {
+    repository: recovery.record.repository,
+    prNumber: valid.value,
+    baseBranch: recovery.record.baseBranch,
+    headBranch: recovery.record.branch,
+    verifiedOid: recovery.record.commitOid,
+  };
+  const identityError = validateMergeIdentityInput(identity);
+  return identityError ? { ok: false, error: identityError, executor: origin.executor } : { ok: true, identity, executor: origin.executor };
+}
 export function resolveHeadCommit(root: string): { ok: boolean; hash?: string; error?: GitOperationError; executor?: ExecutorCapability } {
   const required = requireGitExecutor();
   if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
@@ -520,13 +685,30 @@ export function push(root: string, branch: string, expectedHeadOid: string, expe
   return { ok: true, hash: expectedHeadOid, executor: required.executor };
 }
 
-export function pushForce(root: string, branch: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+export function pushForceWithLease(root: string, branch: string, expectedRemoteOid: string, localOid: string): GitActionResult {
   const required = requireGitExecutor();
-  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
   const branchError = validateRef("branch", branch);
   if (branchError) return { ok: false, error: branchError, executor: required.executor };
-  const r = run("git", ["push", "--force", "origin", branch], root);
-  return { ok: r.ok, error: r.stderr, executor: required.executor };
+  if (!isValidGitObjectId(expectedRemoteOid) || !isValidGitObjectId(localOid)) {
+    return { ok: false, error: invalidGitObjectIdError(!isValidGitObjectId(expectedRemoteOid) ? expectedRemoteOid : localOid), executor: required.executor };
+  }
+  const local = resolveRefOid(root, `refs/heads/${branch}`);
+  if (!local.ok) return { ok: false, error: local.error, executor: required.executor };
+  if (local.oid !== localOid) {
+    return { ok: false, error: error("workflow_state", "invalid_phase", "LOCAL_BRANCH_OID_MISMATCH", `Local branch ${branch} moved after its sync receipt was prepared.`, "Restore the recorded local branch commit or restart merge synchronization from a newly verified state.", { branch, expected: localOid, actual: local.oid }), executor: required.executor };
+  }
+  const remote = resolveRemoteBranchOid(root, branch);
+  if (!remote.ok) return { ok: false, error: remote.error, executor: required.executor };
+  if (remote.oid !== expectedRemoteOid) {
+    return { ok: false, error: error("workflow_state", "invalid_phase", "REMOTE_BRANCH_OID_MISMATCH", `Remote branch ${branch} moved after its sync receipt was prepared.`, "Inspect the downstream branch update and rebuild the synchronization receipt before pushing.", { branch, expected: expectedRemoteOid, actual: remote.oid }), executor: required.executor };
+  }
+  const destination = `refs/heads/${branch}`;
+  const refspec = `${localOid}:${destination}`;
+  const lease = `--force-with-lease=${destination}:${expectedRemoteOid}`;
+  const pushed = run("git", ["push", lease, "origin", refspec], root);
+  if (!pushed.ok) return { ok: false, error: error("io", "io_failure", "GIT_FORCE_WITH_LEASE_FAILED", `Could not safely update ${branch}.`, "Resolve the remote change or push failure, then retry without weakening the lease.", { branch, expectedRemoteOid, localOid, refspec, lease }, pushed.stderr), executor: required.executor };
+  return { ok: true, oid: localOid, executor: required.executor };
 }
 
 type OpenPr = { number: number; url: string; headRefOid: string };
@@ -742,9 +924,13 @@ export function mergePr(root: string, prNumber: unknown): { ok: boolean; error?:
   if (!inspected.ok) return { ok: false, error: inspected.error, executor: required.executor };
   const identityError = validatePrIdentity(inspected.data, valid.value, recovery.record);
   if (identityError) return { ok: false, error: identityError, executor: required.executor };
-  const matchArgs = ["--match-head-commit", recovery.record.commitOid];
-  const r = run("gh", ["pr", "merge", String(valid.value), ...repoArgs, ...matchArgs, "--merge", "--delete-branch"], root);
-  return { ok: r.ok, error: r.stderr, executor: required.executor };
+  return executePrMerge(root, {
+    repository: recovery.record.repository,
+    prNumber: valid.value,
+    baseBranch: recovery.record.baseBranch,
+    headBranch: recovery.record.branch,
+    verifiedOid: recovery.record.commitOid,
+  });
 }
 
 export type CiCheck = {
@@ -948,9 +1134,21 @@ export function checkout(root: string, branch: string): { ok: boolean; error?: u
   return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function listLocalBranches(root: string): string[] {
+export function checkoutDetached(root: string, oid: string): GitActionResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  if (!isValidGitObjectId(oid)) return { ok: false, error: invalidGitObjectIdError(oid), executor: required.executor };
+  const result = run("git", ["checkout", "--detach", oid], root);
+  if (!result.ok) return { ok: false, error: error("io", "io_failure", "GIT_DETACHED_CHECKOUT_FAILED", "Could not prepare the recorded downstream commit in detached mode.", "Repair the local object database and worktree, then retry merge synchronization.", { oid }, result.stderr), executor: required.executor };
+  return { ok: true, oid, executor: required.executor };
+}
+
+export function listLocalBranches(root: string): GitBranchesResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
   const r = run("git", ["branch", "--format=%(refname:short)"], root);
-  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean) : [];
+  if (!r.ok) return { ok: false, error: error("io", "io_failure", "GIT_LOCAL_BRANCH_LIST_FAILED", "Could not enumerate local branches for downstream synchronization.", "Repair the Git worktree and retry; no merge mutation will run without a complete branch snapshot.", undefined, r.stderr), executor: required.executor };
+  return { ok: true, branches: r.stdout.split("\n").map(line => line.trim()).filter(Boolean), executor: required.executor };
 }
 
 export function pull(root: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
@@ -959,16 +1157,43 @@ export function pull(root: string): { ok: boolean; error?: unknown; executor?: E
   const base = getBaseBranch(root);
   const baseError = validateRef("baseBranch", base);
   if (baseError) return { ok: false, error: baseError, executor: required.executor };
-  const r = run("git", ["pull", "origin", base], root);
+  const r = run("git", ["pull", "origin", base, "--ff-only"], root);
   return { ok: r.ok, error: r.stderr, executor: required.executor };
 }
 
-export function rebaseDev(root: string): { ok: boolean; error?: unknown; executor?: ExecutorCapability } {
+export function isWorktreeClean(root: string): GitBooleanResult {
   const required = requireGitExecutor();
-  if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
-  const base = getBaseBranch(root);
-  const baseError = validateRef("baseBranch", base);
-  if (baseError) return { ok: false, error: baseError, executor: required.executor };
-  const r = run("git", ["rebase", `origin/${base}`], root);
-  return { ok: r.ok, error: r.stderr, executor: required.executor };
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  const status = run("git", ["status", "--porcelain=v1", "-uall"], root);
+  if (!status.ok) return { ok: false, error: error("io", "io_failure", "GIT_WORKTREE_STATUS_FAILED", "Could not inspect worktree cleanliness.", "Repair the Git worktree and retry synchronization.", undefined, status.stderr), executor: required.executor };
+  return { ok: true, value: status.stdout.length === 0, executor: required.executor };
+}
+
+export function abortRebase(root: string): GitActionResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  const aborted = run("git", ["rebase", "--abort"], root);
+  if (!aborted.ok) return { ok: false, error: error("io", "io_failure", "GIT_REBASE_ABORT_FAILED", "Could not abort the interrupted rebase.", "Resolve the rebase state manually before retrying merge synchronization.", undefined, aborted.stderr), executor: required.executor };
+  return { ok: true, executor: required.executor };
+}
+
+export function rebaseOnto(root: string, targetOid: string): GitActionResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  if (!isValidGitObjectId(targetOid)) return { ok: false, error: invalidGitObjectIdError(targetOid), executor: required.executor };
+  const result = run("git", ["rebase", targetOid], root);
+  if (!result.ok) return { ok: false, error: error("io", "io_failure", "GIT_DETACHED_REBASE_FAILED", "Could not rebase the detached downstream commit onto the pinned base commit.", "Resolve the rebase conflict or local Git failure, then retry merge synchronization.", { targetOid }, result.stderr), executor: required.executor };
+  return { ok: true, executor: required.executor };
+}
+
+export function updateBranchRefCas(root: string, branch: string, newOid: string, expectedOldOid: string): GitActionResult {
+  const required = requireGitExecutor();
+  if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
+  const branchError = validateRef("branch", branch);
+  if (branchError) return { ok: false, error: branchError, executor: required.executor };
+  if (!isValidGitObjectId(newOid) || !isValidGitObjectId(expectedOldOid)) return { ok: false, error: invalidGitObjectIdError(!isValidGitObjectId(newOid) ? newOid : expectedOldOid), executor: required.executor };
+  const ref = `refs/heads/${branch}`;
+  const result = run("git", ["update-ref", ref, newOid, expectedOldOid], root);
+  if (!result.ok) return { ok: false, error: error("workflow_state", "invalid_phase", "LOCAL_BRANCH_CAS_FAILED", `Local branch ${branch} moved before its staged rebase result could be installed.`, "Do not overwrite the branch. Inspect the local ref change, then reset or repair workflow state before retrying.", { branch, ref, newOid, expectedOldOid }, result.stderr), executor: required.executor };
+  return { ok: true, oid: newOid, executor: required.executor };
 }
