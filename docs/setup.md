@@ -91,7 +91,7 @@ Setup auto-migrates the managed `AGENTS.md` block without an acceptance flag: ex
 
 ## CI enforcement
 
-The generated Verify job executes confirmed `ci.commands` as the complete native sequence, then mandatory pinned doclint/codelint with timeouts. Missing/empty commands, unknown unsafe inference, zero scanned files, materialization/lint failure or cleanup failure all fail closed; compatibility JSON is temporary and restored. Local runtime commands additionally persist an external recovery journal before materialization, recover after process death on the next MCP invocation, and refuse symlink escapes or concurrent edits. `hy_ci` requires the stable Verify check and every effective check to succeed. An administrator must separately mark Verify required; setup does not mutate repository rules.
+The generated Verify job runs on pull requests and explicit `workflow_dispatch`, not on generic pushes. It executes confirmed `ci.commands` as the complete native sequence, then decodes the package's deterministic first-party lint bundle into runner-temporary storage and runs built-in doclint/codelint offline. Missing/empty commands, unknown unsafe inference, zero documentation files, invalid configuration, parser/report failure, or lint errors fail closed. Existing legacy compatibility JSON remains byte-identical because the workflow never creates, rewrites, or restores it. `hy_ci` requires the stable Verify check and every effective check to succeed. An administrator must separately mark Verify required; setup does not mutate repository rules.
 
 ## Runtime prerequisites
 
@@ -105,4 +105,4 @@ The generated Verify job executes confirmed `ci.commands` as the complete native
 
 Every `hy_*` dispatch checks schema-3 deployment version, direct binaries/versions, MCP catalog hashes and all three team artifact SHA/size (`hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the managed `AGENTS.md` block). `hy_init` additionally requires the root config/workflow, resolvable base ref, substantive docs and current managed rules. Missing, unreadable, outdated, tool-mismatch or artifact-drift evidence returns a structured setup/artifact-sync stop; legacy state is never deleted or treated as a second mode.
 
-The npm package contains compiled `dist/`, docs, the shared workflow template, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.
+The npm package contains compiled `dist/`, docs, the shared workflow template, the `templates/lint/*.mjs` engine modules, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.

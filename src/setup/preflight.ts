@@ -8,7 +8,7 @@ import { PACKAGE_VERSION } from "../package-meta.js";
 import { readDeployment } from "../runtime/deployment.js";
 import { executableInvocation, resolveExecutable, runExecutable } from "./clients/index.js";
 import { assertSafeEffectiveConfig } from "./clients/effective.js";
-import { contentEvidence, SHARED_PROJECT_FILES, sharedArtifactPlan } from "./shared.js";
+import { contentEvidence, renderWorkflowTemplate, SHARED_PROJECT_FILES, sharedArtifactPlan } from "./shared.js";
 import { planAgentsFile } from "./agents-rules.js";
 import {
   MCP_DEFINITIONS,
@@ -201,7 +201,7 @@ export async function runSetupPreflight(
   const changes = options.action === "setup" ? previewArtifactChanges(root, config) : [];
   const artifactExpectedHashes: Record<string, string> = options.action === "setup" ? {
     "hy-workflow.json": digest(JSON.stringify(config, null, 2) + "\n"),
-    ".github/workflows/hy-workflow.yml": digest(fs.readFileSync(new URL("../../templates/hy-workflow.yml", import.meta.url))),
+    ".github/workflows/hy-workflow.yml": digest(renderWorkflowTemplate()),
     "AGENTS.md": digest(planAgentsFile(root).nextContent),
   } : {};
   const artifactBeforeHashes = Object.fromEntries(SHARED_PROJECT_FILES.map(file => {

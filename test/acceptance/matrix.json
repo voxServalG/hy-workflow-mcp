@@ -22,7 +22,8 @@
           "packages",
           "scripts"
         ],
-        "docsDir": "docs"
+        "docsDir": "docs",
+        "lintScanner": null
       }
     },
     {
@@ -44,7 +45,8 @@
         "lintDirs": [
           "src"
         ],
-        "docsDir": "."
+        "docsDir": ".",
+        "lintScanner": "python"
       }
     },
     {
@@ -66,7 +68,8 @@
         "lintDirs": [
           "lib"
         ],
-        "docsDir": "."
+        "docsDir": ".",
+        "lintScanner": null
       }
     },
     {
@@ -93,7 +96,8 @@
           "internal",
           "pkg"
         ],
-        "docsDir": "docs"
+        "docsDir": "docs",
+        "lintScanner": null
       }
     },
     {
@@ -115,7 +119,8 @@
         "lintDirs": [
           "crates"
         ],
-        "docsDir": "."
+        "docsDir": ".",
+        "lintScanner": "rust"
       }
     }
   ]

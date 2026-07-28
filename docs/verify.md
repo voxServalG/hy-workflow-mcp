@@ -17,7 +17,7 @@ Layer 3: scope
 
 Layer 4: boundary
 ├── entry_points 逐条按 shell 命令执行，必须 exit 0
-└── no_new_external → dependency manifests 无变更；manifest 无法检查时 hard fail
+└── no_new_external → dependency-bearing sections/lockfiles 无新增或变更；manifest 无法检查时 hard fail
 
 Layer 5: platform
 ├── 数字型 plan.verify.platform.python_version 按最低 Python 版本校验
@@ -35,7 +35,7 @@ Short commands run through a synchronous cross-platform supervisor; commands exp
 
 ## CI evidence gate
 
-GitHub workflow 从根 `hy-workflow.json` 读取已确认的 `ci.commands` 并按顺序执行完整原生项目检查，再临时生成 compatibility JSON 运行固定版本 doclint/codelint。缺少/空命令、未知且无法安全推断的生态、命令或 lint 超时/失败、lint 报告扫描零文件、materialization/cleanup 失败均 fail closed；临时 JSON 必须恢复且不提交。`hy_ci` 只有至少一个有效 check 且全部成功才进入 merge，没有 checks 或只有 skipped/neutral 时返回 `CI_CHECKS_REQUIRED`。
+GitHub workflow 从根 `hy-workflow.json` 读取已确认的 `ci.commands` 并按顺序执行完整原生项目检查，再把 setup 确定性嵌入的第一方模块解到 runner 临时目录，离线运行 D001–D005 与 C001–C005。通用 workflow 只响应 pull request 和手动触发。缺少/空命令、未知且无法安全推断的生态、命令超时/失败、零文档扫描、lint 错误、解析器失败或报告不符合 `hy-workflow.lint.v1` 均 fail closed。旧 compatibility JSON 不生成、不改写，也无需恢复。`hy_ci` 只有至少一个有效 check 且全部成功才进入 merge，没有 checks 或只有 skipped/neutral 时返回 `CI_CHECKS_REQUIRED`。
 
 setup 负责生成 workflow，但不修改 GitHub 管理配置。仓库管理员必须在 ruleset 或 branch protection 中把 workflow 的 Verify check 设为 required，才能在平台层阻止绕过。
 
@@ -77,15 +77,15 @@ Compile checks are built per language from `hy-workflow.json: project.codeExt` a
 - Python projects enumerate configured `project.codeDirs` recursively (for example files matching `*.py` / `*.pyw` / `*.pyi`), and also include top-level `.py` siblings at the project root; the glob is driven by configured directories rather than a hard-coded `src/**/*.py` assumption.
 - Mixed-language projects run every relevant compile check, so a `.ts + .py` project gets both TypeScript and Python compile evidence.
 
-## Lint JSON Parsing
+## Built-in lint evidence
 
-`runDocLint` and `runCodeLint` parse numeric values emitted as either numbers or numeric strings. They accept top-level fields and nested `data`, `counts`, and `summary` shapes, including `errors`, `warnings`, `files`, `total`, and `failed`. Details must report concrete counts and must not contain `undefined`.
+`hy-workflow lint --json` emits one report with schema `hy-workflow.lint.v1`, version 1, exactly ten ordered checks, sorted findings, and aggregate file/error/warning counts. Check status is `passed`, `failed`, `warning`, `not_applicable`, or `not_configured`. Warnings exit zero; any error, invalid configuration, supported-language parse failure, or configured-language zero scan exits one. The generated workflow additionally requires at least one documentation file. See [Built-in Lint Rules](./lint-rules.md).
 
 ## Dependency Manifest Boundary
 
-`boundary.no_new_external=true` 时，verify 使用当前 implementation manifest 检查工作区、索引、HEAD 相对 `origin/${baseBranch}` 的变更以及未跟踪文件。命中以下依赖或策略文件会 hard fail，除非 PlanDoc 明确声明 `no_new_external=false`：
+`boundary.no_new_external=true` 时，verify 使用当前 implementation manifest 检查工作区、索引、HEAD 相对 `origin/${baseBranch}` 的变更以及未跟踪文件。Node `package.json` 只比较 dependency-bearing sections，因此 scripts、files、bin、version 等元数据可以变化，但 dependencies/devDependencies/optionalDependencies/peerDependencies 等外部依赖变化会 hard fail。锁文件和下列其他依赖或策略文件发生变化仍会 hard fail，除非 PlanDoc 明确声明 `no_new_external=false`：
 
-- Node: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`
+- Node: `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`
 - Python: `pyproject.toml`, `setup.cfg`, `setup.py`, `requirements.txt`, `requirements/*.txt`, `Pipfile`, `Pipfile.lock`, `poetry.lock`, `uv.lock`
 - Other common manifests: `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `composer.json`, `composer.lock`, `Gemfile`, `Gemfile.lock`
 - Policy: `policy.md`
@@ -126,9 +126,9 @@ interface VerifyReport {
 | `hy-workflow.json: project.codeExt` | 支持单个扩展、逗号分隔扩展或扩展数组；决定 TypeScript、JavaScript-only soft skip、Python compile 等 compile checks；`.tksp` 和其他没有内建编译器的扩展不会阻断 compile 层 |
 | `hy-workflow.json: project.codeDirs` | Python compile 的文件枚举根目录；同时支持顶层和嵌套 Python 文件 |
 | `hy-workflow.json: project.baseBranch` | scope check 和 dependency manifest boundary 的 Git diff 基线分支 |
-| runtime `doclint.json` | 由 `hy-workflow.json` 临时生成给 doclint 使用，验证文档质量 |
-| runtime `codelint.json` | 由 `hy-workflow.json` 临时生成给 codelint 使用，验证代码治理规则 |
-| runtime `docs-gardener.json` | 仅在旧 docs-gardener CLI 需要时临时生成；不作为配置源或提交产物 |
+| `hy-workflow.json: doclint.maxLinesWarning/maxLinesError` | 内置 D005 文档行数 warning/error 阈值；默认 200/500 |
+| `hy-workflow.json: codelint.lintDirs/maxLinesWarning/maxLinesError` | 内置代码扫描根与 C002 warning/error 阈值；默认 300/500 |
+| `hy-workflow.json: codelint.tiers` | 可选的高到低依赖层数组；缺失时 C003 明确为 `not_configured` |
 
 ## Related
 

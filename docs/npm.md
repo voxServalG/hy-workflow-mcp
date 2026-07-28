@@ -27,10 +27,11 @@ There is no `prepare`, `install`, or `postinstall` build. Registry users receive
 - `bin["hy-workflow"]` and `main` must point at `dist/server.js`
 - `files` must include `dist`, `docs`, `templates`, and `README.md`
 - `dist/` and local `*.tgz` tarballs must not be tracked by Git
-- npm pack must include `dist/server.js` and `templates/hy-workflow.yml`
+- npm pack must include `dist/server.js`, `templates/hy-workflow.yml`, and the fixed `templates/lint/*.mjs` module set
 - npm pack must not include legacy `setup` or `setup.ps1`
 - No `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, compatibility JSON, `test/`, or `src/` files may enter npm pack
 - Every build/prepack begins from an empty `dist/`; consecutive packs must have the same file list and digests even after an orphan file is injected
+- The installed `hy-workflow lint --json` command must run the packaged first-party engine without registry or codeload access and without mutating legacy compatibility JSON
 
 ## Release boundary
 

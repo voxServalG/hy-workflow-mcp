@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import { defaultSuggestion, ensureConfigDefaults, withConfirmedCiCommands, withRuntimeCompatCoordination, type JsonObject } from "../config.js";
+import { defaultSuggestion, ensureConfigDefaults, withConfirmedCiCommands, type JsonObject } from "../config.js";
 import { readDeployment, readDeploymentById, readRegistry, unregisterProject, writeDeployment, type ClientName, type DeploymentManifest, type UnregisterOutcome } from "../runtime/deployment.js";
 import { atomicWriteJson, projectPaths, projectStoragePaths, userRoots } from "../runtime/user-paths.js";
 import { assertSafeRuntimeBoundary } from "../runtime/boundary.js";
@@ -647,20 +647,6 @@ function confirmedConfig(root: string, candidate: JsonObject, options: SetupOpti
   throw new SetupFailure("preflight", "SETUP_PREFLIGHT_FAILED", "Native CI commands require explicit confirmation before setup can write the workflow.", hint, { candidates });
 }
 
-async function withUnsetCoordination<T>(root: string, run: () => Promise<T>): Promise<T> {
-  try {
-    return await withRuntimeCompatCoordination(root, run);
-  } catch (error: any) {
-    if (error?.code === "RUNTIME_COMPAT_LOCK_BUSY") {
-      throw new SetupFailure("transaction", "SETUP_CONCURRENT_OPERATION", error.message, error.hint, error.detail, true);
-    }
-    if (typeof error?.code === "string" && error.code.startsWith("RUNTIME_COMPAT_")) {
-      throw new SetupFailure("transaction", "SETUP_RECOVERY_REQUIRED", error.message, error.hint, error.detail);
-    }
-    throw error;
-  }
-}
-
 async function executeInstall(
   root: string,
   options: SetupOptions,
@@ -817,7 +803,7 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
     };
   }
   await internalSetupTestHooks().afterUnsetPreflightBeforeLock?.(root);
-  const committed = await withUnsetCoordination(root, () => withSetupTransaction(root, "unset", transaction => {
+  const committed = await withSetupTransaction(root, "unset", transaction => {
     // Every state-dependent cleanup decision is recomputed while holding the
     // global setup transaction lock. The outer observation is preview only.
     const locked = observe();
@@ -910,7 +896,7 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
       catch (rollbackError) { throw rollbackError; }
       throw error;
     }
-  }, { reconcileClient: resource => reconcileClientResource(allAdapters, resource) }));
+  }, { reconcileClient: resource => reconcileClientResource(allAdapters, resource) });
   const incomplete = committed.incomplete;
   if (incomplete.cleanup.length || incomplete.unresolvedClients.length || incomplete.remainingOwnedClients.length) {
     throw new SetupFailure(

@@ -97,6 +97,9 @@ export function staleManagedAgentsReasons(content: string): string[] {
   const versionMatch = /<!--\s*hy-workflow-rules-version:\s*([^\s]+)\s*-->/.exec(managed);
   if (!versionMatch) reasons.push(`managed rules version marker is missing; expected ${MANAGED_RULES_VERSION}`);
   else if (versionMatch[1] !== MANAGED_RULES_VERSION) reasons.push(`managed rules version ${versionMatch[1]} is stale; expected ${MANAGED_RULES_VERSION}`);
+  const hasCanonicalStructure = managed.includes("### 流程顺序") && managed.includes("### Artifact contract");
+  if (hasCanonicalStructure && !managed.includes("内置、离线、第一方规则")) reasons.push("managed rules do not describe the built-in offline doclint/codelint contract");
+  if (hasCanonicalStructure && !managed.includes("只读迁移或漂移输入")) reasons.push("managed rules do not preserve the read-only legacy lint JSON boundary");
   const obsolete: Array<[RegExp, string]> = [
     [/选择部署模式|choose deployment mode/i, "managed rules still require a deployment-mode choice"],
     [/共享模式（|本机模式（|shared mode \(|local mode \(/i, "managed rules still describe removed local/shared setup modes"],

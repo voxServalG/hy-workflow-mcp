@@ -1,10 +1,8 @@
-import { spawn } from "node:child_process";
 import fsDefault, * as fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
-import { applyConfig, buildSuggestedCommand, checkConfig, ensureConfigDefaults, readUnifiedConfig, recoverRuntimeCompatConfigs, runConfigCli, withRuntimeCompatConfigs } from "../../src/config.js";
+import { applyConfig, buildSuggestedCommand, checkConfig, ensureConfigDefaults, readUnifiedConfig, requireRuntimeConfig, runConfigCli } from "../../src/config.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 
 const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-runtime-"));
@@ -211,6 +209,47 @@ assert(invalidTypes.issues.some(issue => issue.includes("project.docsDir must be
 assert(invalidTypes.issues.some(issue => issue.includes("codelint.maxLines must be a finite number")), "string codelint maxLines should be reported");
 assert(invalidTypes.issues.some(issue => issue.includes("doclint.maxLines must be a finite number")), "string doclint maxLines should be reported");
 
+const thresholdRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const thresholdConfig = readJson(thresholdRoot, "hy-workflow.json");
+delete thresholdConfig.codelint.maxLines;
+delete thresholdConfig.doclint.maxLines;
+thresholdConfig.codelint.maxLinesWarning = 500;
+thresholdConfig.codelint.maxLinesError = 1200;
+thresholdConfig.doclint.maxLinesWarning = 200;
+thresholdConfig.doclint.maxLinesError = 500;
+fs.writeFileSync(path.join(thresholdRoot, "hy-workflow.json"), JSON.stringify(thresholdConfig, null, 2) + "\n", "utf-8");
+assert(checkConfig(thresholdRoot).ok, "project-specific warning and error threshold overrides should validate independently of the 300/500 defaults");
+
+const invalidThresholdConfig = readJson(thresholdRoot, "hy-workflow.json");
+invalidThresholdConfig.doclint.maxLinesWarning = 501;
+fs.writeFileSync(path.join(thresholdRoot, "hy-workflow.json"), JSON.stringify(invalidThresholdConfig, null, 2) + "\n", "utf-8");
+assert(checkConfig(thresholdRoot).issues.some(issue => issue.includes("doclint.maxLinesWarning must not exceed doclint.maxLinesError")), "warning thresholds above errors must fail closed");
+
+const conflictingLegacyRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
+const conflictingLegacyConfig = readJson(conflictingLegacyRoot, "hy-workflow.json");
+conflictingLegacyConfig.codelint.maxLinesError = conflictingLegacyConfig.codelint.maxLines + 1;
+fs.writeFileSync(path.join(conflictingLegacyRoot, "hy-workflow.json"), JSON.stringify(conflictingLegacyConfig, null, 2) + "\n", "utf-8");
+assert(checkConfig(conflictingLegacyRoot).issues.some(issue => issue.includes("must equal legacy codelint.maxLines")), "conflicting legacy and explicit hard thresholds must not be silently reinterpreted");
+
+const tierRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n", "src/api/index.py": "value = 1\n", "src/core/index.py": "value = 1\n" });
+const tierConfig = readJson(tierRoot, "hy-workflow.json");
+tierConfig.codelint.tiers = [
+  { name: "api", paths: ["src/api"] },
+  { name: "core", paths: ["src/core"] },
+];
+fs.writeFileSync(path.join(tierRoot, "hy-workflow.json"), JSON.stringify(tierConfig, null, 2) + "\n", "utf-8");
+assert(checkConfig(tierRoot).ok, "unique non-overlapping high-to-low tiers should validate");
+
+const overlappingTiers = readJson(tierRoot, "hy-workflow.json");
+overlappingTiers.codelint.tiers = [
+  { name: "api", paths: ["src"] },
+  { name: "api", paths: ["src/core"] },
+];
+fs.writeFileSync(path.join(tierRoot, "hy-workflow.json"), JSON.stringify(overlappingTiers, null, 2) + "\n", "utf-8");
+const tierIssues = checkConfig(tierRoot).issues;
+assert(tierIssues.some(issue => issue.includes("names must be unique")), "tier names must be globally unique");
+assert(tierIssues.some(issue => issue.includes("paths must not duplicate or overlap")), "tier paths must be globally non-overlapping");
+
 const invalidApplyRoot = tempRoot();
 const invalidApply = runConfigCli(["--apply-suggested", "--json", "--base-branch", "dev;touch"], invalidApplyRoot);
 assert(invalidApply.exitCode === 1, "invalid apply should exit nonzero");
@@ -239,6 +278,8 @@ assert(migrated.ok, "the migrated root config should pass validation");
 assert(readUnifiedConfig(legacyLocalRoot)?.keep.owner === "user", "runtime config reads should use the migrated root config");
 assert(readJson(legacyLocalRoot, "hy-workflow.json").keep.owner === "user", "local migration should preserve unknown fields");
 assert(readJson(legacyLocalRoot, "hy-workflow.json").codelint.maxLines === 321, "local migration should preserve known user choices");
+assert(readUnifiedConfig(legacyLocalRoot)?.codelint.maxLinesError === 321, "legacy codelint.maxLines must remain the effective hard threshold");
+assert(readUnifiedConfig(legacyLocalRoot)?.doclint.maxLinesError === 123, "legacy doclint.maxLines must remain the effective hard threshold");
 assert(fs.readFileSync(legacyLocalPath, "utf-8") === legacyLocalBefore, "migration should not rewrite or delete the legacy local config");
 
 const missingRuntimeRoot = tempRoot();
@@ -246,16 +287,15 @@ fs.writeFileSync(path.join(missingRuntimeRoot, "codelint.json"), JSON.stringify(
   baseBranch: "legacy-main", codeExt: ".py", codeDirs: ["src"], lintDirs: ["src"],
 }, null, 2) + "\n", "utf-8");
 const missingRuntimeCompat = fs.readFileSync(path.join(missingRuntimeRoot, "codelint.json"), "utf-8");
-let missingRuntimeCalled = false;
 let missingRuntimeError: any = null;
 try {
-  withRuntimeCompatConfigs(missingRuntimeRoot, () => { missingRuntimeCalled = true; });
+  requireRuntimeConfig(missingRuntimeRoot);
 } catch (error) {
   missingRuntimeError = error;
 }
-assert(!missingRuntimeCalled, "runtime compat callback must not execute when root config is missing");
 assert(missingRuntimeError?.type === "config" && missingRuntimeError?.subtype === "config_invalid" && missingRuntimeError?.code === "ROOT_CONFIG_REQUIRED", `missing root config should throw a structured error: ${JSON.stringify(missingRuntimeError)}`);
-assert(fs.readFileSync(path.join(missingRuntimeRoot, "codelint.json"), "utf-8") === missingRuntimeCompat, "missing root config must not mutate legacy compatibility files");
+assert(fs.readFileSync(path.join(missingRuntimeRoot, "codelint.json"), "utf-8") === missingRuntimeCompat, "runtime config reads must not mutate legacy compatibility files");
+assert(!exists(missingRuntimeRoot, "doclint.json") && !exists(missingRuntimeRoot, "docs-gardener.json"), "runtime config reads must not materialize compatibility files");
 
 const incompleteRuntimeRoot = tempRoot();
 fs.writeFileSync(path.join(incompleteRuntimeRoot, "hy-workflow.json"), JSON.stringify({
@@ -264,14 +304,12 @@ fs.writeFileSync(path.join(incompleteRuntimeRoot, "hy-workflow.json"), JSON.stri
 fs.writeFileSync(path.join(incompleteRuntimeRoot, "codelint.json"), JSON.stringify({
   codeExt: ".py", codeDirs: ["src"], lintDirs: ["src"],
 }, null, 2) + "\n", "utf-8");
-let incompleteRuntimeCalled = false;
 let incompleteRuntimeError: any = null;
 try {
-  withRuntimeCompatConfigs(incompleteRuntimeRoot, () => { incompleteRuntimeCalled = true; });
+  requireRuntimeConfig(incompleteRuntimeRoot);
 } catch (error) {
   incompleteRuntimeError = error;
 }
-assert(!incompleteRuntimeCalled, "runtime compat callback must not execute when required root fields are missing");
 assert(readUnifiedConfig(incompleteRuntimeRoot) === null, "runtime config reads must reject root config with missing required fields");
 assert(incompleteRuntimeError?.code === "ROOT_CONFIG_INVALID", `incomplete root config should throw ROOT_CONFIG_INVALID: ${JSON.stringify(incompleteRuntimeError)}`);
 assert(incompleteRuntimeError?.detail?.issues?.some((issue: string) => issue.includes("project.codeExt is required at runtime")), "runtime config error should identify missing project.codeExt");
@@ -309,7 +347,8 @@ fs.writeFileSync(path.join(primaryPrecedenceRoot, "docs-gardener.json"), JSON.st
 const primaryCandidate = ensureConfigDefaults(primaryPrecedenceRoot, { dryRun: true });
 assert(primaryCandidate.ok, `valid root config should ignore stale compatibility values: ${primaryCandidate.issues.join(", ")}`);
 assert(primaryCandidate.candidate?.project.baseBranch === "dev" && primaryCandidate.candidate?.codelint.lintDirs.join(",") === "src", "root config defaults must not be backfilled from stale compatibility fields");
-assert(primaryCandidate.candidate?.codelint.maxLines === 500 && primaryCandidate.candidate?.doclint.maxLines === 200, "root config line limits must use canonical defaults rather than stale compatibility values");
+assert(primaryCandidate.candidate?.codelint.maxLinesWarning === 300 && primaryCandidate.candidate?.codelint.maxLinesError === 500, "code line limits must use canonical defaults rather than stale compatibility values");
+assert(primaryCandidate.candidate?.doclint.maxLinesWarning === 200 && primaryCandidate.candidate?.doclint.maxLinesError === 500, "doc line limits must use canonical defaults rather than stale compatibility values");
 assert(primaryCandidate.candidate?.docsGardener.catalogs.root[0] === "hy_init" && !primaryCandidate.candidate?.docsGardener.catalogs.stale, "root catalogs must not be influenced by stale compatibility catalogs");
 
 const malformedCompatRoot = tempRoot();
@@ -344,164 +383,10 @@ if (process.platform !== "win32") assert((fs.statSync(path.join(cliRoot, "hy-wor
 assert(!fs.existsSync(projectPaths(cliRoot).config), "config CLI should not create a new user-local project config");
 assert(!exists(cliRoot, "codelint.json"), "config CLI should not write root codelint compatibility file");
 assert(!exists(cliRoot, "doclint.json"), "config CLI should not write root doclint compatibility file");
-
-withRuntimeCompatConfigs(cliRoot, () => {
-  assert(readJson(cliRoot, "codelint.json").codeExt === ".py", "runtime compat should materialize codelint from unified config");
-  assert(readJson(cliRoot, "doclint.json").codeDirs[0] === "src", "runtime compat should materialize doclint from unified config");
-});
-assert(!exists(cliRoot, "codelint.json"), "runtime compat should clean up generated codelint file");
-assert(!exists(cliRoot, "doclint.json"), "runtime compat should clean up generated doclint file");
-
-const staleCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-fs.writeFileSync(path.join(staleCompatRoot, "codelint.json"), JSON.stringify({ codeExt: ".ts", codeDirs: ["old-src"], keep: true }, null, 2) + "\n", "utf-8");
-const staleCompatBefore = fs.readFileSync(path.join(staleCompatRoot, "codelint.json"), "utf-8");
-withRuntimeCompatConfigs(staleCompatRoot, () => {
-  const runtime = readJson(staleCompatRoot, "codelint.json");
-  assert(runtime.codeExt === ".py", "runtime compat should overwrite stale codeExt from unified config while running");
-  assert(runtime.codeDirs[0] === "src", "runtime compat should overwrite stale codeDirs from unified config while running");
-  assert(runtime.keep === true, "runtime compat should preserve unrelated existing compatibility fields while running");
-});
-assert(fs.readFileSync(path.join(staleCompatRoot, "codelint.json"), "utf-8") === staleCompatBefore, "runtime compat should restore stale existing codelint after run");
-
-const crashCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-const crashOriginal = "{\n  \"owner\": \"before-crash\"\n}\n";
-const crashCodelint = path.join(crashCompatRoot, "codelint.json");
-fs.writeFileSync(crashCodelint, crashOriginal, { encoding: "utf-8", mode: 0o640 });
-const crashMarker = path.join(runtimeHome, `compat-crash-${Date.now()}.ready`);
-const configModule = pathToFileURL(path.resolve("src/config.ts")).href;
-const crashScript = [
-  `import fs from ${JSON.stringify("node:fs")};`,
-  `import { withRuntimeCompatConfigs } from ${JSON.stringify(configModule)};`,
-  `withRuntimeCompatConfigs(${JSON.stringify(crashCompatRoot)}, () => {`,
-  `  fs.writeFileSync(${JSON.stringify(crashMarker)}, "ready");`,
-  "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);",
-  "});",
-].join("\n");
-const crashChild = spawn(process.execPath, [path.resolve("node_modules/tsx/dist/cli.mjs"), "--eval", crashScript], {
-  cwd: path.resolve("."),
-  env: { ...process.env },
-  stdio: ["ignore", "pipe", "pipe"],
-  detached: process.platform !== "win32",
-});
-let crashOutput = "";
-crashChild.stdout.on("data", chunk => { crashOutput += chunk.toString(); });
-crashChild.stderr.on("data", chunk => { crashOutput += chunk.toString(); });
-let crashExited = false;
-crashChild.on("exit", () => { crashExited = true; });
-const crashClosed = new Promise<void>(resolve => crashChild.once("close", () => resolve()));
-try {
-  const crashDeadline = Date.now() + 8_000;
-  while (!fs.existsSync(crashMarker) && !crashExited && Date.now() < crashDeadline) await new Promise(resolve => setTimeout(resolve, 20));
-  assert(fs.existsSync(crashMarker), `compat crash helper did not materialize files: ${crashOutput}`);
-} finally {
-  if (!crashExited) {
-    if (process.platform === "win32") crashChild.kill("SIGKILL");
-    else process.kill(-crashChild.pid!, "SIGKILL");
-  }
-  await crashClosed;
-}
-assert(fs.existsSync(path.join(crashCompatRoot, "doclint.json")), "SIGKILL fixture must leave generated compat evidence before recovery");
-const crashRecovered = recoverRuntimeCompatConfigs(crashCompatRoot);
-assert(crashRecovered.recovered, "next invocation must consume the crash recovery journal");
-assert(fs.readFileSync(crashCodelint, "utf-8") === crashOriginal, "crash recovery must restore existing compat bytes");
-assert((fs.statSync(crashCodelint).mode & 0o777) === 0o640, "crash recovery must restore existing compat mode");
-assert(!exists(crashCompatRoot, "doclint.json") && !exists(crashCompatRoot, "docs-gardener.json"), "crash recovery must remove generated compat files");
-
-const callbackFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-const callbackCodelintText = "{\n  \"owner\": \"existing\"\n}\n";
-fs.writeFileSync(path.join(callbackFailureRoot, "codelint.json"), callbackCodelintText, "utf-8");
-const callbackFailure = new Error("runtime callback failed");
-let callbackFailureCaught: unknown;
-try {
-  withRuntimeCompatConfigs(callbackFailureRoot, () => { throw callbackFailure; });
-} catch (error) {
-  callbackFailureCaught = error;
-}
-assert(callbackFailureCaught === callbackFailure, "runtime callback error should be rethrown after restoration");
-assert(fs.readFileSync(path.join(callbackFailureRoot, "codelint.json"), "utf-8") === callbackCodelintText, "callback failure must restore an existing compat file byte-for-byte");
-assert(!exists(callbackFailureRoot, "doclint.json") && !exists(callbackFailureRoot, "docs-gardener.json"), "callback failure must remove generated compat files that did not exist before the run");
-
-const materializeFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-const originalWriteFileSync = fsDefault.writeFileSync;
-const materializeFailure = new Error("doclint materialization failed");
-const failingPath = path.join(materializeFailureRoot, "doclint.json");
-let materializeCallbackCalled = false;
-let materializeFailureCaught: unknown;
-let injectedFailure = false;
-try {
-  (fsDefault as any).writeFileSync = (...args: any[]) => {
-    if (!injectedFailure && path.resolve(String(args[0])).startsWith(path.resolve(failingPath) + ".")) {
-      injectedFailure = true;
-      throw materializeFailure;
-    }
-    return (originalWriteFileSync as any)(...args);
-  };
-  syncBuiltinESMExports();
-  withRuntimeCompatConfigs(materializeFailureRoot, () => { materializeCallbackCalled = true; });
-} catch (error) {
-  materializeFailureCaught = error;
-} finally {
-  (fsDefault as any).writeFileSync = originalWriteFileSync;
-  syncBuiltinESMExports();
-}
-assert(materializeFailureCaught === materializeFailure, "materialization error should remain visible after earlier compat files are restored");
-assert(!materializeCallbackCalled, "runtime callback must not run after partial compat materialization fails");
-assert(!exists(materializeFailureRoot, "codelint.json") && !exists(materializeFailureRoot, "doclint.json") && !exists(materializeFailureRoot, "docs-gardener.json"), "partial materialization failure must restore all compat paths to their original absent state");
-
-const restoreFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-fs.writeFileSync(path.join(restoreFailureRoot, "codelint.json"), "{\n  \"owner\": \"original\"\n}\n", "utf-8");
-const restoreFailure = new Error("codelint restoration failed");
-let restoreWrites = 0;
-let restoreFailureCaught: unknown;
-try {
-  (fsDefault as any).writeFileSync = (...args: any[]) => {
-    if (path.resolve(String(args[0])).startsWith(path.resolve(path.join(restoreFailureRoot, "codelint.json")) + ".") && ++restoreWrites === 2) throw restoreFailure;
-    return (originalWriteFileSync as any)(...args);
-  };
-  syncBuiltinESMExports();
-  withRuntimeCompatConfigs(restoreFailureRoot, () => "ok");
-} catch (error) {
-  restoreFailureCaught = error;
-} finally {
-  (fsDefault as any).writeFileSync = originalWriteFileSync;
-  syncBuiltinESMExports();
-}
-assert((restoreFailureCaught as any)?.code === "RUNTIME_COMPAT_RECOVERY_REQUIRED", "a standalone restoration failure must retain a durable recovery gate");
-assert(!exists(restoreFailureRoot, "doclint.json") && !exists(restoreFailureRoot, "docs-gardener.json"), "one restoration failure must not prevent the other snapshots from being restored");
-assert(recoverRuntimeCompatConfigs(restoreFailureRoot).recovered, "retry after a transient restoration failure must consume the durable journal");
-assert(readJson(restoreFailureRoot, "codelint.json").owner === "original", "durable retry must restore the original codelint content");
-
-const combinedFailureRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-fs.writeFileSync(path.join(combinedFailureRoot, "codelint.json"), "{\n  \"owner\": \"original\"\n}\n", "utf-8");
-const operationFailure = new Error("runtime operation failed");
-const combinedRestoreFailure = new Error("combined restoration failed");
-let combinedWrites = 0;
-let combinedFailureCaught: unknown;
-try {
-  (fsDefault as any).writeFileSync = (...args: any[]) => {
-    if (path.resolve(String(args[0])).startsWith(path.resolve(path.join(combinedFailureRoot, "codelint.json")) + ".") && ++combinedWrites === 2) throw combinedRestoreFailure;
-    return (originalWriteFileSync as any)(...args);
-  };
-  syncBuiltinESMExports();
-  withRuntimeCompatConfigs(combinedFailureRoot, () => { throw operationFailure; });
-} catch (error) {
-  combinedFailureCaught = error;
-} finally {
-  (fsDefault as any).writeFileSync = originalWriteFileSync;
-  syncBuiltinESMExports();
-}
-assert(combinedFailureCaught instanceof AggregateError, "operation plus restoration failure must use AggregateError");
-assert((combinedFailureCaught as AggregateError).errors[0] === operationFailure && (combinedFailureCaught as AggregateError).errors.some((error: any) => error?.code === "RUNTIME_COMPAT_RECOVERY_REQUIRED"), "AggregateError must retain the operation and durable recovery error");
-assert(!exists(combinedFailureRoot, "doclint.json") && !exists(combinedFailureRoot, "docs-gardener.json"), "combined failure must still restore every unaffected snapshot");
-assert(recoverRuntimeCompatConfigs(combinedFailureRoot).recovered, "combined failure journal must be recoverable on the next invocation");
-
-const invalidCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-fs.writeFileSync(path.join(invalidCompatRoot, "codelint.json"), "{ invalid compatibility json\n", "utf-8");
-const invalidCompatBefore = fs.readFileSync(path.join(invalidCompatRoot, "codelint.json"), "utf-8");
-withRuntimeCompatConfigs(invalidCompatRoot, () => {
-  assert(readJson(invalidCompatRoot, "codelint.json").codeExt === ".py", "runtime compat should replace invalid existing codelint while running");
-});
-assert(fs.readFileSync(path.join(invalidCompatRoot, "codelint.json"), "utf-8") === invalidCompatBefore, "runtime compat should restore invalid existing codelint after run");
+assert(readJson(cliRoot, "hy-workflow.json").codelint.maxLinesWarning === 300 && readJson(cliRoot, "hy-workflow.json").codelint.maxLinesError === 500, "new config must write explicit code warning and error thresholds");
+assert(readJson(cliRoot, "hy-workflow.json").doclint.maxLinesWarning === 200 && readJson(cliRoot, "hy-workflow.json").doclint.maxLinesError === 500, "new config must write explicit docs warning and error thresholds");
+requireRuntimeConfig(cliRoot);
+assert(!exists(cliRoot, "codelint.json") && !exists(cliRoot, "doclint.json") && !exists(cliRoot, "docs-gardener.json"), "runtime config reads must not materialize compatibility files");
 
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");
@@ -580,16 +465,6 @@ if (process.platform !== "win32") {
   assert(linkedConfigApply.exitCode === 1, "config apply must not follow a root config symlink");
   assert(fs.readFileSync(outsideConfig, "utf-8") === outsideContent, "rejected config apply must not modify the symlink target");
 
-  const linkedCompatRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
-  const outsideCompat = path.join(outside, "codelint.json");
-  const outsideCompatContent = "{\"owner\":\"outside\"}\n";
-  fs.writeFileSync(outsideCompat, outsideCompatContent);
-  fs.symlinkSync(outsideCompat, path.join(linkedCompatRoot, "codelint.json"));
-  let linkedCompatError: any = null;
-  try { withRuntimeCompatConfigs(linkedCompatRoot, () => undefined); } catch (error) { linkedCompatError = error; }
-  assert(linkedCompatError?.code === "RUNTIME_COMPAT_PATH_UNSAFE", "runtime compat symlink must fail with a stable recovery code");
-  assert(fs.readFileSync(outsideCompat, "utf-8") === outsideCompatContent, "runtime compat rejection must not modify an external symlink target");
-  assert(!exists(linkedCompatRoot, "doclint.json") && !exists(linkedCompatRoot, "docs-gardener.json"), "runtime compat symlink rejection must occur before any project write");
 }
 
 const customDocsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-custom-docs-"));
@@ -619,18 +494,11 @@ assert(customDocsAfter.keep.owner === "team" && customDocsAfter.docsGardener.cat
 const tkspRoot = configuredRoot(".tksp", { "src/main.tksp": "module demo\n" });
 const tkspCheck = checkConfig(tkspRoot);
 assert(tkspCheck.ok, `.tksp config should be accepted: ${tkspCheck.issues.join(", ")}`);
-withRuntimeCompatConfigs(tkspRoot, () => {
-  assert(readJson(tkspRoot, "codelint.json").codeExt === ".tksp", "runtime compat should preserve .tksp codeExt");
-});
-assert(!exists(tkspRoot, "codelint.json"), "runtime compat should clean up tksp codelint file");
 
 const tkspTsRoot = configuredRoot([".tksp", ".ts"], { "src/main.tksp": "module demo\n", "src/index.ts": "export {};\n" });
 const tkspTsCheck = checkConfig(tkspTsRoot);
 assert(tkspTsCheck.ok, `.tksp + .ts array config should be accepted: ${tkspTsCheck.issues.join(", ")}`);
 assert(Array.isArray(readJson(tkspTsRoot, "hy-workflow.json").project.codeExt), "unified config should preserve array codeExt");
-withRuntimeCompatConfigs(tkspTsRoot, () => {
-  assert(Array.isArray(readJson(tkspTsRoot, "doclint.json").codeExt), "doclint compatibility artifact should preserve array codeExt when configured that way");
-});
 
 const commaRoot = configuredRoot(".tksp,.ts", { "src/main.tksp": "module demo\n", "src/index.ts": "export {};\n" });
 const commaCheck = checkConfig(commaRoot);

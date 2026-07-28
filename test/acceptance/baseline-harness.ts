@@ -23,13 +23,13 @@ export function writeFixture(root: string, fixture: any): void {
       : relative.endsWith(".json") ? "{}\n"
       : relative.endsWith(".py") ? "value = 1\n"
       : relative.endsWith(".rs") ? "pub const VALUE: i32 = 1;\n"
-      : relative.endsWith(".ts") || relative.endsWith(".js") ? "export const value = 1;\n" : "";
+      : relative.endsWith(".ts") || relative.endsWith(".tsx") || relative.endsWith(".js") ? "export const value = 1;\n" : "";
     writeFileSync(target, content);
   }
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
     project: { baseBranch: fixture.branch, codeExt: fixture.codeExt, codeDirs: fixture.codeDirs, docsDir: fixture.docsDir },
-    codelint: { lintDirs: fixture.codeDirs, maxLines: 500 },
-    doclint: { maxLines: 200 },
+    codelint: { lintDirs: fixture.codeDirs, maxLinesWarning: 300, maxLinesError: 500 },
+    doclint: { maxLinesWarning: 200, maxLinesError: 500 },
     docsGardener: { catalogs: {} },
     ci: { commands: ["node --version"] },
   }, null, 2) + "\n");

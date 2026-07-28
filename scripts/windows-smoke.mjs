@@ -54,7 +54,7 @@ assert(/^\d+\.\d+\.\d+/.test(npmVersion), `npm CLI returned an invalid version: 
 for (const test of [
   "test/unit/compile-lint-checks.ts",
   "test/unit/project-profile.ts",
-  "test/unit/doclint-output.ts",
+  "test/unit/lint-cli.ts",
   "test/unit/setup-clients.ts",
   "test/e2e/setup-project-artifacts.ts",
   "test/contract/npm-release-provenance.ts",
@@ -129,8 +129,8 @@ try {
   writeFileSync(join(project, "package.json"), JSON.stringify({ name: "windows-smoke-fixture", private: true, type: "module" }, null, 2) + "\n", "utf8");
   const config = {
     project: { baseBranch: "main", codeExt: ".js", codeDirs: ["src"], docsDir: "docs" },
-    codelint: { lintDirs: ["src"], maxLines: 500 },
-    doclint: { maxLines: 200 },
+    codelint: { lintDirs: ["src"], maxLinesWarning: 300, maxLinesError: 500 },
+    doclint: { maxLinesWarning: 200, maxLinesError: 500 },
     docsGardener: { catalogs: {} },
     ci: { commands: ["node --version"] },
   };
@@ -141,6 +141,9 @@ try {
   run("git name", "git", ["config", "user.name", "Windows Smoke"], { cwd: project, env, timeout: 30_000 });
   run("git add", "git", ["add", "."], { cwd: project, env, timeout: 30_000 });
   run("git commit", "git", ["commit", "-m", "fixture"], { cwd: project, env, timeout: 30_000 });
+
+  const lint = runJson("installed lint", process.execPath, [installedServer, "lint", "--json"], { cwd: project, env, timeout: 120_000 });
+  assert(lint.schema === "hy-workflow.lint.v1" && lint.counts?.checks === 10 && lint.counts?.errors === 0 && lint.counts?.docs > 0, "installed tarball lint did not return the clean ten-rule report");
 
   const setupArgs = [installedServer, "setup", "--yes", "--clients", "codex", "--json", "--language", "en"];
   let setup;

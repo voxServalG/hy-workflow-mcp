@@ -71,7 +71,10 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
     "No supported project ecosystem detected",
     "No native verification command detected",
     "ci.commands must be a non-empty string array",
-    "files <= 0",
+    "hy-workflow.lint.v1",
+    "report.counts.docs <= 0",
+    "report.ok !== true",
+    "report.counts.errors > 0",
   ]) {
     if (!ci.includes(token)) {
       findings.push({ rule: "workflow", severity: "hard_fail", message: "Required CI must fail closed: missing " + token + ".", file: "templates/hy-workflow.yml" });

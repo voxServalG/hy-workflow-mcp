@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import type { AcceptanceRepo, AcceptanceWorkspace } from "./harness.js";
-import { validateLintPressureEnvelope, type LintPressureSummary, type LintPressureTool } from "./lint-report.js";
+import { validateLintPressureEnvelope, type LintPressureSummary } from "./lint-report.js";
 import {
   assertProjectBoundary,
   assertWorkspaceDiskBudget,
@@ -40,8 +40,7 @@ type TestOwnedMigration = {
 const MANAGED_RULES_BLOCK = /<!-- hy-workflow-rules -->[\s\S]*?<!-- \/hy-workflow-rules -->/;
 const COMPAT_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"] as const;
 const LINT_PRESSURE_TIMEOUT_MS = 120_000;
-const LINT_PREPARATION_TIMEOUT_MS = 240_000;
-const LINT_PREPARATION_ATTEMPTS = 2;
+const DEPENDENCY_SCANNER_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs"]);
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -110,74 +109,37 @@ function assertCompatibilityUnchanged(root: string, before: Map<string, Buffer |
   }
 }
 
-export async function prepareLintPressurePackages(workspace: AcceptanceWorkspace): Promise<Array<Record<string, unknown>>> {
-  const prepared: Array<Record<string, unknown>> = [];
-  for (const tool of ["doclint", "codelint"] as LintPressureTool[]) {
-    let envelope: any = null;
-    let failure = "";
-    let attempts = 0;
-    for (let attempt = 1; attempt <= LINT_PREPARATION_ATTEMPTS; attempt += 1) {
-      attempts = attempt;
-      const result = await run(process.execPath, [
-        join(workspace.sourceRoot, "test", "acceptance", "lint-pressure-child.mjs"),
-        tool,
-        "prepare",
-      ], {
-        cwd: workspace.sourceRoot,
-        env: { ...workspace.env, HY_ACCEPTANCE_LINT_TIMEOUT_MS: String(LINT_PREPARATION_TIMEOUT_MS) },
-        timeoutMs: LINT_PREPARATION_TIMEOUT_MS + 15_000,
-        allowFailure: true,
-      });
-      if (!result.timedOut && result.status === 0) {
-        envelope = parseJsonOutput(result.stdout);
-        break;
-      }
-      failure = `attempt ${attempt}/${LINT_PREPARATION_ATTEMPTS}: ${(result.stderr || result.stdout).slice(-4_000)}`;
-    }
-    assert(envelope, tool + " immutable codeload package preparation failed: " + failure);
-    assert(envelope.tool === tool && envelope.mode === "prepare" && envelope.status === 0 && envelope.timedOut === false, tool + " preparation returned invalid evidence");
-    assert(typeof envelope.source === "string" && /^https:\/\/codeload\.github\.com\/voxServalG\/(?:doclint|codelint)\/tar\.gz\/[0-9a-f]{40}$/.test(envelope.source), tool + " preparation source is not an immutable codeload commit");
-    assert(envelope.phase === "dependencies" && /^[0-9a-f]{128}$/.test(envelope.expectedSha512) && envelope.archiveSha512 === envelope.expectedSha512, tool + " preparation did not verify the downloaded archive SHA-512");
-    assert(typeof envelope.archive === "string" && relative(workspace.root, envelope.archive).replace(/\\/g, "/").startsWith("lint-archives/"), tool + " preparation escaped the isolated archive directory");
-    assert(Number.isFinite(envelope.durationMs) && envelope.durationMs >= 0 && envelope.durationMs <= LINT_PREPARATION_TIMEOUT_MS, tool + " preparation exceeded its network budget");
-    prepared.push({ tool, source: envelope.source, sha512: envelope.archiveSha512, attempts, durationMs: envelope.durationMs });
-  }
-  return prepared;
-}
-
 async function runRepositoryLintPressure(
   workspace: AcceptanceWorkspace,
   root: string,
   repo: AcceptanceRepo,
-): Promise<LintPressureSummary[]> {
-  const summaries: LintPressureSummary[] = [];
-  for (const tool of ["doclint", "codelint"] as LintPressureTool[]) {
-    const before = compatibilitySnapshot(root);
-    const result = await run(process.execPath, [
-      join(workspace.sourceRoot, "test", "acceptance", "lint-pressure-child.mjs"),
-      tool,
-      "scan",
-    ], {
-      cwd: root,
-      env: { ...workspace.env, HY_ACCEPTANCE_LINT_TIMEOUT_MS: String(LINT_PRESSURE_TIMEOUT_MS) },
-      timeoutMs: LINT_PRESSURE_TIMEOUT_MS + 15_000,
-      allowFailure: true,
-    });
-    assertCompatibilityUnchanged(root, before, repo.id + " " + tool);
-    assert(!result.timedOut, repo.id + " " + tool + " child exceeded the outer timeout");
-    assert(result.status === 0, repo.id + " " + tool + " child crashed: " + (result.stderr || result.stdout).slice(-4_000));
-    const envelope = parseJsonOutput(result.stdout);
-    const summary = validateLintPressureEnvelope(envelope, tool, repo.category === "legacy", LINT_PRESSURE_TIMEOUT_MS);
-    if (tool === "codelint") {
-      const supported = repo.ecosystem === "python" || repo.ecosystem === "rust";
-      assert(summary.notApplicable === !supported, repo.id + " codelint applicability drifted from the pinned Python/Rust support matrix");
-      assert(summary.projectFiles > 0, repo.id + " installed project profile found no actual configured code files");
-      if (supported) assert(summary.files > 0 && summary.supportedFiles > 0, repo.id + " codelint did not scan supported code");
-      else assert(summary.files === 0 && summary.supportedFiles === 0, repo.id + " unsupported codelint target was not an honest N/A");
-    }
-    summaries.push(summary);
+): Promise<LintPressureSummary> {
+  const before = compatibilitySnapshot(root);
+  const result = await run("hy-workflow", ["lint", "--json"], {
+    cwd: root,
+    env: workspace.env,
+    timeoutMs: LINT_PRESSURE_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  assertCompatibilityUnchanged(root, before, repo.id + " built-in lint");
+  assert(!result.timedOut, repo.id + " built-in lint exceeded the outer timeout");
+  const report = parseJsonOutput(result.stdout);
+  const summary = validateLintPressureEnvelope({
+    status: result.status,
+    timedOut: result.timedOut,
+    durationMs: result.durationMs,
+    report,
+  }, LINT_PRESSURE_TIMEOUT_MS);
+  const supported = repo.expected.codeExt.some(extension => DEPENDENCY_SCANNER_EXTENSIONS.has(extension));
+  assert(summary.code > 0, repo.id + " built-in lint found no configured code files");
+  if (supported) {
+    assert(!summary.notApplicableRules.includes("C004"), repo.id + " supported dependency graph was reported as N/A");
+    assert(!summary.notApplicableRules.includes("C005"), repo.id + " supported scanner was reported as N/A");
+  } else {
+    assert(summary.notApplicableRules.includes("C004"), repo.id + " unsupported language did not report an honest C004 N/A");
+    assert(summary.notApplicableRules.includes("C005"), repo.id + " unsupported language did not report an honest C005 N/A");
   }
-  return summaries;
+  return summary;
 }
 
 export function isolatedUserStateFingerprint(workspace: AcceptanceWorkspace): string {
@@ -686,8 +648,8 @@ export async function createFixture(workspace: AcceptanceWorkspace, name: string
   if (includeConfig) {
     writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
       project: { baseBranch: "main", codeExt: ".js", codeDirs: ["src"], docsDir: "docs" },
-      codelint: { lintDirs: ["src"], maxLines: 500 },
-      doclint: { maxLines: 200 },
+      codelint: { lintDirs: ["src"], maxLinesWarning: 300, maxLinesError: 500 },
+      doclint: { maxLinesWarning: 200, maxLinesError: 500 },
       docsGardener: { catalogs: {} },
       ci: { commands: ["npm test"] },
     }, null, 2) + "\n");

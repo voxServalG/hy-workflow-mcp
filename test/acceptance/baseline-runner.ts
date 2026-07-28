@@ -6,7 +6,7 @@ import { runBaselineFixture } from "./baseline-scenarios.js";
 
 const sourceRoot = process.cwd();
 const matrix = JSON.parse(readFileSync(join(sourceRoot, "test", "acceptance", "baseline-matrix.json"), "utf8"));
-if (matrix?.schemaVersion !== "1" || !Array.isArray(matrix.fixtures) || matrix.fixtures.length < 5) throw new Error("Acceptance baseline matrix must contain at least five fixtures");
+if (matrix?.schemaVersion !== "1" || !Array.isArray(matrix.fixtures) || matrix.fixtures.length < 6) throw new Error("Acceptance baseline matrix must contain at least six fixtures");
 const incidents = matrix.fixtures.map((fixture: any) => fixture.incident);
 if (incidents.some((id: unknown) => typeof id !== "string" || !String(id).startsWith("INC-")) || new Set(incidents).size !== incidents.length) throw new Error("Acceptance baseline incidents must be unique INC-* identifiers");
 const workspace = createWorkspace(sourceRoot);

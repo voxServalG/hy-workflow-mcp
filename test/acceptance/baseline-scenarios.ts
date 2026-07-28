@@ -29,10 +29,17 @@ export async function runBaselineFixture(workspace: AcceptanceWorkspace, fixture
   await assertProjectBoundary(root, workspace.env);
   const doctor = await run("hy-workflow", ["doctor", "--offline", "--json"], { cwd: root, env: workspace.env });
   assert(parseJsonOutput(doctor.stdout).ok === true, `${fixture.id} doctor failed`);
+  const lint = await run("hy-workflow", ["lint", "--json"], { cwd: root, env: workspace.env, allowFailure: true });
+  const lintReport = parseJsonOutput(lint.stdout);
+  assert(lint.status === 0, `${fixture.id} built-in lint failed: ${lint.stderr || lint.stdout}`);
+  assert(lintReport.schema === "hy-workflow.lint.v1" && lintReport.version === 1, `${fixture.id} lint report schema drift`);
+  assert(lintReport.ok === true && lintReport.counts?.errors === 0 && lintReport.counts?.docs > 0, `${fixture.id} lint report was not a clean documented scan`);
+  assert(Array.isArray(lintReport.checks) && lintReport.checks.length === 10, `${fixture.id} lint did not report D001-D005/C001-C005`);
+  for (const runtime of ["codelint.json", "doclint.json", "docs-gardener.json"]) assert(!existsSync(join(root, runtime)), `${fixture.id} lint created ${runtime}`);
   await run("hy-workflow", ["unset", "--yes", "--clients", "all", "--remove-global", "--json", "--language", "en"], { cwd: root, env: workspace.env });
   for (const artifact of ["hy-workflow.json", ".github/workflows/hy-workflow.yml", "AGENTS.md"]) assert(existsSync(join(root, artifact)), `${fixture.id} unset removed ${artifact}`);
   for (const runtime of [".hy", ".codex", ".mcp.json", "codelint.json", "doclint.json", "docs-gardener.json"]) assert(!existsSync(join(root, runtime)), `${fixture.id} left ${runtime}`);
   const config = JSON.parse(readFileSync(join(root, "hy-workflow.json"), "utf8"));
   assert(config.project.baseBranch === fixture.branch, `${fixture.id} base branch drift`);
-  return { name: fixture.id, incident: fixture.incident, durationMs: Date.now() - started };
+  return { name: fixture.id, incident: fixture.incident, lint: lintReport.counts, durationMs: Date.now() - started };
 }

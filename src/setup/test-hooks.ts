@@ -10,7 +10,6 @@ export type InternalSetupTestHooks = {
   afterDirectoryStage?: (target: string) => void;
   afterUnsetRegistryWrite?: () => void;
   beforeDirectoryCleanup?: (tombstone: string) => void;
-  beforeCompatWrite?: (file: string) => void;
   afterClientCommandBeforeJournal?: (client: string, server: string) => void;
 };
 
