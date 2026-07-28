@@ -39,7 +39,7 @@ MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be 
 
 旧 local/runtime artifacts 已被跟踪时仍返回诊断，但不会自动删除或改写。
 
-Artifact contract: setup 固定维护根 `hy-workflow.json`、`.github/workflows/hy-workflow.yml`，并在 `AGENTS.md` 中托管 `<!-- hy-workflow-rules -->` 块（块外内容团队所有，setup 自动迁移块内版本但不改写块外指令）。unset/hy_init 不删除或改写团队文件；deployment/state/cache、客户端配置和 compatibility JSON 不提交。
+Artifact contract: setup 固定维护根 `hy-workflow.json`、`.github/workflows/hy-workflow.yml`，并在 `AGENTS.md` 中托管 `<!-- hy-workflow-rules -->` 块（块外内容团队所有，setup 自动迁移块内版本但不改写块外指令）。unset/hy_init 不删除或改写团队文件；deployment/state/cache、客户端配置和 compatibility JSON 不提交。旧 lint JSON 仅作为 setup/config 的只读迁移或漂移输入，运行时和 CI 不物化它们。
 
 ## Session setup check
 
@@ -47,7 +47,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前都会检查 identity-scoped `depl
 
 ## Config CLI
 
-`hy-workflow config --check --json` 会只读检查 tracked files、manifests、origin HEAD/current/conventional refs、语言扩展、真实目录 casing 和根配置；mixed、unknown、非 conventional branch 或其他低置信 Git 推断必须显式确认。`project.codeExt` 可保留多扩展；可选 `ci.commands` 必须是已确认的非空单行数组，preserve-first apply 不改写人工值。compatibility JSON 仍只在旧 CLI 运行期临时生成并恢复。
+`hy-workflow config --check --json` 会只读检查 tracked files、manifests、origin HEAD/current/conventional refs、语言扩展、真实目录 casing 和根配置；mixed、unknown、非 conventional branch 或其他低置信 Git 推断必须显式确认。`project.codeExt` 可保留多扩展；可选 `ci.commands` 必须是已确认的非空单行数组，preserve-first apply 不改写人工值。旧 compatibility JSON 只用于读取迁移候选和漂移诊断，不会在 CLI 或 lint 期间生成或恢复。
 
 ## hy_read_docs
 
@@ -154,7 +154,7 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 - **pending/API 异常**: polling 超时后保持 `ci`，等待后重试 `hy_ci`
 - **返回**: 全绿 `{ next: "merge", allGreen: true, checks, display, hint }`；缺失/无有效 checks `{ next: "ci", allGreen: false, noChecks?, noEffectiveChecks?, error, requires_user: true, stop_here: true, recovery }`；pending `{ next: "ci", pending: true, requires_user: true, stop_here: true, recovery }`；失败 `{ next: "edit", failedChecks, requires_user: true, stop_here: true, recovery }`
 
-setup 生成的 workflow 必须执行 doclint 与 codelint。仓库管理员需在 GitHub ruleset 或 branch protection 中把 Verify check 设为 required；这是管理员动作，setup 不越权配置。
+setup 生成的 workflow 必须在确认的原生 CI 后离线执行内置 doclint 与 codelint，并且通用触发器只允许 pull request 与手动运行。仓库管理员需在 GitHub ruleset 或 branch protection 中把 Verify check 设为 required；这是管理员动作，setup 不越权配置。
 
 ## hy_merge
 

@@ -1,107 +1,96 @@
-export type LintPressureTool = "doclint" | "codelint";
-
 export type LintPressureSummary = {
-  tool: LintPressureTool;
   ok: boolean;
   status: number;
   files: number;
+  docs: number;
+  code: number;
   errors: number;
+  warnings: number;
   failed: number;
-  notApplicable: boolean;
-  projectFiles: number;
-  supportedFiles: number;
+  notApplicableRules: string[];
+  notConfiguredRules: string[];
   durationMs: number;
 };
 
-function numberFrom(...values: unknown[]): number | null {
-  for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim()) {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-  }
-  return null;
+const RULES = ["D001", "D002", "D003", "D004", "D005", "C001", "C002", "C003", "C004", "C005"] as const;
+const STATUSES = new Set(["passed", "failed", "warning", "not_applicable", "not_configured"]);
+
+function nonNegativeInteger(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || Number(value) < 0) throw new Error("built-in lint report has invalid " + label);
+  return Number(value);
 }
 
-function nestedNumber(report: any, key: string): number | null {
-  return numberFrom(
-    report?.data?.counts?.[key], report?.counts?.[key],
-    report?.data?.summary?.[key], report?.summary?.[key],
-    report?.data?.[key], report?.[key],
-  );
-}
-
-export function validateLintPressureEnvelope(
-  value: unknown,
-  expectedTool: LintPressureTool,
-  requireClean: boolean,
-  timeoutMs: number,
-): LintPressureSummary {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(expectedTool + " pressure child returned no structured envelope");
+export function validateLintPressureEnvelope(value: unknown, timeoutMs: number): LintPressureSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("built-in lint returned no structured execution envelope");
   const envelope = value as any;
-  if (envelope.tool !== expectedTool) throw new Error(expectedTool + " pressure child returned the wrong tool identity");
-  if (envelope.timedOut === true) throw new Error(expectedTool + " exceeded its pressure-test timeout");
-  if (!Number.isInteger(envelope.status) || envelope.status < 0) throw new Error(expectedTool + " crashed or returned no numeric exit status");
+  if (envelope.timedOut === true) throw new Error("built-in lint exceeded its pressure-test timeout");
+  if (!Number.isInteger(envelope.status) || envelope.status < 0) throw new Error("built-in lint crashed or returned no numeric exit status");
   if (!Number.isFinite(envelope.durationMs) || envelope.durationMs < 0 || envelope.durationMs > timeoutMs) {
-    throw new Error(expectedTool + " exceeded its measured execution budget");
+    throw new Error("built-in lint exceeded its measured execution budget");
   }
+
   const report = envelope.report;
-  if (!report || typeof report !== "object" || Array.isArray(report)) {
-    throw new Error(expectedTool + " returned an invalid JSON report shape");
+  if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("built-in lint returned invalid JSON");
+  if (report.schema !== "hy-workflow.lint.v1" || report.version !== 1 || typeof report.ok !== "boolean" || typeof report.root !== "string") {
+    throw new Error("built-in lint report schema is invalid");
   }
-  const hasOk = Object.prototype.hasOwnProperty.call(report, "ok");
-  if ((expectedTool === "doclint" && typeof report.ok !== "boolean")
-    || (expectedTool === "codelint" && hasOk && typeof report.ok !== "boolean")) {
-    throw new Error(expectedTool + " returned an invalid JSON report shape");
+  const counts = report.counts;
+  const files = nonNegativeInteger(counts?.files, "counts.files");
+  const docs = nonNegativeInteger(counts?.docs, "counts.docs");
+  const code = nonNegativeInteger(counts?.code, "counts.code");
+  const errors = nonNegativeInteger(counts?.errors, "counts.errors");
+  const warnings = nonNegativeInteger(counts?.warnings, "counts.warnings");
+  const failed = nonNegativeInteger(counts?.failed, "counts.failed");
+  const checksCount = nonNegativeInteger(counts?.checks, "counts.checks");
+  if (docs <= 0) throw new Error("built-in doclint scanned zero documentation files");
+  if (files < docs || files < code) throw new Error("built-in lint aggregate file counts are inconsistent");
+
+  if (!Array.isArray(report.checks) || report.checks.length !== RULES.length || checksCount !== RULES.length) {
+    throw new Error("built-in lint must report exactly D001-D005 and C001-C005");
   }
-  const errors = nestedNumber(report, "errors");
-  const failed = nestedNumber(report, "failed");
-  const files = numberFrom(
-    nestedNumber(report, "files"), nestedNumber(report, "total_files"),
-    nestedNumber(report, "totalFiles"), nestedNumber(report, "total"),
-  );
-  if (errors === null || errors < 0 || files === null || files < 0 || (expectedTool === "doclint" && (failed === null || failed < 0))) {
-    throw new Error(expectedTool + " report is missing non-negative counts");
+  const byRule = new Map<string, any>();
+  for (const check of report.checks) {
+    if (!check || typeof check !== "object" || !RULES.includes(check.rule) || byRule.has(check.rule)) throw new Error("built-in lint check identities are invalid");
+    if (!STATUSES.has(check.status)) throw new Error("built-in lint check status is invalid for " + check.rule);
+    nonNegativeInteger(check.files, check.rule + ".files");
+    nonNegativeInteger(check.errors, check.rule + ".errors");
+    nonNegativeInteger(check.warnings, check.rule + ".warnings");
+    if (typeof check.message !== "string" || !check.message.trim()) throw new Error("built-in lint check message is missing for " + check.rule);
+    byRule.set(check.rule, check);
   }
-  const failedCount = failed ?? errors;
-  if (failedCount < 0) throw new Error(expectedTool + " report contains a negative failed count");
-  const acceptedOk = expectedTool === "doclint" ? report.ok === true : !hasOk || report.ok === true;
-  let notApplicable = false;
-  let projectFiles = 0;
-  let supportedFiles = 0;
-  if (expectedTool === "doclint") {
-    if (files <= 0) throw new Error("doclint report contains no real scanned-file evidence");
-  } else {
-    const profile = envelope.projectProfile;
-    projectFiles = profile?.codeFiles;
-    supportedFiles = profile?.supportedCodeFiles;
-    if (!Number.isInteger(projectFiles) || projectFiles <= 0 || !Number.isInteger(supportedFiles) || supportedFiles < 0 || supportedFiles > projectFiles) {
-      throw new Error("codelint pressure child returned no trustworthy installed project-profile evidence");
-    }
-    notApplicable = supportedFiles === 0;
-    if (notApplicable && files !== 0) throw new Error("codelint scanned files outside its pinned Python/Rust support matrix");
-    if (!notApplicable && files <= 0) throw new Error("codelint scanned zero supported Python/Rust files");
-    if (!acceptedOk && (requireClean || errors === 0 || failedCount === 0 || envelope.status === 0)) {
-      throw new Error("codelint returned an explicit non-true ok value without consistent OSS finding evidence");
-    }
-    if (notApplicable && (errors !== 0 || failedCount !== 0 || envelope.status !== 0)) {
-      throw new Error("codelint N/A must be a structured zero-count successful invocation");
-    }
+  if (RULES.some(rule => !byRule.has(rule))) throw new Error("built-in lint check set is incomplete");
+  const failedChecks = report.checks.filter((check: any) => check.status === "failed").length;
+  if (failed !== failedChecks) throw new Error("built-in lint failed-check count is inconsistent");
+
+  if (!Array.isArray(report.findings)) throw new Error("built-in lint findings must be an array");
+  const findingKeys: string[] = [];
+  let findingErrors = 0;
+  let findingWarnings = 0;
+  for (const finding of report.findings) {
+    if (!finding || typeof finding !== "object" || !RULES.includes(finding.rule)) throw new Error("built-in lint finding rule is invalid");
+    if (finding.severity !== "error" && finding.severity !== "warning") throw new Error("built-in lint finding severity is invalid");
+    if (typeof finding.path !== "string" || typeof finding.message !== "string" || !finding.message.trim()) throw new Error("built-in lint finding payload is invalid");
+    if (finding.line !== undefined && (!Number.isInteger(finding.line) || finding.line < 1)) throw new Error("built-in lint finding line is invalid");
+    if (finding.severity === "error") findingErrors += 1;
+    else findingWarnings += 1;
+    findingKeys.push([finding.rule, finding.path, finding.line ?? 0, finding.message].join("\u0000"));
   }
-  const clean = !notApplicable && acceptedOk && errors === 0 && failedCount === 0;
-  if (envelope.status !== 0 && clean) throw new Error(expectedTool + " returned a failing exit status for a clean report");
-  if (requireClean && !notApplicable && !clean) throw new Error(expectedTool + " must pass on a maintained legacy target");
+  if (JSON.stringify(findingKeys) !== JSON.stringify([...findingKeys].sort())) throw new Error("built-in lint findings are not deterministically sorted");
+  if (errors !== findingErrors || warnings !== findingWarnings) throw new Error("built-in lint finding counts are inconsistent");
+  if (report.ok !== (errors === 0 && failed === 0)) throw new Error("built-in lint ok flag is inconsistent");
+  if ((envelope.status === 0) !== report.ok) throw new Error("built-in lint exit status is inconsistent with its report");
+
   return {
-    tool: expectedTool,
-    ok: clean,
+    ok: report.ok,
     status: envelope.status,
     files,
+    docs,
+    code,
     errors,
-    failed: failedCount,
-    notApplicable,
-    projectFiles,
-    supportedFiles,
+    warnings,
+    failed,
+    notApplicableRules: report.checks.filter((check: any) => check.status === "not_applicable").map((check: any) => check.rule),
+    notConfiguredRules: report.checks.filter((check: any) => check.status === "not_configured").map((check: any) => check.rule),
     durationMs: envelope.durationMs,
   };
 }

@@ -3,7 +3,7 @@ import { npmPackDryRun, readPackageJson } from "../../npm/package.js";
 import { trackedFiles } from "../../git.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
-const REQUIRED_SCRIPTS = ["clean", "build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "test:acceptance", "test:windows", "verify", "prepack", "prepublishOnly"];
+const REQUIRED_SCRIPTS = ["clean", "build", "lint", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "test:acceptance", "test:windows", "verify", "prepack", "prepublishOnly"];
 const FORBIDDEN_PACK_PREFIXES = [".hy/", ".opencode/", ".codex/", "test/", "src/", "node_modules/", "codelint.json", "doclint.json", "docs-gardener.json"];
 const REQUIRED_PACK_FILES = ["dist", "docs", "templates", "AGENTS.md", "README.md"];
 
@@ -42,6 +42,9 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
     }
     if (!packFiles.includes("templates/hy-workflow.yml")) {
       findings.push({ rule: "npm", severity: "hard_fail", message: "npm pack must include templates/hy-workflow.yml.", file: "package.json" });
+    }
+    for (const file of ["code.mjs", "docs.mjs", "fs.mjs", "index.mjs", "markdown.mjs", "python.mjs", "rust.mjs"]) {
+      if (!packFiles.includes(`templates/lint/${file}`)) findings.push({ rule: "npm", severity: "hard_fail", message: `npm pack must include templates/lint/${file}.`, file: "package.json" });
     }
     if (!packFiles.includes("AGENTS.md")) {
       findings.push({ rule: "npm", severity: "hard_fail", message: "npm pack must include the canonical managed AGENTS migration source.", file: "package.json" });
@@ -85,15 +88,20 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
   for (const [file, tokens] of Object.entries({
     "test/acceptance/runner.ts": ["packAndInstall", "--package-archive", "expectedScenarios", "skipped: []", "terminateAllAcceptanceChildren"],
     "test/acceptance/harness.ts": ["run(\"npm\", [\"pack\"", "run(\"npm\", [\"install\"", "GIT_TERMINAL_PROMPT", "CODEX_HOME", "git push", "npm publish"],
-    "test/acceptance/scenarios.ts": ["concurrency-32", "setup-failpoint-child.mjs", "runRepositoryLintPressure", "assertCompatibilityUnchanged", "hy_read_docs", "--accept-artifact-changes", "--review-artifact", "--ci-command", "--print-managed-rules"],
+    "test/acceptance/scenarios.ts": ["concurrency-32", "setup-failpoint-child.mjs", "runRepositoryLintPressure", "assertCompatibilityUnchanged", 'run("hy-workflow", ["lint", "--json"]', "hy_read_docs", "--accept-artifact-changes", "--review-artifact", "--ci-command", "--print-managed-rules"],
     "test/acceptance/setup-failpoint-child.mjs": ["internal-setup-test-hooks", "dist", "setup-cli.js", "runSetupCli"],
-    "test/acceptance/lint-pressure-child.mjs": ["HY_ACCEPTANCE_PACKAGE_ROOT", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "checks.js", "config.js", "project-profile.js", "inspectProject", "withRuntimeCompatConfigs", "DOCLINT_SOURCE", "CODELINT_SOURCE", "DOCLINT_INTEGRITY_SHA512", "CODELINT_INTEGRITY_SHA512", "curl", "--retry", "--package=", "--offline"],
-    "test/acceptance/lint-report.ts": ["validateLintPressureEnvelope", "notApplicable", "supported Python/Rust files", "must pass on a maintained legacy target"],
+    "test/acceptance/lint-report.ts": ["validateLintPressureEnvelope", "hy-workflow.lint.v1", "notApplicableRules", "notConfiguredRules", "D001", "C005"],
     "test/acceptance/matrix.json": ["https://", "5e16a5c9e57e81f6031a23faa2ace52205fa8242"],
   })) {
     const text = readText(context.root, file);
     for (const token of tokens) {
       if (!text.includes(token)) findings.push({ rule: "npm", severity: "hard_fail", message: `Acceptance contract is missing ${token}.`, file });
+    }
+  }
+  for (const file of ["test/acceptance/scenarios.ts", "test/acceptance/runner.ts", "test/acceptance/lint-report.ts"]) {
+    const text = readText(context.root, file);
+    for (const forbidden of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "prepareLintPressurePackages", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "npx --yes --package"]) {
+      if (text.includes(forbidden)) findings.push({ rule: "npm", severity: "hard_fail", message: `Built-in lint acceptance must not contain ${forbidden}.`, file });
     }
   }
   return findings;

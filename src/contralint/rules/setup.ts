@@ -1,4 +1,5 @@
 import { exists, readText } from "../files.js";
+import { renderWorkflowTemplate } from "../../setup/shared.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const ROOT_CONFIG_DOC_STATEMENT = "MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input.";
@@ -22,6 +23,7 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
   const operations = readText(context.root, "src/setup/operations.ts");
   const template = readText(context.root, "templates/hy-workflow.yml");
   const workflow = readText(context.root, ".github/workflows/hy-workflow.yml");
+  const renderedWorkflow = renderWorkflowTemplate();
   const config = readText(context.root, "src/config.ts");
   const init = readText(context.root, "src/tools/init.ts");
   const runtimeProject = readText(context.root, "src/runtime/project.ts");
@@ -52,11 +54,14 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
   for (const client of ["codex", "claude", "opencode"]) {
     if (!operations.includes(client)) findings.push({ rule: "setup", severity: "hard_fail", message: `setup operations must support ${client}.`, file: "src/setup/operations.ts" });
   }
-  if (template !== workflow) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "Checked-in workflow must exactly match the packaged workflow template.", file: ".github/workflows/hy-workflow.yml" });
+  if (renderedWorkflow !== workflow) {
+    findings.push({ rule: "setup", severity: "hard_fail", message: "Checked-in workflow must exactly match the deterministically rendered packaged workflow template.", file: ".github/workflows/hy-workflow.yml" });
   }
-  for (const trigger of ["  push:\n", "  pull_request:\n"]) {
+  for (const trigger of ["  pull_request:\n", "  workflow_dispatch:\n"]) {
     if (!template.includes(trigger)) findings.push({ rule: "setup", severity: "hard_fail", message: `Workflow must include every ${trigger.trimEnd()} event.`, file: "templates/hy-workflow.yml" });
+  }
+  if (template.includes("  push:\n")) {
+    findings.push({ rule: "setup", severity: "hard_fail", message: "Generated workflow must not run on generic push events.", file: "templates/hy-workflow.yml" });
   }
   if (template.includes("paths:")) {
     findings.push({ rule: "setup", severity: "hard_fail", message: "Workflow must not use path filters that can suppress required checks.", file: "templates/hy-workflow.yml" });
@@ -72,26 +77,19 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
     "ci.commands",
     "npm run build",
     "npm test",
-    "https://codeload.github.com/voxServalG/doclint/tar.gz/20793b8a4e1bcd79556d2cede0973cabe97f1ae4",
-    "https://codeload.github.com/voxServalG/codelint/tar.gz/aaaa065160b019f8e2a9d8eff456633dfa4b6d9b",
-    'npx --yes --package="$source" "$binary" "$command" --json',
-    "timeout --signal=TERM 75s",
-    "retrying once",
-    "status=$?",
+    "Run built-in doclint and codelint",
+    "__HY_WORKFLOW_LINT_BUNDLE_BASE64__",
+    "HY_WORKFLOW_INTERNAL_LINT_BUNDLE",
+    "requiredModules",
+    "RUNNER_TEMP",
     "JSON.parse",
-    "const invalidOk = label === 'doclint'",
-    "report.ok !== undefined && report.ok !== true",
     "permissions:\n  contents: read",
-    "nestedNumber('errors')",
-    "nestedNumber('failed')",
-    "nestedNumber('total_files')",
-    "files <= 0",
-    "configuredFiles.length <= 0",
-    "const notApplicable = label === 'codelint'",
-    "compat_backup_dir=",
-    "cp -a --",
-    "trap restore_compat EXIT",
-    "rm -rf -- \"$compat_backup_dir\"",
+    "hy-workflow.lint.v1",
+    "report.counts.docs <= 0",
+    "report.ok !== true",
+    "report.counts.errors > 0",
+    "fs.rmSync(runnerRoot",
+    "persist-credentials: false",
     "name: Windows Smoke",
     "if: ${{ github.repository == 'voxServalG/hy-workflow-mcp' }}",
     "runs-on: windows-latest",
@@ -99,11 +97,31 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
   ]) {
     if (!template.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `Workflow is missing strict CI contract token: ${token}.`, file: "templates/hy-workflow.yml" });
   }
-  for (const forbidden of ["github:voxServalG/", "|| true", "actions/upload-artifact", "contents: write", "actions: write", "checks: write", "pull-requests: write", "id-token: write"]) {
+  for (const forbidden of [
+    "  push:\n",
+    "github:voxServalG/",
+    "codeload.github.com",
+    "npx --yes --package",
+    "curl ",
+    "compat_backup",
+    "codelint.json",
+    "doclint.json",
+    "docs-gardener.json",
+    "|| true",
+    "actions/upload-artifact",
+    "contents: write",
+    "actions: write",
+    "checks: write",
+    "pull-requests: write",
+    "id-token: write",
+  ]) {
     if (template.includes(forbidden)) findings.push({ rule: "setup", severity: "hard_fail", message: `Workflow contains forbidden fail-open or persisted-artifact token: ${forbidden}.`, file: "templates/hy-workflow.yml" });
   }
   if (template.includes("- uses: actions/setup-node@v4\n        if:")) {
     findings.push({ rule: "setup", severity: "hard_fail", message: "setup-node must be unconditional because mandatory doclint/codelint run for every ecosystem.", file: "templates/hy-workflow.yml" });
+  }
+  if ((template.match(/persist-credentials: false/g) ?? []).length !== 2) {
+    findings.push({ rule: "setup", severity: "hard_fail", message: "Every checkout in the generated workflow must disable persisted credentials.", file: "templates/hy-workflow.yml" });
   }
   for (const token of [
     "return path.join(root, UNIFIED_CONFIG_FILE)",

@@ -10,6 +10,7 @@
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
     "build": "npm run clean && tsc",
+    "lint": "node dist/server.js lint --json",
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
     "lint:contract": "npm run build && npm run lint:contract:built",
@@ -28,7 +29,7 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run verify",
     "test:dist": "npx tsx test/contract/dist-artifacts.ts",
-    "test:doclint-output": "npx tsx test/unit/doclint-output.ts",
+    "test:lint-cli": "npx tsx test/unit/lint-cli.ts",
     "test:setup-update": "npx tsx test/e2e/setup-update-check.ts",
     "test:config-update": "npx tsx test/unit/config-update.ts"
   },

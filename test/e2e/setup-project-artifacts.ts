@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { executeSetup } from "../../src/setup/operations.js";
 import { readDeployment } from "../../src/runtime/deployment.js";
+import { renderWorkflowTemplate } from "../../src/setup/shared.js";
 import type { ClientAdapter, ClientServerSnapshot, McpDefinition, ServerName, SetupOptions } from "../../src/setup/types.js";
 import { gitStatus, makeGitProject, useRuntimeHome } from "../helpers/runtime-home.js";
 
@@ -68,7 +69,7 @@ const cloneReview = clonePreview.artifactChanges?.filter(item => item.requiresAc
 const upgraded = await executeSetup(cloneRoot, { ...options, acceptArtifactChanges: true, reviewedArtifactChanges: cloneReview }, [cloneClient]);
 assert(upgraded.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md", "a new clone without local deployment state should upgrade the committed workflow and seed AGENTS.md");
 assert(JSON.parse(fs.readFileSync(path.join(cloneRoot, "hy-workflow.json"), "utf-8")).teamMetadata.owner === "docs", "setup should preserve unknown team config fields");
-assert(fs.readFileSync(path.join(cloneRoot, ".github", "workflows", "hy-workflow.yml"), "utf-8") === fs.readFileSync(path.resolve("templates/hy-workflow.yml"), "utf-8"), "setup should refresh the shared workflow from the packaged template");
+assert(fs.readFileSync(path.join(cloneRoot, ".github", "workflows", "hy-workflow.yml"), "utf-8") === renderWorkflowTemplate(), "setup should refresh the shared workflow from the deterministic packaged template render");
 assert(fs.existsSync(path.join(cloneRoot, "AGENTS.md")), "setup should create AGENTS.md on the new clone");
 
 if (process.platform !== "win32") {

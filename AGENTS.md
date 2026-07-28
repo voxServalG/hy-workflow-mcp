@@ -7,7 +7,7 @@
 
 根目录 `hy-workflow.json` 是团队人工维护的统一配置源。共享字段放在 `project`：`baseBranch`、`codeExt`、`codeDirs`、`docsDir`。
 
-`codelint.json`、`doclint.json`、`docs-gardener.json` 只作为运行时 compatibility artifacts 临时生成，不作为根目录提交产物。
+doclint 与 codelint 是 `hy-workflow` 内置、离线、第一方规则。旧 `codelint.json`、`doclint.json`、`docs-gardener.json` 仅作为 setup/config 的只读迁移或漂移输入；运行时和 CI 不生成、不改写这些文件，也不把它们作为配置源或提交产物。
 
 setup 固定维护团队产物：根目录 `hy-workflow.json`、`.github/workflows/hy-workflow.yml`，以及 `AGENTS.md` 中 `<!-- hy-workflow-rules -->` 与 `<!-- /hy-workflow-rules -->` 之间的托管指令块（块外内容团队所有，setup 只迁移块内版本）。不再提供部署模式选择。`unset` 只解除本机部署，不删除 `hy-workflow.json`、workflow 或 `AGENTS.md` 文件本身；`hy_init` 只验证共享配置并初始化外置状态，不改工作树或 `.git`。
 
@@ -41,7 +41,7 @@ setup 固定维护团队产物：根目录 `hy-workflow.json`、`.github/workflo
 
 **8. hy_sync_docs** — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或团队 workflow/template 文件内同步。
 
-**9. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 部署的 GitHub Actions workflow 必须执行 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
+**9. hy_verify** — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 部署的 GitHub Actions workflow 必须在原生 CI 后执行内置 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
 
 **10. hy_commit** — git add + commit + push + gh pr create。
 
@@ -68,10 +68,10 @@ hy_init 的 `commitArtifacts` 为空，projectFilesChanged 为空。根配置由
 ### Artifact contract
 
 - **setup 团队产物**: 固定允许 setup 维护根 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`，以及 `AGENTS.md` 中 `<!-- hy-workflow-rules -->` 与 `<!-- /hy-workflow-rules -->` 之间的托管指令块；块外团队自定义指令由团队所有，setup 自动迁移块内版本时不改写块外内容。所有团队产物变化应以单独的 setup artifact sync PR 提交。
-- **runtime/client/compat artifacts**: OS 用户 config/state/cache、客户端用户配置、.hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json 都不提交。compat JSON 只在命令运行期临时生成并恢复原状。
+- **runtime/client/compat artifacts**: OS 用户 config/state/cache、客户端用户配置、.hy/、.opencode/、.codex/、.mcp.json、codelint.json、doclint.json、docs-gardener.json 都不提交。三个旧 JSON 仅可作为只读迁移或漂移输入，内置 lint 不创建或恢复它们。
 - **unset 边界**: 只清理本机 deployment、registry、state/cache 和自己拥有的客户端配置，不删除团队维护的 `hy-workflow.json` 或 workflow。
 - **兼容读取**: 旧用户 config 与带 mode 字段的 deployment manifest 仅作为只读迁移输入，不恢复模式选择，也不自动删除旧文件。
-- **CI 强制**: workflow 必须运行 doclint 和 codelint；仓库管理员还必须在 GitHub ruleset/branch protection 中把对应 Verify check 设为 required。没有有效 checks 时 `hy_ci` 必须 fail closed。
+- **CI 强制**: workflow 只在 pull request 与手动触发时运行，并必须在确认的原生命令之后执行内置 doclint 和 codelint；不使用通用 push 触发。仓库管理员还必须在 GitHub ruleset/branch protection 中把对应 Verify check 设为 required。没有有效 checks 时 `hy_ci` 必须 fail closed。
 
 ### Promotion / release 例外
 

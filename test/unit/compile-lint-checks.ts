@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkCommandTimeoutMs, parseCodeLintReport, parseDocLintReport, runBoundaryCheck, runCheckCommand, runCompile } from "../../src/checks.js";
+import { checkCommandTimeoutMs, runBoundaryCheck, runCheckCommand, runCompile } from "../../src/checks.js";
 import type { PlanDoc } from "../../src/state.js";
 
 function assert(condition: unknown, message: string): void {
@@ -118,32 +118,6 @@ setTimeout(() => process.exit(0), 6000);
 }
 
 {
-  const result = parseDocLintReport({ counts: { failed: "2", errors: "2", warnings: "1", files: "5" } });
-  assert(!result.passed && result.detail.includes("2 errors") && result.detail.includes("1 warnings") && result.detail.includes("5 files"), `doclint should parse numeric strings, got ${JSON.stringify(result)}`);
-}
-
-{
-  const result = parseCodeLintReport({ ok: false, data: { counts: { errors: "4", warnings: "3", files: "8", failed: "4" } } });
-  assert(!result.passed, `codelint nested ok=false report should fail, got ${JSON.stringify(result)}`);
-  assert(result.detail.includes("4 errors") && result.detail.includes("3 warnings") && result.detail.includes("8 files"), `codelint nested detail should include numeric string counts, got ${JSON.stringify(result)}`);
-  assert(!result.detail.includes("undefined"), `codelint detail must not contain undefined, got ${result.detail}`);
-}
-
-{
-  const result = parseCodeLintReport({ errors: 0, warnings: 0, total_files: 3 });
-  assert(result.passed && result.detail.includes("3 files"), `codelint should accept its native total_files field, got ${JSON.stringify(result)}`);
-}
-
-for (const report of [
-  { ok: true, errors: 0, total_files: 0 },
-  { ok: true, errors: 0 },
-  { ok: true, total_files: 2 },
-]) {
-  const strict = parseCodeLintReport(report);
-  assert(!strict.passed && strict.hard, `codelint must fail closed for missing/zero scan counts: ${JSON.stringify(report)}`);
-}
-
-{
   const root = tempRoot("hy-compile-missing-root-");
   mkdirSync(join(root, "src"), { recursive: true });
   write(root, "src/app.py", "value = 1\n");
@@ -170,8 +144,8 @@ for (const report of [
   mkdirSync(join(root, "src"), { recursive: true });
   writeConfig(root, ".ts", ["src"]);
   write(root, "src/app.ts", "export const value = 1;\n");
-  write(root, "package.json", JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "node --version" }, devDependencies: { tsx: "1.0.0" } }, null, 2) + "\n");
-  write(root, "package-lock.json", JSON.stringify({ name: "fixture", version: "1.0.0", lockfileVersion: 3, packages: { "": { name: "fixture", version: "1.0.0", devDependencies: { tsx: "1.0.0" } } } }, null, 2) + "\n");
+  write(root, "package.json", JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "node --version" }, files: ["dist"], bin: { fixture: "dist/cli.js" }, devDependencies: { tsx: "1.0.0" } }, null, 2) + "\n");
+  write(root, "package-lock.json", JSON.stringify({ name: "fixture", version: "1.0.0", lockfileVersion: 3, packages: { "": { name: "fixture", version: "1.0.0", bin: { fixture: "dist/cli.js" }, devDependencies: { tsx: "1.0.0" } } } }, null, 2) + "\n");
   git(root, ["init", "-b", "main"]);
   git(root, ["config", "user.email", "test@example.com"]);
   git(root, ["config", "user.name", "Test"]);
@@ -192,10 +166,10 @@ for (const report of [
     pr_number: null,
   };
 
-  write(root, "package.json", JSON.stringify({ name: "fixture", version: "1.0.1", scripts: { test: "node --version", verify: "node --version" }, devDependencies: { tsx: "1.0.0" } }, null, 2) + "\n");
-  write(root, "package-lock.json", JSON.stringify({ name: "fixture", version: "1.0.1", lockfileVersion: 3, packages: { "": { name: "fixture", version: "1.0.1", devDependencies: { tsx: "1.0.0" } } } }, null, 2) + "\n");
+  write(root, "package.json", JSON.stringify({ name: "fixture", version: "1.0.1", scripts: { test: "node --version", verify: "node --version" }, files: ["dist", "templates"], bin: { fixture: "dist/server.js" }, devDependencies: { tsx: "1.0.0" } }, null, 2) + "\n");
+  write(root, "package-lock.json", JSON.stringify({ name: "fixture", version: "1.0.1", lockfileVersion: 3, packages: { "": { name: "fixture", version: "1.0.1", bin: { fixture: "dist/server.js" }, devDependencies: { tsx: "1.0.0" } } } }, null, 2) + "\n");
   const metadataOnly = runBoundaryCheck(root, plan).find(check => check.name === "no_new_external");
-  assert(metadataOnly?.passed, `package version and script changes must not look like new external dependencies, got ${JSON.stringify(metadataOnly)}`);
+  assert(metadataOnly?.passed, `package version, scripts, files, and bin changes must not look like new external dependencies, got ${JSON.stringify(metadataOnly)}`);
 
   write(root, "package.json", JSON.stringify({ name: "fixture", version: "1.0.1", devDependencies: { tsx: "2.0.0" } }, null, 2) + "\n");
   const dependencyChanged = runBoundaryCheck(root, plan).find(check => check.name === "no_new_external");

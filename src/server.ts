@@ -26,8 +26,7 @@ import { handleMerge } from "./tools/merge.js";
 import { handleReset } from "./tools/reset.js";
 import { handleStatus } from "./tools/status.js";
 import { attachSetupCheck, checkSetupStamp, createSetupGate } from "./bootstrap.js";
-import { configHelp, recoverRuntimeCompatConfigs, runConfigCli } from "./config.js";
-import { findProjectRoot } from "./runtime/project.js";
+import { configHelp, runConfigCli } from "./config.js";
 import { assertCommandCatalogMatchesTools } from "./commands/catalog.js";
 import { runContractLint } from "./contralint/run.js";
 import { structuredError } from "./errs/structured.js";
@@ -35,6 +34,7 @@ import { toolResult } from "./output/envelope.js";
 import { PACKAGE_VERSION } from "./package-meta.js";
 import { runSetupCli } from "./setup-cli.js";
 import { runDoctorCli } from "./setup/doctor.js";
+import { runLintCli } from "./lint.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
@@ -59,7 +59,7 @@ const SYSTEM_PROMPT = `
 6. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
 7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
 8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或团队 workflow/template 文件内同步，完成后再 hy_verify。
-9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 生成的 GitHub Actions workflow 必须执行 doclint 与 codelint；hy_verify 失败回 hy_edit，通过进 hy_commit。
+9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 生成的 GitHub Actions workflow 必须执行第一方内建 D001–D005 与 C001–C005 lint；hy_verify 失败回 hy_edit，通过进 hy_commit。
 10. hy_commit — git add + commit + push + gh pr create + 自动轮询 CI 直到全绿或失败。PR 正文嵌入 plan 摘要；CI 全绿直接进 hy_merge，失败回 hy_edit，pending 可重试 hy_commit。
 11. hy_merge — 合并 PR + 删除远程分支 + 自动 rebase 下游 Agent 分支。任务完成后下一个 hy_plan 自动复位。
 12. hy_reset — 恢复工具。当 state 卡死在 commit/merge 等非 plan 阶段、或用户命令放弃当前任务时，从任意 phase 重置到 plan。正常流程不需要调它（hy_plan 从 commit/merge/done 进入时自动复位）。
@@ -73,11 +73,11 @@ const SYSTEM_PROMPT = `
 
 ### Setup 与 CI 产物契约
 
-- setup 不提供部署模式选择，固定且只维护 hy-workflow.json 与 .github/workflows/hy-workflow.yml
-- deployment、registry、workflow state、scope、DocsGraph、客户端配置和 compatibility JSON 均外置或临时生成，不得提交
-- unset 只解除本机部署，不删除两个团队文件
+- setup 不提供部署模式选择，固定维护 hy-workflow.json、.github/workflows/hy-workflow.yml 与 AGENTS.md 托管块
+- deployment、registry、workflow state、scope、DocsGraph 和客户端配置均外置；旧 compatibility JSON 只作只读迁移输入，不生成也不得提交
+- unset 只解除本机部署，不删除三个团队产物
 - 旧用户 config 与含 mode 的 deployment manifest 仅只读兼容，不恢复第二套模式
-- GitHub workflow 必须运行 doclint 与 codelint；仓库管理员需把 Verify check 配为 required，setup 不修改 ruleset
+- GitHub workflow 必须离线运行第一方内建 D001–D005 与 C001–C005；仓库管理员需把 Verify check 配为 required，setup 不修改 ruleset
 
 ---
 
@@ -274,7 +274,7 @@ const TOOLS = [
   },
   {
     name: "hy_verify",
-    description: "本地任务校验（同步快路径）：compile + scope + boundary + platform + smoke + tests。setup 部署的 GitHub Actions 必须执行 doclint 与 codelint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。单命令预计 >60s 或 tests 层较重时请改用 hy_exam_plan/hy_exam_submit 异步模式避免 MCP transport 超时。",
+    description: "本地任务校验（同步快路径）：compile + scope + boundary + platform + smoke + tests。setup 部署的 GitHub Actions 必须执行第一方内建 D001–D005 与 C001–C005 lint；要求 after_edit 文档审计和 hy_sync_docs 已完成；全绿方可 commit。单命令预计 >60s 或 tests 层较重时请改用 hy_exam_plan/hy_exam_submit 异步模式避免 MCP transport 超时。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -374,7 +374,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const a = (args ?? {}) as Record<string, any>;
 
   try {
-    recoverRuntimeCompatConfigs(findProjectRoot());
     const setupGateResult = currentSetupGate()();
     if (setupGateResult) {
       return { content: [{ type: "text", text: JSON.stringify(setupGateResult, null, 2) }] };
@@ -443,6 +442,12 @@ async function main() {
   }
   if (argv[0] === "config") {
     const result = runConfigCli(argv.slice(1));
+    process.stdout.write(result.stdout);
+    process.exitCode = result.exitCode;
+    return;
+  }
+  if (argv[0] === "lint") {
+    const result = await runLintCli(argv.slice(1));
     process.stdout.write(result.stdout);
     process.exitCode = result.exitCode;
     return;

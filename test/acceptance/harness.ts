@@ -31,6 +31,7 @@ export type AcceptanceRepo = {
     codeDirs: string[];
     lintDirs: string[];
     docsDir: string;
+    lintScanner: "python" | "rust" | null;
   };
 };
 
@@ -218,8 +219,7 @@ export function createWorkspace(sourceRoot: string): AcceptanceWorkspace {
   const bin = join(root, "stub-bin");
   const repos = join(root, "repos");
   const reports = join(root, "reports");
-  const lintArchives = join(root, "lint-archives");
-  for (const dir of [home, prefix, bin, repos, reports, lintArchives]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const dir of [home, prefix, bin, repos, reports]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   const stub = join(bin, "client-stub.mjs");
   copyFileSync(join(sourceRoot, "test", "acceptance", "client-stub.mjs"), stub);
@@ -264,7 +264,6 @@ export function createWorkspace(sourceRoot: string): AcceptanceWorkspace {
     GIT_CONFIG_NOSYSTEM: "1",
     HY_ACCEPTANCE_CLIENT_STATE: join(root, "client-state.json"),
     HY_ACCEPTANCE_CLIENT_EVENTS: join(reports, "client-events.ndjson"),
-    HY_ACCEPTANCE_LINT_ARCHIVE_DIR: lintArchives,
     HY_WORKFLOW_ACCEPTANCE: "1",
   };
   for (const forbidden of ["SSH_AUTH_SOCK", "NPM_TOKEN", "NODE_AUTH_TOKEN", "GITHUB_TOKEN"]) {

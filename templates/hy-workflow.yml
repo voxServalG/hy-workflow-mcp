@@ -1,7 +1,6 @@
 name: hy-workflow
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
 
@@ -14,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -138,148 +139,80 @@ jobs:
           for (const item of commands) run(item.label, item.command);
           NODE
 
-      - name: Run doclint and codelint
+      - name: Run built-in doclint and codelint
         shell: bash
         timeout-minutes: 6
         run: |
           set -euo pipefail
-          compat_files=(codelint.json doclint.json docs-gardener.json)
-          compat_backup_dir="$RUNNER_TEMP/hy-workflow-compat-backup"
-          mkdir -p "$compat_backup_dir"
-          restore_compat() {
-            local file
-            for file in "${compat_files[@]}"; do
-              rm -f -- "$file"
-              if [ -e "$compat_backup_dir/$file" ] || [ -L "$compat_backup_dir/$file" ]; then
-                cp -a -- "$compat_backup_dir/$file" "$file"
-              fi
-            done
-            rm -rf -- "$compat_backup_dir"
-          }
-          trap restore_compat EXIT
-          for file in "${compat_files[@]}"; do
-            if [ -e "$file" ] || [ -L "$file" ]; then
-              cp -a -- "$file" "$compat_backup_dir/$file"
-            fi
-            rm -f -- "$file"
-          done
-
           node <<'NODE'
-          const fs = require('fs');
-          const config = JSON.parse(fs.readFileSync('hy-workflow.json', 'utf8'));
-          const project = config.project || {};
-          const codelint = config.codelint || {};
-          const doclint = config.doclint || {};
-          const gardener = config.docsGardener || {};
-          const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
-          write('codelint.json', { lintDirs: codelint.lintDirs, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: codelint.maxLines });
-          write('doclint.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, maxLines: doclint.maxLines });
-          write('docs-gardener.json', { docsDir: project.docsDir, codeDirs: project.codeDirs, codeExt: project.codeExt, baseBranch: project.baseBranch, catalogs: gardener.catalogs || {} });
-          NODE
+          const cp = require('node:child_process');
+          const fs = require('node:fs');
+          const os = require('node:os');
+          const path = require('node:path');
 
-          run_lint() {
-            local label="$1"
-            local source="$2"
-            local binary="$3"
-            local command="$4"
-            local report="$RUNNER_TEMP/$label-report.json"
-            local error_log="$RUNNER_TEMP/$label-error.log"
-            local status=1
-            local attempt
-            for attempt in 1 2; do
-              set +e
-              timeout --signal=TERM 75s npx --yes --package="$source" "$binary" "$command" --json > "$report" 2> "$error_log"
-              status=$?
-              set -e
-              if [ "$status" -eq 0 ]; then
-                break
-              fi
-              if [ "$attempt" -lt 2 ]; then
-                echo "::warning::$label attempt $attempt failed with exit $status; retrying once"
-                sleep "$attempt"
-              fi
-            done
-            if [ "$status" -ne 0 ]; then
-              echo "::error::$label command failed with exit $status"
-              cat "$error_log"
-              cat "$report"
-              return "$status"
-            fi
-
-            LINT_LABEL="$label" REPORT_PATH="$report" node <<'NODE'
-          const cp = require('child_process');
-          const fs = require('fs');
-          const label = process.env.LINT_LABEL;
-          const reportPath = process.env.REPORT_PATH;
-          let report;
+          const bundleBase64 = "__HY_WORKFLOW_LINT_BUNDLE_BASE64__";
+          const requiredModules = ['code.mjs', 'docs.mjs', 'fs.mjs', 'index.mjs', 'markdown.mjs', 'python.mjs', 'rust.mjs'];
+          let modules;
           try {
-            report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-          } catch {
-            console.error('::error::' + label + ' returned invalid JSON');
-            process.exit(1);
+            modules = JSON.parse(Buffer.from(bundleBase64, 'base64').toString('utf8'));
+          } catch (error) {
+            throw new Error('HY_WORKFLOW_INTERNAL_LINT_BUNDLE is invalid: ' + error.message);
           }
-          if (!report || typeof report !== 'object' || Array.isArray(report)) {
-            console.error('::error::' + label + ' returned an invalid JSON report');
-            process.exit(1);
+          if (!modules || typeof modules !== 'object' || Array.isArray(modules)) {
+            throw new Error('HY_WORKFLOW_INTERNAL_LINT_BUNDLE must decode to an object');
           }
-          const numberFrom = (...values) => {
-            for (const value of values) {
-              if (typeof value === 'number' && Number.isFinite(value)) return value;
-              if (typeof value === 'string' && value.trim() !== '') {
-                const parsed = Number(value);
-                if (Number.isFinite(parsed)) return parsed;
-              }
-            }
-            return null;
-          };
-          const nestedNumber = key => numberFrom(
-            report?.data?.counts?.[key], report?.counts?.[key],
-            report?.data?.summary?.[key], report?.summary?.[key],
-            report?.data?.[key], report?.[key],
-          );
-          const errors = nestedNumber('errors');
-          const failed = nestedNumber('failed');
-          const files = numberFrom(
-            nestedNumber('files'), nestedNumber('total_files'),
-            nestedNumber('totalFiles'), nestedNumber('total'),
-          );
-          const config = JSON.parse(fs.readFileSync('hy-workflow.json', 'utf8'));
-          const list = value => Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
-          const configuredExt = new Set(list(config?.project?.codeExt).map(value => String(value).toLowerCase()));
-          const lintDirs = list(config?.codelint?.lintDirs ?? config?.project?.codeDirs).map(value => String(value).replace(/^\.\//, '').replace(/\/$/, ''));
-          const matchesDir = file => lintDirs.some(dir => dir === '.' || file === dir || file.startsWith(dir + '/'));
-          const extension = file => /(?:^|\/)(?:[^/]+)(\.[^./]+)$/.exec(file)?.[1]?.toLowerCase() ?? '';
-          const tracked = cp.execFileSync('git', ['ls-files', '-z', '--cached'], { encoding: 'utf8' }).split('\0').filter(Boolean);
-          const configuredFiles = tracked.filter(file => matchesDir(file) && configuredExt.has(extension(file)));
-          const codelintExt = new Set(['.py', '.pyw', '.pyi', '.rs']);
-          const supportedFiles = configuredFiles.filter(file => codelintExt.has(extension(file)));
-          const notApplicable = label === 'codelint' && supportedFiles.length === 0;
-          const missingRequiredCount = errors === null || files === null || (label === 'doclint' && failed === null);
-          const failedCount = failed ?? errors;
-          const invalidOk = label === 'doclint'
-            ? report.ok !== true
-            : report.ok !== undefined && report.ok !== true;
-          const invalidScan = label === 'doclint'
-            ? files !== null && files <= 0
-            : configuredFiles.length <= 0 || (notApplicable ? files !== 0 : files !== null && files <= 0);
-          if (
-            missingRequiredCount
-            || invalidScan
-            || invalidOk
-            || errors < 0
-            || errors > 0
-            || failedCount < 0
-            || failedCount > 0
-          ) {
-            console.error('::error::' + label + ' failed: ' + JSON.stringify({ ok: report.ok, errors, failed, files, notApplicable, projectFiles: configuredFiles.length, supportedFiles: supportedFiles.length }));
-            process.exit(1);
+          const moduleNames = Object.keys(modules).sort();
+          if (JSON.stringify(moduleNames) !== JSON.stringify(requiredModules)) {
+            throw new Error('HY_WORKFLOW_INTERNAL_LINT_BUNDLE module set is incomplete');
           }
-          console.log(label + ': ' + JSON.stringify({ ok: report.ok, errors, failed, files, notApplicable, projectFiles: configuredFiles.length, supportedFiles: supportedFiles.length }));
-          NODE
+          if (moduleNames.some(name => !/^[a-z-]+\.mjs$/.test(name) || typeof modules[name] !== 'string')) {
+            throw new Error('HY_WORKFLOW_INTERNAL_LINT_BUNDLE contains an unsafe module');
           }
 
-          run_lint doclint https://codeload.github.com/voxServalG/doclint/tar.gz/20793b8a4e1bcd79556d2cede0973cabe97f1ae4 doclint lint
-          run_lint codelint https://codeload.github.com/voxServalG/codelint/tar.gz/aaaa065160b019f8e2a9d8eff456633dfa4b6d9b codelint check
+          const runnerRoot = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'hy-workflow-lint-'));
+          try {
+            for (const name of moduleNames) fs.writeFileSync(path.join(runnerRoot, name), modules[name], { mode: 0o600 });
+            const result = cp.spawnSync(process.execPath, [
+              path.join(runnerRoot, 'index.mjs'),
+              '--root', process.cwd(),
+              '--config', path.resolve('hy-workflow.json'),
+            ], {
+              cwd: process.cwd(),
+              encoding: 'utf8',
+              timeout: 300_000,
+              windowsHide: true,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            if (result.stderr) process.stderr.write(result.stderr);
+            if (result.stdout) process.stdout.write(result.stdout);
+            if (result.error) throw result.error;
+            if (result.signal) throw new Error('built-in lint terminated by ' + result.signal);
+            let report;
+            try {
+              report = JSON.parse(result.stdout || '');
+            } catch {
+              throw new Error('built-in lint returned invalid JSON');
+            }
+            if (
+              report?.schema !== 'hy-workflow.lint.v1'
+              || report?.version !== 1
+              || typeof report?.counts?.errors !== 'number'
+              || typeof report?.counts?.warnings !== 'number'
+              || typeof report?.counts?.docs !== 'number'
+              || typeof report?.counts?.code !== 'number'
+              || !Array.isArray(report?.checks)
+              || !Array.isArray(report?.findings)
+            ) {
+              throw new Error('built-in lint returned an invalid report contract');
+            }
+            if (report.counts.docs <= 0) throw new Error('built-in doclint scanned zero documentation files');
+            if (result.status !== 0 || report.ok !== true || report.counts.errors > 0) {
+              throw new Error('built-in lint failed with exit ' + result.status + ' and ' + report.counts.errors + ' error finding(s)');
+            }
+          } finally {
+            fs.rmSync(runnerRoot, { recursive: true, force: true });
+          }
+          NODE
 
   windows-smoke:
     name: Windows Smoke
@@ -288,6 +221,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

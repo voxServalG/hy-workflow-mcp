@@ -195,22 +195,8 @@ export function runCheckCommand(command: CheckCommand, cwd?: string, timeoutMs?:
   }
 }
 
-export const DOCLINT_SOURCE = "https://codeload.github.com/voxServalG/doclint/tar.gz/20793b8a4e1bcd79556d2cede0973cabe97f1ae4";
-export const CODELINT_SOURCE = "https://codeload.github.com/voxServalG/codelint/tar.gz/aaaa065160b019f8e2a9d8eff456633dfa4b6d9b";
-export const DOCLINT_INTEGRITY_SHA512 = "a2f8ce4406763d7476e39da1834b9a3c10f05041999dc80448f44abab7f9c24589b8e8e549c23d1a0c3f7bcb80fc929200a214f71196723c030d3e3550457bb9";
-export const CODELINT_INTEGRITY_SHA512 = "cff92af13e10b3c59fbd39a1ddddeb923f38701b47c4e2ff05b5acba6d9f78d9dd296b75815e945df9e6995bb0fb47d147f687ee5fb249c128c2502d6520726f";
-
 function execOr(cmd: string, cwd?: string): ExecResult {
   return runCheckCommand(cmd, cwd);
-}
-
-function execWithOneRetry(cmd: string, cwd?: string): ExecResult {
-  const first = execOr(cmd, cwd);
-  if (first.ok) return first;
-  const second = execOr(cmd, cwd);
-  return second.ok
-    ? second
-    : { ...second, stderr: `attempt 1: ${first.stderr || first.stdout}; attempt 2: ${second.stderr || second.stdout}` };
 }
 
 export function ok(title: string, layer: string, detail = "", hard = true): CheckResult {
@@ -238,85 +224,6 @@ export function findPython(): string {
     } catch {}
   }
   return "python3";
-}
-
-// ── CI lint helpers (not run by hy_verify) ───────────────────
-
-function numberFrom(...values: unknown[]): number | null {
-  for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() !== "") {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-  }
-  return null;
-}
-
-function nestedNumber(report: any, key: string): number | null {
-  return numberFrom(
-    report?.data?.counts?.[key],
-    report?.counts?.[key],
-    report?.data?.summary?.[key],
-    report?.summary?.[key],
-    report?.data?.[key],
-    report?.[key]
-  );
-}
-
-function lintFileCount(report: any): number | null {
-  return nestedNumber(report, "files")
-    ?? nestedNumber(report, "total_files")
-    ?? nestedNumber(report, "totalFiles")
-    ?? nestedNumber(report, "total");
-}
-
-function countDetail(errors: number, warnings: number, files: number, failed: number): string {
-  return `${errors} errors, ${warnings} warnings (${files} files, ${failed} failed)`;
-}
-
-export function parseDocLintReport(report: any): CheckResult {
-  const failed = nestedNumber(report, "failed");
-  const errors = nestedNumber(report, "errors");
-  const warnings = nestedNumber(report, "warnings") ?? 0;
-  const files = lintFileCount(report);
-
-  if (errors === null || failed === null || files === null) {
-    return fail("doclint", "lint", "doclint JSON report is missing errors, failed, or files counts", true);
-  }
-
-  if (files <= 0) return fail("doclint", "lint", `doclint scanned ${files} files; refusing a zero-file pass`, true);
-
-  const effectiveErrors = errors;
-  const effectiveFailed = failed;
-  const passed = report?.ok === true && effectiveErrors === 0 && effectiveFailed === 0;
-  const detail = countDetail(effectiveErrors, warnings, files, effectiveFailed);
-  return passed
-    ? ok("doclint", "lint", detail)
-    : fail("doclint", "lint", detail, true);
-}
-
-export function parseCodeLintReport(report: any): CheckResult {
-  const failed = nestedNumber(report, "failed");
-  const errors = nestedNumber(report, "errors");
-  const warnings = nestedNumber(report, "warnings") ?? 0;
-  const files = lintFileCount(report);
-
-  if (errors === null || files === null) {
-    return fail("codelint", "lint", "codelint JSON report is missing errors or files counts", true);
-  }
-
-  if (files <= 0) return fail("codelint", "lint", `codelint scanned ${files} files; refusing a zero-file pass`, true);
-
-  const effectiveErrors = errors;
-  const effectiveFailed = failed ?? effectiveErrors;
-  // codelint's native JSON contract predates the shared `ok` envelope. A
-  // complete count report is authoritative, but an explicit false must fail.
-  const passed = report?.ok !== false && effectiveErrors === 0 && effectiveFailed === 0;
-  const detail = countDetail(effectiveErrors, warnings, files, effectiveFailed);
-  return passed
-    ? ok("codelint", "lint", detail)
-    : fail("codelint", "lint", detail, true);
 }
 
 // ── 2. Compile (hard) ───────────────────────────────────────
