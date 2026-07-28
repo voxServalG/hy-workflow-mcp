@@ -71,8 +71,8 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 12. LLM hy_ci()
     └► tools/ci.ts → 每次轮询同时复查 PR repository/base/head/headRefOid；仅有效 checks 全绿才 transition(ci→merge)，无 checks 或 identity 漂移均 fail closed
 
-13. LLM hy_merge() → LLM hy_chain(branches) → LLM hy_reset()
-    └► merge 前再次复查 PR identity 并用 --match-head-commit 锁定已验证 OID；然后 rebase 下游分支并回到 plan
+13. LLM hy_merge() → LLM hy_reset()
+    └► merge 前再次复查 immutable PR identity 并用 --match-head-commit 锁定 verified OID；当前 handler 内部完成 receipt 驱动的安全下游同步后返回 done，hy_chain 只兼容 legacy chain state
 ```
 
 ## 关键设计决策
@@ -83,6 +83,11 @@ server.ts  ── 注册 15 个 MCP Tool ──►  tools/*.ts  ── 读写状
 - **执行器边界**: 服务启动时探测本机 `git`、`gh` 与 gh 认证状态；commit/push/rebase 等仓库操作固定使用 git，PR/checks/merge 等 GitHub API 操作固定使用已认证 gh。`GH_REPO` 与 `GH_HOST` 不参与仓库选择；origin fetch/push URL 必须解析为同一带 host 的 repository selector。项目没有内部 Git/GitHub 后端，能力不足时结构化失败而不是静默降级
 - **配置保护**: preserve-first 迁移不改写人工 project/ci 值；profile 候选与 CI 命令必须在写盘前确认。MCP runtime 不把 legacy/compat 配置当 fallback，缺字段、无 ref、零文档事实或 stale managed block 均 fail closed
 - **提交恢复**: `hy_commit` 在 push 前把 commit OID、verifyHash、branch、baseBranch 和 repository 写入 approval 派生状态，只推送该不可移动 object ID。若 push 或 PR API 失败，重试必须同时匹配该记录与 clean HEAD；空提交或其他移动 HEAD 会被拒绝。CI 每次轮询与 merge 前也必须复查 exact PR identity，merge 使用 `--match-head-commit`
+- **合并恢复**: immutable PR identity（repository、PR number、base、head、verified OID）与 mutable GitHub lifecycle 分开。mutation 前原子写 attempted receipt，确认远端合入后写 confirmed receipt；`executePrMerge` 是唯一 mutation 且不内部重试。`reconcileMerge` 优先读取 GitHub postcondition，必要时由 `fetchRemoteBaseEvidence` 对 `origin/<base>` 做 **fresh-fetch ancestry**。该 **read-only Git fallback** 只把 immutable `baseOid`、`isAncestor` 和 `evidence: "git"` 作为证据，绝不 merge 或 push base
+- **堆叠分支判定**: 正常 attempted receipt 只收录受管 agent branch，并排除 base/head；候选 commit 必须包含 verified head、同时建立在 fresh prepared base 上，且 snapshot 时 local OID 必须与 remote OID 完全相等。legacy 无 receipt 的已集成恢复只重建由 agent prefix、verified-head ancestry 与 local=remote 证明的 stack；unrelated branch 忽略，真实 stack 的 ref 漂移 fail closed
+- **同步事务边界**: confirmed receipt 首次同步时 fresh fetch，并要求 remote base 同时包含 verified OID 与确认时的 base OID，再把当前 tip 固定为 `syncBaseOid`；后续恢复要求 remote tip 仍与 pin 完全相等，base rewrite/drift 以 retryable `POST_MERGE_SYNC_INCOMPLETE` fail closed。每个候选先持久化 `rebasing`，通过 **detached staging** 对固定 `syncBaseOid` 计算结果，持久化 `resultOid` 后通过 `git update-ref <ref> <new> <old>` 做 local ref **compare-and-swap**，最后才以 exact `force-with-lease` 推送。`pending → rebasing → rebased → pushed` 均落盘，因此 confirmed receipt 的重试只恢复 remaining sync
+- **并发串行化**: `hy_merge` 在 reconciliation、mutation 和 worktree sync 外层持有 project-specific operation lock，记录 owner pid/host/createdAt/token。活 owner 返回 retryable `MERGE_LOCK_BUSY`，同 host dead owner 可按 stale-owner 协议接管，退出时按 token best-effort release。它只协调共享同一本地状态根和工作树的进程，不声称跨主机强一致
+- **恢复保证范围**: receipt 的同步写入与原子替换用于恢复已经完成状态写入后的普通工具或进程中断；operation lock 的 best-effort release 也不声明机器断电、内核崩溃或未执行目录/文件 `fsync` 时仍具备持久性保证
 - **软硬结合**: 状态机硬锁定（禁止跳 phase）+ 用户 approve gate（软决策）
 - **Promotion 例外**: 状态机闭环服务于普通开发改动合入 `baseBranch`；`baseBranch → releaseBranch`（如 dev → main）属于发布/晋级操作，不伪造 scope，也不硬套 `hy_branch`/`hy_commit`，必须在用户授权后通过 promotion PR 完成
 - **Artifact contract**: setup 维护三个团队产物（`hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` managed block），其 drift 单独走 artifact sync PR；unset/hy_init 不删除或改写团队文件；runtime/client/compat artifacts 不提交；`dist/` 只进入 npm tarball，不进入 GitHub

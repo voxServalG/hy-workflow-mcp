@@ -99,7 +99,11 @@ The generated Verify job runs on pull requests and explicit `workflow_dispatch`,
 - `git` on PATH for project identity and repository operations
 - authenticated `gh` for PR creation, CI status, and merge operations
 
-`hy_status` reports Git/GitHub capability state. Missing capabilities fail closed with recovery guidance; there is no hidden Git or GitHub fallback.
+`hy_status` reports Git/GitHub capability state. Missing mutation capabilities fail closed with recovery guidance; there is no hidden GitHub mutation backend.
+
+Merge recovery 的 **read-only Git fallback** 不是隐藏的 GitHub mutation 替代品。它只对 `origin/<base>` 执行 fresh fetch，将远端 tip 固定为 immutable `baseOid`，并检查 verified head 是否为其祖先；绝不直接 merge 或 push base。创建 PR 和首次执行 merge mutation 仍要求已认证的 `gh`。如果 legacy workflow 没有 merge receipt，但 Git 证据已经证明 verified head 被包含，`hy_merge` 会同步由 agent prefix、verified ancestry 与 local=remote 共同证明的 stacked branches；unrelated branch 忽略，真实 stack 的 ref 漂移 fail closed。
+
+正常 pre-mutation snapshot 还要求候选建立在 fresh prepared base 上。确认合入后以 `syncBaseOid` 固定同步基准，`detached staging` 的 `rebasing`/`resultOid` 进度先落盘，再通过 local ref `compare-and-swap` 与 exact `force-with-lease` 安装。project-specific merge lock 只串行化共享同一本地状态根和工作树的进程；它不提供跨主机强一致。receipt 和 lock 的恢复协议面向已完成状态写入后的普通工具或进程中断，文档不承诺机器断电或缺少 `fsync` 时的存储持久性。
 
 ## Version migration
 

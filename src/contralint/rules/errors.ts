@@ -4,6 +4,11 @@ import { readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const REQUIRED_TYPES = ["validation", "workflow_state", "scope", "docs", "verification", "config", "setup", "io", "internal"];
+const MERGE_RECOVERY_CODES = [
+  "MERGE_LOCK_BUSY",
+  "PR_MERGE_OUTCOME_UNCONFIRMED",
+  "POST_MERGE_SYNC_INCOMPLETE",
+] as const;
 
 export function checkErrorContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
@@ -13,6 +18,28 @@ export function checkErrorContracts(context: ContractRuleContext): ContractFindi
     }
   }
   const docs = readText(context.root, "docs/errors.md");
+  const mergeProduction = [
+    readText(context.root, "src/git.ts"),
+    readText(context.root, "src/tools/merge.ts"),
+  ].join("\n");
+  for (const code of MERGE_RECOVERY_CODES) {
+    if (!mergeProduction.includes(code)) {
+      findings.push({
+        rule: "errors",
+        severity: "hard_fail",
+        message: `Merge recovery implementation omits stable error code ${code}.`,
+        file: "src/git.ts",
+      });
+    }
+    if (!docs.includes(code)) {
+      findings.push({
+        rule: "errors",
+        severity: "amend_required",
+        message: `Merge recovery error code ${code} is not documented.`,
+        file: "docs/errors.md",
+      });
+    }
+  }
   for (const subtype of ERROR_SUBTYPES) {
     if (!docs.includes(subtype)) {
       findings.push({ rule: "errors", severity: "amend_required", message: "Error subtype " + subtype + " is not documented.", file: "docs/errors.md" });

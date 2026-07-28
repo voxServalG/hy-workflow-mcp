@@ -171,6 +171,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     state.implementationManifest = null;
     state.documentReads = null;
     state.syncDocs = null;
+    state.mergeReceipt = null;
     writeState(state);
   }
 
@@ -418,6 +419,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     afterEdit: null,
   };
   next.syncDocs = null;
+  next.mergeReceipt = null;
   writeState(next);
 
   const summary = buildSummary(p);
