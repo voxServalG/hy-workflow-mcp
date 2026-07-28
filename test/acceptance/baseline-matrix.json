@@ -2,9 +2,10 @@
   "schemaVersion": "1",
   "fixtures": [
     { "id": "node-main", "incident": "INC-SETUP-IDEMPOTENCE", "branch": "main", "codeExt": [".js"], "codeDirs": ["src"], "docsDir": "docs", "files": ["package-lock.json", "src/index.js", "docs/index.md"] },
-    { "id": "typescript-dev-monorepo", "incident": "INC-SCOPE-MONOREPO", "branch": "dev", "codeExt": [".ts", ".tsx"], "codeDirs": ["apps", "packages"], "docsDir": "documentation", "files": ["pnpm-lock.yaml", "apps/web/index.ts", "packages/core/index.ts", "documentation/index.md"] },
+    { "id": "typescript-dev-monorepo", "incident": "INC-SCOPE-MONOREPO", "branch": "dev", "codeExt": [".ts", ".tsx"], "codeDirs": ["apps", "packages"], "docsDir": "documentation", "files": ["pnpm-lock.yaml", "apps/web/index.ts", "apps/web/view.tsx", "packages/core/index.ts", "documentation/index.md"] },
     { "id": "python-trunk", "incident": "INC-PYTHON-COMPILE-ROOT", "branch": "trunk", "codeExt": [".py"], "codeDirs": ["src"], "docsDir": ".", "files": ["pyproject.toml", "src/app.py", "manage.py", "README.md"] },
     { "id": "rust-master", "incident": "INC-NON-NODE-PROFILE", "branch": "master", "codeExt": [".rs"], "codeDirs": ["src"], "docsDir": "guide", "files": ["Cargo.toml", "src/lib.rs", "guide/index.md"] },
-    { "id": "mixed-nonstandard", "incident": "INC-COMPAT-CLEANUP", "branch": "dev", "codeExt": [".ts", ".py"], "codeDirs": ["service", "tools"], "docsDir": "handbook", "files": ["package.json", "service/index.ts", "tools/check.py", "handbook/index.md"] }
+    { "id": "mixed-nonstandard", "incident": "INC-COMPAT-CLEANUP", "branch": "dev", "codeExt": [".ts", ".py"], "codeDirs": ["service", "tools"], "docsDir": "handbook", "files": ["package.json", "service/index.ts", "tools/check.py", "handbook/index.md"] },
+    { "id": "lint-internal-offline", "incident": "INC-LINT-INTERNAL-OFFLINE", "branch": "dev", "codeExt": [".py", ".rs"], "codeDirs": ["src"], "docsDir": "docs", "files": ["src/app.py", "src/lib.rs", "docs/index.md"] }
   ]
 }

@@ -1,12 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { codeExtOr, formatCodeExt, normalizeCodeExt, type CodeExt, validateCodeExt } from "./code_ext.js";
 import { inspectProject, type ProfileConfidence, type ProjectKind as ProfileProjectKind } from "./project-profile.js";
 import { MANAGED_RULES_VERSION } from "./policy/docs.js";
-import { atomicWriteJson, atomicWriteText, projectPaths, userRoots } from "./runtime/user-paths.js";
-import { internalSetupTestHooks } from "./setup/test-hooks.js";
+import { atomicWriteText, projectPaths } from "./runtime/user-paths.js";
 
 export type ProjectKind = ProfileProjectKind;
 
@@ -71,7 +68,10 @@ type ConfigArgs = {
 };
 
 export const UNIFIED_CONFIG_FILE = "hy-workflow.json";
-const COMPAT_CONFIG_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"];
+const DEFAULT_CODE_WARNING_LINES = 300;
+const DEFAULT_CODE_ERROR_LINES = 500;
+const DEFAULT_DOC_WARNING_LINES = 200;
+const DEFAULT_DOC_ERROR_LINES = 500;
 
 export class RuntimeConfigError extends Error {
   readonly type = "config" as const;
@@ -294,8 +294,8 @@ export function defaultSuggestion(root: string): ConfigSuggestion {
     lintDirs: profile.lintDirs,
     docsDir: profile.docsDir,
     baseBranch: profile.baseBranch,
-    maxCodeLines: 500,
-    maxDocLines: 200,
+    maxCodeLines: DEFAULT_CODE_ERROR_LINES,
+    maxDocLines: DEFAULT_DOC_ERROR_LINES,
     ciCommands: profile.ciCandidates,
   };
 }
@@ -320,6 +320,17 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" ? value : fallback;
 }
 
+function lineThresholds(value: JsonObject, warningDefault: number, errorDefault: number): {
+  maxLinesWarning: number;
+  maxLinesError: number;
+} {
+  const maxLinesError = numberOr(value.maxLinesError, numberOr(value.maxLines, errorDefault));
+  return {
+    maxLinesWarning: numberOr(value.maxLinesWarning, Math.min(warningDefault, maxLinesError)),
+    maxLinesError,
+  };
+}
+
 function unifiedFromInputs(
   existing: JsonObject | null,
   legacy: Record<string, JsonObject | null>,
@@ -337,6 +348,8 @@ function unifiedFromInputs(
 
   const use = (current: unknown, legacyValue: unknown, suggested: unknown) =>
     preserveExisting ? current ?? legacyValue ?? suggested : suggested ?? current ?? legacyValue;
+  const codeError = use(codelint.maxLinesError, codelint.maxLines ?? legacyCode?.maxLinesError ?? legacyCode?.maxLines, suggestion.maxCodeLines);
+  const docError = use(doclint.maxLinesError, doclint.maxLines ?? legacyDocs?.maxLinesError ?? legacyDocs?.maxLines, suggestion.maxDocLines);
 
   return {
     ...(existing ?? {}),
@@ -349,12 +362,16 @@ function unifiedFromInputs(
     },
     codelint: {
       ...codelint,
+      ...(!existing && legacyCode && hasOwn(legacyCode, "maxLines") ? { maxLines: legacyCode.maxLines } : {}),
       lintDirs: use(codelint.lintDirs, legacyCode?.lintDirs, suggestion.lintDirs),
-      maxLines: use(codelint.maxLines, legacyCode?.maxLines, suggestion.maxCodeLines),
+      maxLinesWarning: use(codelint.maxLinesWarning, legacyCode?.maxLinesWarning, Math.min(DEFAULT_CODE_WARNING_LINES, Number(codeError))),
+      maxLinesError: codeError,
     },
     doclint: {
       ...doclint,
-      maxLines: use(doclint.maxLines, legacyDocs?.maxLines, suggestion.maxDocLines),
+      ...(!existing && legacyDocs && hasOwn(legacyDocs, "maxLines") ? { maxLines: legacyDocs.maxLines } : {}),
+      maxLinesWarning: use(doclint.maxLinesWarning, legacyDocs?.maxLinesWarning, Math.min(DEFAULT_DOC_WARNING_LINES, Number(docError))),
+      maxLinesError: docError,
     },
     docsGardener: {
       ...docsGardener,
@@ -377,8 +394,14 @@ function withExplicitOverrides(config: JsonObject, explicit: Partial<ConfigSugge
   if (explicit.codeDirs !== undefined) project.codeDirs = explicit.codeDirs;
   if (explicit.docsDir !== undefined) project.docsDir = explicit.docsDir;
   if (explicit.lintDirs !== undefined) codelint.lintDirs = explicit.lintDirs;
-  if (explicit.maxCodeLines !== undefined) codelint.maxLines = explicit.maxCodeLines;
-  if (explicit.maxDocLines !== undefined) doclint.maxLines = explicit.maxDocLines;
+  if (explicit.maxCodeLines !== undefined) {
+    codelint.maxLinesError = explicit.maxCodeLines;
+    if (hasOwn(codelint, "maxLines")) codelint.maxLines = explicit.maxCodeLines;
+  }
+  if (explicit.maxDocLines !== undefined) {
+    doclint.maxLinesError = explicit.maxDocLines;
+    if (hasOwn(doclint, "maxLines")) doclint.maxLines = explicit.maxDocLines;
+  }
   return { ...config, project, codelint, doclint };
 }
 
@@ -400,11 +423,11 @@ function normalizedUnified(config: JsonObject, suggestion: ConfigSuggestion): Js
     codelint: {
       ...codelint,
       lintDirs: arrayOr(codelint.lintDirs, suggestion.lintDirs),
-      maxLines: numberOr(codelint.maxLines, suggestion.maxCodeLines),
+      ...lineThresholds(codelint, DEFAULT_CODE_WARNING_LINES, suggestion.maxCodeLines),
     },
     doclint: {
       ...doclint,
-      maxLines: numberOr(doclint.maxLines, suggestion.maxDocLines),
+      ...lineThresholds(doclint, DEFAULT_DOC_WARNING_LINES, suggestion.maxDocLines),
     },
     docsGardener: {
       ...docsGardener,
@@ -434,7 +457,7 @@ export function withConfirmedCiCommands(config: JsonObject, commands: string[]):
   return { ...config, ci: { ...asObject(config.ci), commands: [...commands] } };
 }
 
-export function compatConfigs(existing: Record<string, JsonObject | null>, unified: JsonObject): Record<string, JsonObject> {
+function legacyCompatProjection(existing: Record<string, JsonObject | null>, unified: JsonObject): Record<string, JsonObject> {
   const project = asObject(unified.project);
   const codelint = asObject(unified.codelint);
   const doclint = asObject(unified.doclint);
@@ -446,7 +469,7 @@ export function compatConfigs(existing: Record<string, JsonObject | null>, unifi
       codeDirs: project.codeDirs,
       codeExt: project.codeExt,
       baseBranch: project.baseBranch,
-      maxLines: codelint.maxLines,
+      maxLines: codelint.maxLinesError ?? codelint.maxLines,
     },
     "doclint.json": {
       ...(existing["doclint.json"] ?? {}),
@@ -454,7 +477,7 @@ export function compatConfigs(existing: Record<string, JsonObject | null>, unifi
       codeDirs: project.codeDirs,
       codeExt: project.codeExt,
       baseBranch: project.baseBranch,
-      maxLines: doclint.maxLines,
+      maxLines: doclint.maxLinesError ?? doclint.maxLines,
     },
     "docs-gardener.json": {
       ...(existing["docs-gardener.json"] ?? {}),
@@ -536,243 +559,6 @@ export function requireRuntimeConfig(root: string, suggestion = defaultSuggestio
   const inspected = inspectRuntimeConfig(root, suggestion);
   if (!inspected.config) throw new RuntimeConfigError(root, inspected.issues, inspected.missing);
   return inspected.config;
-}
-
-type CompatSnapshot = {
-  filePath: string;
-  existed: boolean;
-  text: string | null;
-  beforeHash: string | null;
-  mode: number | null;
-  value: JsonObject | null;
-  generatedText: string;
-  generatedHash: string;
-};
-
-type CompatJournal = {
-  schemaVersion: "1";
-  id: string;
-  projectRoot: string;
-  pid: number;
-  host: string;
-  startedAt: string;
-  resources: CompatSnapshot[];
-};
-
-class RuntimeCompatError extends Error {
-  readonly type = "config" as const;
-  readonly subtype = "config_invalid" as const;
-  readonly retryable: boolean;
-
-  constructor(readonly code: string, message: string, readonly hint: string, readonly detail?: unknown, retryable = false) {
-    super(message);
-    this.name = "RuntimeCompatError";
-    this.retryable = retryable;
-    Object.defineProperty(this, "message", { enumerable: true, configurable: true, writable: true, value: this.message });
-  }
-}
-
-function compatHash(value: Buffer | string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function compatCurrentHash(file: string): string | null {
-  return fs.existsSync(file) ? compatHash(fs.readFileSync(file)) : null;
-}
-
-function compatJournalPath(root: string): string {
-  return path.join(projectPaths(root).stateDir, "compat-journal.json");
-}
-
-function compatLockPath(root: string): string {
-  const identity = projectPaths(root).identity;
-  // The lock must live outside the project state directory: unset stages that
-  // whole directory, but must keep excluding new compatibility operations until
-  // its transaction has committed or rolled back.
-  return path.join(userRoots().state, "compat-locks", `${identity.id}.lock`);
-}
-
-function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error: any) { return error?.code === "EPERM"; }
-}
-
-function acquireCompatLock(root: string): () => void {
-  const lock = compatLockPath(root);
-  fs.mkdirSync(path.dirname(lock), { recursive: true });
-  const token = randomUUID();
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      fs.mkdirSync(lock);
-      atomicWriteJson(path.join(lock, "owner.json"), { pid: process.pid, host: os.hostname(), token, startedAt: new Date().toISOString() });
-      return () => {
-        try {
-          const owner = JSON.parse(fs.readFileSync(path.join(lock, "owner.json"), "utf-8"));
-          if (owner?.token === token) fs.rmSync(lock, { recursive: true, force: true });
-        } catch { fs.rmSync(lock, { recursive: true, force: true }); }
-      };
-    } catch (error: any) {
-      if (error?.code !== "EEXIST") throw error;
-      let owner: any = null;
-      try { owner = JSON.parse(fs.readFileSync(path.join(lock, "owner.json"), "utf-8")); } catch {}
-      let age = 0;
-      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
-      const stale = owner?.host === os.hostname() && Number.isInteger(owner?.pid)
-        ? !processAlive(owner.pid)
-        : !owner && age > 5_000;
-      if (stale && attempt === 0) {
-        fs.rmSync(lock, { recursive: true, force: true });
-        continue;
-      }
-      throw new RuntimeCompatError(
-        "RUNTIME_COMPAT_LOCK_BUSY",
-        "Another compatibility-artifact operation is active.",
-        "Wait for the active lint command to finish, then retry. If it crashed, retry after its process exits so recovery can acquire the lock.",
-        { lock, owner },
-        true,
-      );
-    }
-  }
-  throw new RuntimeCompatError("RUNTIME_COMPAT_LOCK_BUSY", "Could not acquire compatibility-artifact lock.", "Retry after the previous process exits.", { lock }, true);
-}
-
-function readCompatJournal(root: string): CompatJournal | null {
-  const journalFile = compatJournalPath(root);
-  if (!fs.existsSync(journalFile)) return null;
-  let journal: CompatJournal;
-  try { journal = JSON.parse(fs.readFileSync(journalFile, "utf-8")); }
-  catch (error: any) {
-    throw new RuntimeCompatError("RUNTIME_COMPAT_RECOVERY_REQUIRED", "Compatibility-artifact recovery journal is unreadable.", "Preserve the external journal and repair it before running lint again.", { journalFile, cause: error?.message ?? String(error) });
-  }
-  const expectedFiles = new Set(COMPAT_CONFIG_FILES.map(file => path.resolve(root, file)));
-  if (journal.schemaVersion !== "1" || path.resolve(journal.projectRoot) !== path.resolve(root) || !Array.isArray(journal.resources) || journal.resources.length !== expectedFiles.size || journal.resources.some(item => !expectedFiles.has(path.resolve(item.filePath)))) {
-    throw new RuntimeCompatError("RUNTIME_COMPAT_RECOVERY_REQUIRED", "Compatibility-artifact recovery journal does not match this project.", "Preserve the journal and reconcile it manually; no project file was modified.", { journalFile });
-  }
-  return journal;
-}
-
-function recoverCompatLocked(root: string): { recovered: boolean; restored: string[] } {
-  const journalFile = compatJournalPath(root);
-  const journal = readCompatJournal(root);
-  if (!journal) return { recovered: false, restored: [] };
-  const conflicts: string[] = [];
-  const restored: string[] = [];
-  for (const item of [...journal.resources].reverse()) {
-    const current = compatCurrentHash(item.filePath);
-    if (current === item.beforeHash) continue;
-    if (current !== item.generatedHash) {
-      conflicts.push(item.filePath);
-      continue;
-    }
-    try {
-      if (item.existed && item.text !== null) {
-        atomicWriteText(item.filePath, item.text, item.mode ?? 0o600);
-        if (item.mode !== null) fs.chmodSync(item.filePath, item.mode);
-      } else fs.rmSync(item.filePath, { force: true });
-      if (compatCurrentHash(item.filePath) !== item.beforeHash) throw new Error("restored content hash mismatch");
-      restored.push(item.filePath);
-    } catch (error: any) {
-      conflicts.push(`${item.filePath}: ${error?.message ?? String(error)}`);
-    }
-  }
-  if (conflicts.length) {
-    throw new RuntimeCompatError(
-      "RUNTIME_COMPAT_RECOVERY_REQUIRED",
-      "Compatibility artifacts changed while lint was running; automatic recovery refused to overwrite them.",
-      "Review the reported files and external journal, restore the intended content, then retry hy_status or hy_verify.",
-      { journalFile, conflicts, restored },
-    );
-  }
-  fs.rmSync(journalFile, { force: true });
-  return { recovered: true, restored };
-}
-
-export function recoverRuntimeCompatConfigs(root: string): { recovered: boolean; restored: string[] } {
-  if (!fs.existsSync(compatJournalPath(root)) && !fs.existsSync(compatLockPath(root))) return { recovered: false, restored: [] };
-  const release = acquireCompatLock(root);
-  try { return recoverCompatLocked(root); }
-  finally { release(); }
-}
-
-export async function withRuntimeCompatCoordination<T>(root: string, run: () => Promise<T> | T): Promise<T> {
-  const release = acquireCompatLock(root);
-  try {
-    recoverCompatLocked(root);
-    return await run();
-  } finally {
-    release();
-  }
-}
-
-export function withRuntimeCompatConfigs<T>(root: string, run: () => T): T {
-  const release = acquireCompatLock(root);
-  try {
-    recoverCompatLocked(root);
-    const suggestion = defaultSuggestion(root);
-    const unified = requireRuntimeConfig(root, suggestion);
-    const values: Array<{ file: string; filePath: string; existed: boolean; text: string | null; mode: number | null; value: JsonObject | null }> = [];
-    for (const file of COMPAT_CONFIG_FILES) {
-      const filePath = path.join(root, file);
-      const unsafeLink = symlinkComponent(root, file);
-      if (unsafeLink || !resolvesInsideProject(root, file)) {
-        throw new RuntimeCompatError("RUNTIME_COMPAT_PATH_UNSAFE", `${file} is not a normal in-repository file.`, "Remove the symlink or escaping path before running lint.", { file, filePath, unsafeLink });
-      }
-      const existed = fs.existsSync(filePath);
-      values.push({ file, filePath, existed, text: existed ? fs.readFileSync(filePath, "utf-8") : null, mode: existed ? fs.statSync(filePath).mode & 0o777 : null, value: readJsonFile(root, file).value });
-    }
-    const existing = Object.fromEntries(values.map(item => [item.file, item.value]));
-    const configs = compatConfigs(existing, unified);
-    const snapshots: CompatSnapshot[] = values.map(item => {
-      const generatedText = JSON.stringify(configs[item.file], null, 2) + "\n";
-      return { ...item, beforeHash: item.text === null ? null : compatHash(item.text), generatedText, generatedHash: compatHash(generatedText) };
-    });
-    const journal: CompatJournal = {
-      schemaVersion: "1",
-      id: randomUUID(),
-      projectRoot: fs.realpathSync(root),
-      pid: process.pid,
-      host: os.hostname(),
-      startedAt: new Date().toISOString(),
-      resources: snapshots,
-    };
-    atomicWriteJson(compatJournalPath(root), journal);
-    let operationError: unknown;
-    let result!: T;
-    try {
-      for (const snapshot of snapshots) {
-        internalSetupTestHooks().beforeCompatWrite?.(snapshot.filePath);
-        const current = compatCurrentHash(snapshot.filePath);
-        if (current !== snapshot.beforeHash) {
-          throw new RuntimeCompatError(
-            "RUNTIME_COMPAT_CONCURRENT_EDIT",
-            `Compatibility artifact changed before its temporary materialization: ${snapshot.filePath}`,
-            "Preserve the external edit and recovery journal; retry only after reconciling the reported file.",
-            { file: snapshot.filePath, beforeHash: snapshot.beforeHash, currentHash: current },
-            true,
-          );
-        }
-        atomicWriteText(snapshot.filePath, snapshot.generatedText);
-        const written = compatCurrentHash(snapshot.filePath);
-        if (written !== snapshot.generatedHash) {
-          throw new RuntimeCompatError("RUNTIME_COMPAT_RECOVERY_REQUIRED", `Compatibility artifact write hash mismatch: ${snapshot.filePath}`, "Preserve the recovery journal and reconcile the file before retrying lint.", { file: snapshot.filePath, expectedHash: snapshot.generatedHash, actualHash: written });
-        }
-      }
-      result = run();
-    } catch (error) {
-      operationError = error;
-    }
-    let recoveryError: unknown;
-    try { recoverCompatLocked(root); }
-    catch (error) { recoveryError = error; }
-    if (operationError && recoveryError) {
-      throw new AggregateError([operationError, recoveryError], "Runtime compatibility config operation and durable recovery failed.");
-    }
-    if (recoveryError) throw recoveryError;
-    if (operationError) throw operationError;
-    return result;
-  } finally {
-    release();
-  }
 }
 
 function preservedKeys(before: JsonObject | null, after: JsonObject): string[] {
@@ -947,6 +733,86 @@ function validateNumberField(raw: JsonObject, key: string, field: string, issues
   }
 }
 
+function validatePositiveIntegerField(raw: JsonObject, key: string, field: string, issues: string[]): void {
+  if (!hasOwn(raw, key)) return;
+  const value = raw[key];
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field} must be a positive integer; got ${JSON.stringify(value)}`);
+  }
+}
+
+function validateLineThresholds(raw: JsonObject, field: string, issues: string[]): void {
+  validateNumberField(raw, "maxLines", `${field}.maxLines`, issues);
+  validatePositiveIntegerField(raw, "maxLinesWarning", `${field}.maxLinesWarning`, issues);
+  validatePositiveIntegerField(raw, "maxLinesError", `${field}.maxLinesError`, issues);
+  const legacy = typeof raw.maxLines === "number" && Number.isFinite(raw.maxLines) ? raw.maxLines : null;
+  const warning = typeof raw.maxLinesWarning === "number" && Number.isSafeInteger(raw.maxLinesWarning) && raw.maxLinesWarning > 0
+    ? raw.maxLinesWarning
+    : null;
+  const explicitError = typeof raw.maxLinesError === "number" && Number.isSafeInteger(raw.maxLinesError) && raw.maxLinesError > 0
+    ? raw.maxLinesError
+    : null;
+  if (legacy !== null && explicitError !== null && legacy !== explicitError) {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field}.maxLinesError must equal legacy ${field}.maxLines while both are configured`);
+  }
+  const error = explicitError ?? legacy;
+  if (warning !== null && error !== null && warning > error) {
+    issues.push(`${UNIFIED_CONFIG_FILE} ${field}.maxLinesWarning must not exceed ${field}.maxLinesError`);
+  }
+}
+
+function normalizedTierPath(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function validateTiers(root: string, raw: JsonObject, checkExists: boolean, issues: string[]): void {
+  if (!hasOwn(raw, "tiers")) return;
+  if (!Array.isArray(raw.tiers) || raw.tiers.length === 0) {
+    issues.push(`${UNIFIED_CONFIG_FILE} codelint.tiers must be a non-empty array when configured`);
+    return;
+  }
+  const names = new Set<string>();
+  const paths: Array<{ name: string; path: string }> = [];
+  raw.tiers.forEach((value: unknown, index: number) => {
+    const label = `codelint.tiers[${index}]`;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      issues.push(`${UNIFIED_CONFIG_FILE} ${label} must be an object with name and paths`);
+      return;
+    }
+    const tier = value as JsonObject;
+    const unknown = Object.keys(tier).filter(key => key !== "name" && key !== "paths");
+    if (unknown.length) issues.push(`${UNIFIED_CONFIG_FILE} ${label} has unknown fields: ${unknown.join(", ")}`);
+    if (typeof tier.name !== "string" || !tier.name.trim() || tier.name !== tier.name.trim() || /[\0\r\n]/.test(tier.name)) {
+      issues.push(`${UNIFIED_CONFIG_FILE} ${label}.name must be a non-empty trimmed single-line string`);
+    } else if (names.has(tier.name)) {
+      issues.push(`${UNIFIED_CONFIG_FILE} codelint.tiers names must be unique: ${tier.name}`);
+    } else names.add(tier.name);
+    if (!Array.isArray(tier.paths) || tier.paths.length === 0 || !tier.paths.every((item: unknown) => typeof item === "string")) {
+      issues.push(`${UNIFIED_CONFIG_FILE} ${label}.paths must be a non-empty array of strings`);
+      return;
+    }
+    for (const tierPath of tier.paths as string[]) {
+      if (!isSafeRelativePath(tierPath)) {
+        issues.push(`${UNIFIED_CONFIG_FILE} ${label}.paths entry is not a safe relative path: ${tierPath}`);
+        continue;
+      }
+      if (checkExists && !directoryExists(root, tierPath)) {
+        issues.push(`${UNIFIED_CONFIG_FILE} ${label}.paths entry is not an existing directory: ${tierPath}`);
+      }
+      paths.push({ name: typeof tier.name === "string" ? tier.name : label, path: normalizedTierPath(tierPath) });
+    }
+  });
+  for (let left = 0; left < paths.length; left += 1) {
+    for (let right = left + 1; right < paths.length; right += 1) {
+      const a = paths[left];
+      const b = paths[right];
+      if (a.path === b.path || a.path.startsWith(`${b.path}/`) || b.path.startsWith(`${a.path}/`)) {
+        issues.push(`${UNIFIED_CONFIG_FILE} codelint.tiers paths must not duplicate or overlap: ${a.path} (${a.name}) and ${b.path} (${b.name})`);
+      }
+    }
+  }
+}
+
 function validateObjectField(raw: JsonObject, key: string, field: string, issues: string[]): void {
   if (!hasOwn(raw, key)) return;
   const value = raw[key];
@@ -971,8 +837,9 @@ function validateUnifiedConfig(root: string, raw: JsonObject, unified: JsonObjec
   validateStringArrayField(projectRaw, "codeDirs", "project.codeDirs", issues);
   validateStringField(projectRaw, "docsDir", "project.docsDir", issues);
   validateStringArrayField(codelintRaw, "lintDirs", "codelint.lintDirs", issues);
-  validateNumberField(codelintRaw, "maxLines", "codelint.maxLines", issues);
-  validateNumberField(doclintRaw, "maxLines", "doclint.maxLines", issues);
+  validateLineThresholds(codelintRaw, "codelint", issues);
+  validateLineThresholds(doclintRaw, "doclint", issues);
+  validateTiers(root, codelintRaw, checkExists, issues);
   validateObjectField(docsGardenerRaw, "catalogs", "docsGardener.catalogs", issues);
   if (hasOwn(raw, "ci")) {
     if (!hasOwn(ciRaw, "commands")) issues.push(`${UNIFIED_CONFIG_FILE} ci.commands is required when ci is configured`);
@@ -1042,7 +909,7 @@ function configResult(root: string, suggestion: ConfigSuggestion, issues: string
     display: {
       title: ok ? "Config looks consistent" : "Project config needs confirmation",
       body: ok
-        ? `${UNIFIED_CONFIG_FILE} is the source of truth; compatibility JSON is materialized only at runtime when legacy CLIs need it.`
+        ? `${UNIFIED_CONFIG_FILE} is the source of truth; legacy compatibility JSON is read-only input for migration and drift diagnostics and is never generated at runtime.`
         : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}
 
 Suggested command:
@@ -1088,7 +955,7 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
     suggestion,
   );
   const projectConfig = asObject(unified.project);
-  const expectedCompat = compatConfigs({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
+  const expectedCompat = legacyCompatProjection({ "codelint.json": codelint, "doclint.json": doclint, "docs-gardener.json": gardener }, unified);
 
   if (unifiedRaw) {
     issues.push(...validateUnifiedConfig(root, unifiedRaw, unified));
@@ -1191,6 +1058,7 @@ export function configHelp(): string {
     "  hy-workflow setup           Configure MCP clients and shared project checks",
     "  hy-workflow unset           Remove the local project deployment",
     "  hy-workflow doctor          Diagnose tools, client config, state, and artifact drift",
+    "  hy-workflow lint --json      Run built-in D001-D005 and C001-C005 rules",
     "  hy-workflow --version       Show the installed package version",
     "  hy-workflow --help          Show this help",
     "  hy-workflow config --check --json",

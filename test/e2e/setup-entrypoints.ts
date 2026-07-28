@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { setupHelp } from "../../src/setup-cli.js";
 import { MCP_DEFINITIONS } from "../../src/setup/types.js";
+import { renderWorkflowTemplate } from "../../src/setup/shared.js";
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
@@ -26,7 +27,8 @@ assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener" && MCP_DEFIN
 
 const template = read("templates/hy-workflow.yml");
 const workflow = read(".github/workflows/hy-workflow.yml");
-assert(template === workflow, "checked-in shared workflow must match the packaged template exactly");
+assert(template !== workflow && renderWorkflowTemplate() === workflow, "checked-in shared workflow must match the deterministically rendered packaged template");
+assert(template.includes("__HY_WORKFLOW_LINT_BUNDLE_BASE64__") && !workflow.includes("__HY_WORKFLOW_LINT_BUNDLE_BASE64__"), "setup must replace the packaged lint bundle placeholder");
 assert(!template.includes('"setup"') && !template.includes('"setup.ps1"'), "default workflow must not reference removed installers");
 
 for (const file of ["README.md", "docs/setup.md"]) {

@@ -1,84 +1,92 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { validateLintPressureEnvelope } from "../acceptance/lint-report.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-function rejects(value: unknown, tool: "doclint" | "codelint", requireClean: boolean, message: string): void {
-  try {
-    validateLintPressureEnvelope(value, tool, requireClean, 120_000);
-  } catch {
-    return;
-  }
+const rules = ["D001", "D002", "D003", "D004", "D005", "C001", "C002", "C003", "C004", "C005"];
+
+function makeReport(options: {
+  statuses?: Record<string, string>;
+  findings?: Array<{ rule: string; severity: "error" | "warning"; path: string; line?: number; message: string }>;
+  docs?: number;
+  code?: number;
+} = {}): any {
+  const statuses = options.statuses ?? {};
+  const findings = options.findings ?? [];
+  const checks = rules.map(rule => {
+    const own = findings.filter(finding => finding.rule === rule);
+    return {
+      rule,
+      status: statuses[rule] ?? (own.some(finding => finding.severity === "error") ? "failed" : own.length ? "warning" : "passed"),
+      files: rule.startsWith("D") ? (options.docs ?? 1) : (options.code ?? 2),
+      errors: own.filter(finding => finding.severity === "error").length,
+      warnings: own.filter(finding => finding.severity === "warning").length,
+      message: rule + " evidence",
+    };
+  });
+  const errors = findings.filter(finding => finding.severity === "error").length;
+  const warnings = findings.filter(finding => finding.severity === "warning").length;
+  const failed = checks.filter(check => check.status === "failed").length;
+  const docs = options.docs ?? 1;
+  const code = options.code ?? 2;
+  return {
+    schema: "hy-workflow.lint.v1",
+    version: 1,
+    ok: errors === 0 && failed === 0,
+    root: "/fixture",
+    counts: { checks: 10, failed, errors, warnings, files: docs + code, docs, code },
+    checks,
+    findings,
+  };
+}
+
+function validate(report: any, status = report.ok ? 0 : 1): ReturnType<typeof validateLintPressureEnvelope> {
+  return validateLintPressureEnvelope({ status, timedOut: false, durationMs: 25, report }, 120_000);
+}
+
+function rejects(report: any, status: number, message: string): void {
+  try { validate(report, status); } catch { return; }
   throw new Error(message);
 }
 
-const supportedProfile = { kind: "python", codeExt: [".py"], lintDirs: ["src"], codeFiles: 12, supportedCodeFiles: 12 };
-const unsupportedProfile = { kind: "typescript", codeExt: [".ts"], lintDirs: ["src"], codeFiles: 18, supportedCodeFiles: 0 };
+const clean = validate(makeReport({ statuses: { C003: "not_configured" } }));
+assert(clean.ok && clean.docs === 1 && clean.code === 2 && clean.notConfiguredRules.includes("C003"), "clean internal lint report must pass with an explicit not-configured tier status");
 
-const cleanDoc = validateLintPressureEnvelope({
-  tool: "doclint", status: 0, timedOut: false, durationMs: 100,
-  report: { ok: true, errors: 0, failed: 0, files: 8 },
-}, "doclint", true, 120_000);
-assert(cleanDoc.ok && cleanDoc.files === 8, "clean maintained doclint baseline must pass");
+const warningFinding = { rule: "C002", severity: "warning" as const, path: "src/large.py", line: 301, message: "effective line warning" };
+const warning = validate(makeReport({ findings: [warningFinding] }));
+assert(warning.ok && warning.warnings === 1 && warning.status === 0, "warning-only internal lint must remain nonblocking");
 
-const dirtyOss = validateLintPressureEnvelope({
-  tool: "codelint", status: 0, timedOut: false, durationMs: 200,
-  projectProfile: supportedProfile,
-  report: { counts: { errors: 3, files: 40 } },
-}, "codelint", false, 120_000);
-assert(!dirtyOss.ok && dirtyOss.errors === 3 && dirtyOss.files === 40, "OSS rule findings may be reported without becoming an acceptance crash");
+const errorFinding = { rule: "C005", severity: "error" as const, path: "src/broken.py", line: 1, message: "parse failure" };
+const dirty = validate(makeReport({ findings: [errorFinding] }), 1);
+assert(!dirty.ok && dirty.errors === 1 && dirty.failed === 1, "structured OSS lint errors must remain inspectable without being mistaken for an engine crash");
 
-const explicitDirtyOss = validateLintPressureEnvelope({
-  tool: "codelint", status: 1, timedOut: false, durationMs: 210,
-  projectProfile: supportedProfile,
-  report: { ok: false, errors: 3, total_files: 40 },
-}, "codelint", false, 120_000);
-assert(!explicitDirtyOss.ok && explicitDirtyOss.errors === 3 && explicitDirtyOss.status === 1, "explicit codelint failure with positive counts and a failing native exit must remain inspectable on OSS");
+const unsupported = validate(makeReport({ statuses: { C003: "not_applicable", C004: "not_applicable", C005: "not_applicable" } }));
+assert(unsupported.ok && unsupported.notApplicableRules.join(",") === "C003,C004,C005", "unsupported languages must report honest per-rule N/A evidence");
 
-const nativeCleanCode = validateLintPressureEnvelope({
-  tool: "codelint", status: 0, timedOut: false, durationMs: 150,
-  projectProfile: supportedProfile,
-  report: { errors: 0, warnings: 0, total_files: 3 },
-}, "codelint", true, 120_000);
-assert(nativeCleanCode.ok && nativeCleanCode.files === 3, "native codelint output may omit ok when its required counts prove a clean scan");
+rejects(makeReport({ docs: 0 }), 0, "zero-document scan must fail pressure validation");
+rejects(makeReport(), 1, "clean report with a failing exit must be rejected");
+const missingRule = makeReport();
+missingRule.checks.pop();
+rejects(missingRule, 0, "missing D/C rule must be rejected");
+const unsorted = makeReport({ findings: [
+  { rule: "D003", severity: "warning", path: "z.md", message: "z" },
+  { rule: "C002", severity: "warning", path: "a.py", message: "a" },
+] });
+rejects(unsorted, 0, "nondeterministically ordered findings must be rejected");
 
-const nativeNotApplicable = validateLintPressureEnvelope({
-  tool: "codelint", status: 0, timedOut: false, durationMs: 120,
-  projectProfile: unsupportedProfile,
-  report: { errors: 0, warnings: 0, total_files: 0 },
-}, "codelint", true, 120_000);
-assert(!nativeNotApplicable.ok && nativeNotApplicable.notApplicable && nativeNotApplicable.files === 0 && nativeNotApplicable.projectFiles === 18, "unsupported project must produce an evidenced N/A, not a clean scan");
-
-const dirtyNonzero = validateLintPressureEnvelope({
-  tool: "doclint", status: 1, timedOut: false, durationMs: 300,
-  report: { ok: false, summary: { errors: 2, failed: 2, total_files: 20 } },
-}, "doclint", false, 120_000);
-assert(!dirtyNonzero.ok && dirtyNonzero.failed === 2, "structured OSS rule failures with nonzero status must remain inspectable");
-
-rejects({ tool: "doclint", status: 0, timedOut: false, durationMs: 1, report: { ok: true, errors: 0, failed: 0, files: 0 } }, "doclint", false, "zero-file lint must fail");
-rejects({ tool: "doclint", status: 0, timedOut: false, durationMs: 1, report: { ok: true, errors: 0, files: 2 } }, "doclint", false, "doclint missing failed count must fail");
-rejects({ tool: "codelint", status: 0, timedOut: true, durationMs: 120_001, report: { ok: true, errors: 0, files: 2 } }, "codelint", false, "timed-out lint must fail");
-rejects({ tool: "codelint", status: 1, timedOut: false, durationMs: 1, projectProfile: supportedProfile, report: { ok: true, errors: 0, files: 2 } }, "codelint", false, "clean report with failing exit must fail");
-rejects({ tool: "codelint", status: 0, timedOut: false, durationMs: 1, projectProfile: supportedProfile, report: { ok: false, errors: 0, files: 2 } }, "codelint", true, "explicit codelint ok=false must fail even when counts are clean");
-rejects({ tool: "codelint", status: 0, timedOut: false, durationMs: 1, projectProfile: supportedProfile, report: { ok: false, errors: 1, files: 2 } }, "codelint", false, "explicit codelint ok=false with a successful native exit is contradictory");
-rejects({ tool: "codelint", status: 0, timedOut: false, durationMs: 1, projectProfile: supportedProfile, report: { errors: 1, files: 2 } }, "codelint", true, "maintained legacy target findings must fail");
-rejects({ tool: "codelint", status: 0, timedOut: false, durationMs: 1, projectProfile: unsupportedProfile, report: { errors: 0, files: 2 } }, "codelint", false, "unsupported project must not claim scanned files");
-rejects({ tool: "codelint", status: 0, timedOut: false, durationMs: 1, projectProfile: { ...unsupportedProfile, codeFiles: 0 }, report: { errors: 0, files: 0 } }, "codelint", false, "N/A requires real project code-file evidence");
-rejects({ tool: "codelint", status: 0, timedOut: false, durationMs: 1, projectProfile: unsupportedProfile, report: { errors: 1, files: 0 } }, "codelint", false, "N/A must not hide lint findings");
-
-const child = readFileSync("test/acceptance/lint-pressure-child.mjs", "utf8");
 const scenarios = readFileSync("test/acceptance/scenarios.ts", "utf8");
-for (const token of ["HY_ACCEPTANCE_PACKAGE_ROOT", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "dist", "checks.js", "config.js", "project-profile.js", "inspectProject", "withRuntimeCompatConfigs", "DOCLINT_SOURCE", "CODELINT_SOURCE", "DOCLINT_INTEGRITY_SHA512", "CODELINT_INTEGRITY_SHA512", "curl", "--retry", "--package=", "--offline", 'mode === "prepare"', "spawnSync"]) {
-  assert(child.includes(token), `installed-package lint child is missing ${token}`);
+const runner = readFileSync("test/acceptance/runner.ts", "utf8");
+const harness = readFileSync("test/acceptance/harness.ts", "utf8");
+assert(!existsSync("test/acceptance/lint-pressure-child.mjs"), "external lint child must be removed");
+for (const token of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "prepareLintPressurePackages"]) {
+  assert(!scenarios.includes(token) && !runner.includes(token) && !harness.includes(token), "acceptance must not retain external lint token " + token);
 }
-assert(child.includes('(mode === "prepare" && result.status !== 0)') && !child.includes("timedOut || result.status !== 0 ||"), "scan child must preserve structured nonzero lint findings for validator policy instead of reporting a crash");
-for (const token of ["prepareLintPressurePackages", "LINT_PREPARATION_TIMEOUT_MS", "LINT_PREPARATION_ATTEMPTS", "archiveSha512", "runRepositoryLintPressure", "assertCompatibilityUnchanged", "LINT_PRESSURE_TIMEOUT_MS", 'repo.category === "legacy"', "repo.ecosystem === \"python\"", "summary.notApplicable", "lintPressure"]) {
-  assert(scenarios.includes(token), `real-repository lint pressure scenario is missing ${token}`);
+for (const token of ['run("hy-workflow", ["lint", "--json"]', "validateLintPressureEnvelope", "assertCompatibilityUnchanged", "LINT_PRESSURE_TIMEOUT_MS", "DEPENDENCY_SCANNER_EXTENSIONS", "summary.notApplicableRules", "unsupported language did not report an honest C004 N/A", "unsupported language did not report an honest C005 N/A", "lintPressure"]) {
+  assert(scenarios.includes(token), "real-repository internal lint pressure scenario is missing " + token);
 }
-
 const packageScripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
 assert(packageScripts["test:acceptance:pressure"]?.includes("--profile release"), "baseline must not weaken release lint pressure");
 
-console.log("acceptance-lint-pressure: report, timeout, installed-package, baseline, and compatibility-restoration contracts pass");
+console.log("acceptance-lint-pressure: unified report, timeout, installed-package, N/A, and zero-mutation contracts pass");

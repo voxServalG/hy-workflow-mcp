@@ -36,6 +36,7 @@ const serverPath = join(process.cwd(), "dist", "server.js");
 const nonGitDirectory = mkdtempSync(join(tmpdir(), "hy-version-"));
 assert(execFileSync(process.execPath, [serverPath, "--version"], { cwd: nonGitDirectory, encoding: "utf8" }).trim() === pkg.version, "CLI --version must work outside a Git project and match package.json");
 assert(execSync("node dist/server.js --help", { cwd: process.cwd(), encoding: "utf8" }).includes("hy-workflow setup"), "CLI help must expose the bundled setup command");
+assert(execSync("node dist/server.js --help", { cwd: process.cwd(), encoding: "utf8" }).includes("hy-workflow lint --json"), "CLI help must expose the built-in lint command");
 
 // publishing builds dist, but installing the registry package never compiles locally
 assert(pkg.scripts?.clean === "node scripts/clean-dist.mjs", "clean must use the cross-platform Node dist cleaner");
@@ -53,12 +54,12 @@ for (const file of requiredFiles) {
 }
 
 // required npm scripts
-const requiredScripts = ["clean", "build", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "test:acceptance", "test:windows", "verify"];
+const requiredScripts = ["clean", "build", "lint", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "test:acceptance", "test:windows", "verify"];
 for (const script of requiredScripts) {
   assert(typeof pkg.scripts?.[script] === "string", `Missing required npm script: ${script}`);
 }
 const windowsSmoke = readFileSync("scripts/windows-smoke.mjs", "utf8");
-for (const token of ["npm pack", "@voxstudio/docs-gardener@1.0.0-next.0", "installed setup", "repeated installed setup", "installed unset", "projectFilesChanged", "codelint.json"]) {
+for (const token of ["npm pack", "@voxstudio/docs-gardener@1.0.0-next.0", "installed lint", "installed setup", "repeated installed setup", "installed unset", "projectFilesChanged", "codelint.json"]) {
   assert(windowsSmoke.includes(token), `Windows smoke is missing installed-package lifecycle evidence: ${token}`);
 }
 assert(windowsSmoke.includes("process.env.npm_execpath") && windowsSmoke.includes("const npmCommand = process.execPath") && windowsSmoke.includes("npmCommandPrefix"), "Windows smoke must invoke npm-cli.js through the native Node executable and structured argv");
@@ -74,7 +75,12 @@ const forbidden = [".hy/", ".opencode/", ".codex/", "test/", "src/", "codelint.j
 const packFiles = npmPackDryRun(process.cwd());
 assert(packFiles.includes("dist/server.js"), "npm pack must include the compiled CLI entrypoint");
 assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must include the default setup workflow template");
+for (const module of ["code.mjs", "docs.mjs", "fs.mjs", "index.mjs", "markdown.mjs", "python.mjs", "rust.mjs"]) {
+  assert(packFiles.includes(`templates/lint/${module}`), `npm pack must include templates/lint/${module}`);
+}
 assert(packFiles.includes("AGENTS.md"), "npm pack must include the canonical managed-rules migration source");
+const lintReport = JSON.parse(execFileSync(process.execPath, [serverPath, "lint", "--json"], { cwd: process.cwd(), encoding: "utf8" }));
+assert(lintReport.schema === "hy-workflow.lint.v1" && lintReport.counts?.checks === 10 && lintReport.counts?.errors === 0, "packed CLI entrypoint must execute the built-in ten-rule lint report");
 const managedRules = execFileSync(process.execPath, [serverPath, "config", "--print-managed-rules"], { cwd: nonGitDirectory, encoding: "utf8" });
 assert(managedRules.startsWith("<!-- hy-workflow-rules -->") && managedRules.includes("hy-workflow-rules-version:"), "installed CLI must print a complete versioned managed-rules block outside a Git project");
 assert(!packFiles.includes("setup") && !packFiles.includes("setup.ps1"), "npm pack must not include removed platform installers");
@@ -130,7 +136,6 @@ const runner = readFileSync("test/acceptance/runner.ts", "utf8");
 const harness = readFileSync("test/acceptance/harness.ts", "utf8");
 const scenarios = readFileSync("test/acceptance/scenarios.ts", "utf8");
 const failpointChild = readFileSync("test/acceptance/setup-failpoint-child.mjs", "utf8");
-const lintPressureChild = readFileSync("test/acceptance/lint-pressure-child.mjs", "utf8");
 assert(runner.includes("skipped: []") && runner.includes("expectedScenarios"), "release acceptance must forbid skips");
 assert(runner.includes('process.argv.indexOf("--package-archive")') && runner.includes("packAndInstall(workspace, matrix.companionPackage, packageArchive)"), "acceptance runner must accept and consume an explicit release tarball");
 assert(runner.includes("abortAcceptance(error)") && runner.includes("await mainPromise"), "acceptance total timeout must abort future work and await main settlement before reporting");
@@ -149,10 +154,11 @@ assert(scenarios.includes("if (previewEnvelope.ciConfirmationRequired)") && scen
 assert(scenarios.includes('run("hy-workflow", ["config", "--print-managed-rules"]') && !scenarios.includes('join(workspace.sourceRoot, "AGENTS.md")'), "legacy acceptance migration must consume the installed package rules export, never the source checkout");
 assert(failpointChild.includes("internal-setup-test-hooks") && failpointChild.includes("dist/setup-cli.js") && failpointChild.includes("runSetupCli"), "test-only failpoint child must inject the process-local hook before calling the installed tarball CLI");
 assert(scenarios.includes("runRepositoryLintPressure") && scenarios.includes("assertCompatibilityUnchanged") && scenarios.includes("lintPressure"), "every pinned repository must execute real doclint/codelint pressure scans and preserve compatibility bytes");
-assert(lintPressureChild.includes("HY_ACCEPTANCE_PACKAGE_ROOT") && lintPressureChild.includes("HY_ACCEPTANCE_LINT_ARCHIVE_DIR") && lintPressureChild.includes("project-profile.js") && lintPressureChild.includes("inspectProject") && lintPressureChild.includes("withRuntimeCompatConfigs") && lintPressureChild.includes("DOCLINT_SOURCE") && lintPressureChild.includes("CODELINT_SOURCE") && lintPressureChild.includes("DOCLINT_INTEGRITY_SHA512") && lintPressureChild.includes("CODELINT_INTEGRITY_SHA512") && lintPressureChild.includes("curl") && lintPressureChild.includes("--retry") && lintPressureChild.includes("--package=") && lintPressureChild.includes("--offline"), "lint pressure must download and integrity-pin codeload tools once, then execute offline scans through the installed tarball runtime");
-assert(lintPressureChild.includes('(mode === "prepare" && result.status !== 0)') && !lintPressureChild.includes("timedOut || result.status !== 0 ||"), "structured OSS lint findings must reach the acceptance validator even when the native lint exit is nonzero");
-assert(scenarios.includes("prepareLintPressurePackages") && scenarios.includes("LINT_PREPARATION_TIMEOUT_MS") && scenarios.includes("LINT_PREPARATION_ATTEMPTS"), "acceptance must prepare immutable lint packages with bounded retries before per-repository scan budgets begin");
-assert(scenarios.includes("summary.notApplicable") && scenarios.includes('repo.ecosystem === "python"') && scenarios.includes('repo.ecosystem === "rust"'), "acceptance must enforce the pinned codelint Python/Rust applicability matrix");
+assert(scenarios.includes('run("hy-workflow", ["lint", "--json"]') && !scenarios.includes("prepareLintPressurePackages"), "release pressure must call the installed built-in lint command without third-party preparation");
+assert(scenarios.includes("summary.notApplicableRules") && scenarios.includes("DEPENDENCY_SCANNER_EXTENSIONS"), "acceptance must enforce the declared built-in scanner applicability matrix");
+for (const forbiddenToken of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "npx --yes --package"]) {
+  assert(!scenarios.includes(forbiddenToken), `release pressure must not contain ${forbiddenToken}`);
+}
 assert(scenarios.includes("verifyCodexProjectShadowBoundary") && scenarios.includes("migrateCodexProjectSectionsExplicitly") && scenarios.includes("setup or unset modified project .codex/config.toml"), "legacy acceptance must fail closed on project Codex shadows and keep migration human-owned");
 assert(harness.includes("Acceptance harness refuses remote write command") && runner.includes("remote-write-attempt"), "acceptance must reject and audit remote-write attempts");
 assert(harness.includes("const fetchAttempts = 3") && harness.includes('"http.version=HTTP/1.1"') && harness.includes('"shallow.lock"'), "pinned repository clones must use bounded HTTPS retries and clean only temporary Git locks");

@@ -12,7 +12,8 @@ assert(pkg.scripts["test:acceptance:baseline"] === "npx tsx test/acceptance/base
 assert(pkg.scripts["test:acceptance:pressure"]?.includes("runner.ts --profile release"), "release pressure script drift");
 assert(pkg.scripts["test:acceptance"] === "npm run test:acceptance:pressure", "release compatibility alias drift");
 assert(pkg.scripts["verify:dev"] === "npm run verify && npm run test:acceptance:baseline", "dev verifier must include baseline");
-assert(baseline.fixtures.length >= 5 && new Set(baseline.fixtures.map((item: any) => item.incident)).size === baseline.fixtures.length, "baseline must cover unique incident fixtures");
+assert(baseline.fixtures.length >= 6 && new Set(baseline.fixtures.map((item: any) => item.incident)).size === baseline.fixtures.length, "baseline must cover unique incident fixtures");
+assert(baseline.fixtures.some((item: any) => item.incident === "INC-LINT-INTERNAL-OFFLINE"), "baseline must encode the internal offline lint incident");
 for (const token of ["main", "dev", "trunk", "master", ".js", ".ts", ".py", ".rs"]) assert(JSON.stringify(baseline).includes(token), `baseline matrix missing ${token}`);
 assert(release.repositories.length === 5, "release pressure matrix must contain five public repositories");
 assert((releaseWorkflow.match(/actions\/checkout@/g) ?? []).length === 6, "release workflow must check out source plus five pressure repositories");

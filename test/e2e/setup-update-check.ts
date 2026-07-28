@@ -58,7 +58,7 @@ function writeStamp(root: string, setupVersion: string, tools = defaultStampTool
   fs.writeFileSync(path.join(root, "hy-workflow.json"), "{}\n", "utf-8");
   fs.writeFileSync(path.join(root, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\n", "utf-8");
   let agents = "";
-  try { agents = fs.readFileSync(path.join(process.cwd(), "AGENTS.md"), "utf-8"); } catch { agents = "<!-- hy-workflow-rules -->\n<!-- hy-workflow-rules-version: 2026.07.16.1 -->\nplaceholder\n<!-- /hy-workflow-rules -->\n"; }
+  try { agents = fs.readFileSync(path.join(process.cwd(), "AGENTS.md"), "utf-8"); } catch { agents = "<!-- hy-workflow-rules -->\n<!-- hy-workflow-rules-version: 2026.07.16.1 -->\n内置、离线、第一方规则；旧 JSON 仅作只读迁移或漂移输入。\n<!-- /hy-workflow-rules -->\n"; }
   fs.writeFileSync(path.join(root, "AGENTS.md"), agents, "utf-8");
   writeDeployment(root, {
     setupVersion,
@@ -100,6 +100,7 @@ assert(!help.includes("--shared") && !help.includes("--local") && help.includes(
 assert(MCP_DEFINITIONS["hy-workflow"].command === "hy-workflow", "setup should configure the direct hy-workflow command");
 assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener", "setup should configure the direct docs-gardener command");
 assert(fs.existsSync(path.join(originalCwd, "templates", "hy-workflow.yml")), "default setup should ship one workflow template");
+assert(fs.existsSync(path.join(originalCwd, "templates", "lint", "index.mjs")), "default setup should ship the built-in lint bundle entrypoint");
 
 try {
   const missingRoot = tempRepo();

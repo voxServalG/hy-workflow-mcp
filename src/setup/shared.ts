@@ -8,6 +8,16 @@ import { planAgentsFile } from "./agents-rules.js";
 
 const WORKFLOW_FILE = ".github/workflows/hy-workflow.yml";
 const CONFIG_FILE = "hy-workflow.json";
+const WORKFLOW_BUNDLE_PLACEHOLDER = "__HY_WORKFLOW_LINT_BUNDLE_BASE64__";
+const LINT_TEMPLATE_FILES = [
+  "code.mjs",
+  "docs.mjs",
+  "fs.mjs",
+  "index.mjs",
+  "markdown.mjs",
+  "python.mjs",
+  "rust.mjs",
+] as const;
 export const AGENTS_FILE = "AGENTS.md";
 export const SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE, AGENTS_FILE] as const;
 
@@ -40,9 +50,23 @@ export function assertSharedArtifactTarget(root: string, relative: string): stri
   return target;
 }
 
-function templateText(): string {
+function workflowTemplateSource(): string {
   const template = new URL("../../templates/hy-workflow.yml", import.meta.url);
   return fs.readFileSync(template, "utf-8");
+}
+
+export function renderWorkflowTemplate(): string {
+  const source = workflowTemplateSource();
+  const occurrences = source.split(WORKFLOW_BUNDLE_PLACEHOLDER).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(`Workflow template must contain exactly one ${WORKFLOW_BUNDLE_PLACEHOLDER} placeholder; found ${occurrences}.`);
+  }
+  const modules = Object.fromEntries(LINT_TEMPLATE_FILES.map(file => {
+    const sourceUrl = new URL(`../../templates/lint/${file}`, import.meta.url);
+    return [file, fs.readFileSync(sourceUrl, "utf-8")];
+  }));
+  const bundle = Buffer.from(JSON.stringify(modules), "utf-8").toString("base64");
+  return source.replace(WORKFLOW_BUNDLE_PLACEHOLDER, bundle);
 }
 
 function changed(root: string, relative: string, next: string): boolean {
@@ -58,7 +82,7 @@ function write(root: string, relative: string, next: string): void {
 export function sharedArtifactPlan(root: string, config: JsonObject): Array<{ file: string; content: string }> {
   const values: Array<{ file: string; content: string }> = [
     { file: CONFIG_FILE, content: JSON.stringify(config, null, 2) + "\n" },
-    { file: WORKFLOW_FILE, content: templateText() },
+    { file: WORKFLOW_FILE, content: renderWorkflowTemplate() },
   ];
   const agents = planAgentsFile(root);
   if (agents.changed) values.push({ file: AGENTS_FILE, content: agents.nextContent });

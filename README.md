@@ -59,7 +59,7 @@ setup 会自动：
 - 🔌 给 Codex / Claude Code / OpenCode 配好 MCP（**只写本机用户级配置，不往项目里塞 `.opencode/`/`.codex/` 这类项目级配置目录**）
 - 📝 在仓库里写入/更新三个**团队共有文件**（需要提交到 Git）：
   - `hy-workflow.json` — 项目工作流配置
-  - `.github/workflows/hy-workflow.yml` — CI 跑 doclint + codelint
+  - `.github/workflows/hy-workflow.yml` — CI 在原生检查后离线运行内置 doclint + codelint
   - `AGENTS.md` 里的 `<!-- hy-workflow-rules -->` 托管块 — Agent 规则（块外你写的团队指令字节级保留）
 - 🧠 推断你的 CI 命令（`npm test` / `cargo test` / `pytest` …），供你确认
 
@@ -80,7 +80,7 @@ Agent 会自己跑：`hy_read_docs(before_plan)` → `hy_plan` → **停下来�
 | 🔒 **硬 Scope 锁（Hard Scope Lock）** | 只能改 PlanDoc 里列的文件；多改一个 MCP 直接拒绝 Edit，不是"建议你别改"是"不让你改" |
 | 📝 **Docs-as-contract** | 改代码必须同步 `docs/`，文档漂移校验不放行；`docs/` 是契约真相源，lint+test 共同保证代码不偏离文档承诺 |
 | 🤝 **Agent-agnostic** | 一个 MCP Server，Claude Code / Codex / OpenCode / Cursor 一套规则全走同一条状态机 |
-| 🌐 **CI Fail-closed** | 本地 compile/contract-lint/tests 全绿才 commit，doclint+codelint 固定版本只在 GitHub Actions 跑，零扫描也不绿；耗时太长的套件走 `hy_exam_plan/hy_exam_submit` 异步两步提交 |
+| 🌐 **CI Fail-closed** | 本地 compile/contract-lint/tests 全绿才 commit，包内 doclint+codelint 在 GitHub Actions 离线运行，错误或零文档扫描都不绿；耗时太长的套件走 `hy_exam_plan/hy_exam_submit` 异步两步提交 |
 | 🧑‍💻 **Solo-friendly** | 单人开发者也防得住架构腐化——守门员替你看边界、逼你出计划、逼你同步文档，没 Reviewer 也不裸奔 |
 
 **标准基座（2026 年 Agent 本该做对的事，我们不拿它当卖点，但默认就做对）：**
@@ -196,7 +196,7 @@ agent：
 |---|---|---|
 | **setup 团队产物（提交到仓库）** | `hy-workflow.json`、`.github/workflows/hy-workflow.yml`、`AGENTS.md` 中 `<!-- hy-workflow-rules -->` 托管块 | setup 自动维护；块外自定义指令属于团队，setup 不动 |
 | **runtime/client 产物（不要提交）** | `~/.config/hy-workflow/`、`~/.local/state/hy-workflow/`、`~/.cache/hy-workflow/`、MCP 客户端用户级配置 | 在你本机用户目录；`hy-workflow unset` 清当前项目 |
-| **legacy/compat（不要提交）** | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 各 Client 自己的项目级配置，setup 不删，用 `--migrate-legacy-clients` 备份迁移 |
+| **legacy/compat（不要提交）** | `.hy/`、`.opencode/`、`.codex/`、`.mcp.json`、`codelint.json`、`doclint.json`、`docs-gardener.json` | 仅作只读迁移/漂移输入；内置 lint 不创建或改写，项目级客户端定义可用 `--migrate-legacy-clients` 备份迁移 |
 
 setup 改了团队文件应单独开一个 "setup artifact sync" PR 提交，不要混进业务 PR。
 
@@ -271,14 +271,14 @@ unset 只删你本机 deployment/state/cache 和客户端 MCP 登记，**不删�
 - [Setup 详解](./docs/setup.md) · [CLI 契约](./docs/cli.md)
 - [工具参考](./docs/tools.md) · [架构](./docs/architecture.md)
 - [状态机](./docs/state-machine.md) · [verify pipeline](./docs/verify.md)
-- [错误码](./docs/errors.md) · [发布验收](./docs/acceptance.md)
+- [错误码](./docs/errors.md) · [内置 lint 规则](./docs/lint-rules.md) · [发布验收](./docs/acceptance.md)
 
 ---
 
 ## ✅ 验证有多严
 
 - `hy_verify`：compile → scope → boundary → platform → smoke → tests，一层都不能少（doclint/codelint 不在本地运行）
-- setup 生成的 GitHub Actions：先跑你确认的 `ci.commands`，再强制跑 pinned 版本 doclint/codelint
+- setup 生成的 GitHub Actions：仅响应 pull request 与手动触发，先跑你确认的 `ci.commands`，再从打包进 workflow 的第一方模块离线运行 doclint/codelint
 - CI 没命令 / 命令失败 / doclint/codelint 扫零文件 / 无 checks 或只有 skipped/neutral → **Fail-closed**
 - 仓库管理员需在 GitHub ruleset 把 `Verify` check 设为 required（setup 不越权改管理配置）
 

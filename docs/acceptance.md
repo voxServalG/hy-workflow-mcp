@@ -8,7 +8,7 @@ npm run test:acceptance:baseline 是每次进入 dev 前的项目级、离线、
 
 baseline 先 npm pack，检查 tarball 不含源码、测试和本地运行态，再从解包后的 dist 执行产品。它不访问 registry 或外部仓库；运行依赖来自本次 npm ci，docs-gardener 使用只实现版本与 MCP catalog 握手的有限 stub。隔离 HOME、XDG、客户端状态、npm prefix/cache 和凭证边界沿用 acceptance harness。
 
-test/acceptance/baseline-matrix.json 用 pairwise 方式覆盖 Node/main、TypeScript/dev monorepo、Python/trunk、Rust/master、混合语言与非标准目录。每个 fixture 必须绑定唯一 INC-* 历史事故 ID，并执行 dry-run 无副作用、两次 setup 收敛、offline doctor、项目文件边界、unset 保留团队产物与清理 runtime/compat artifacts。场景不得 skip；缺项、超时、非零退出、非 JSON envelope、边界越界或清理不完整均 fail closed。
+test/acceptance/baseline-matrix.json 用六个确定性 fixture 覆盖 Node/main、TypeScript/dev monorepo、Python/trunk、Rust/master、混合语言/非标准目录，以及 `INC-LINT-INTERNAL-OFFLINE`。每个 fixture 必须绑定唯一 INC-* 历史事故 ID，并执行 dry-run 无副作用、两次 setup 收敛、offline doctor、项目文件边界、unset 保留团队产物与清理 runtime artifacts；lint fixture 还证明已安装 tarball 能离线产出十条规则的统一报告，且三个旧兼容 JSON 不出现。场景不得 skip；缺项、超时、非零退出、非 JSON envelope、边界越界或清理不完整均 fail closed。
 
 新增重大 bug 时，修复 PR 必须先增加能复现该 bug 的事故 fixture/oracle；优先扩展现有 pairwise fixture，只有出现新的独立项目维度才增加 fixture。baseline 不负责公网兼容压力，也不允许以减少 release 场景换取速度。
 
@@ -18,7 +18,7 @@ npm run test:acceptance 保持兼容入口，等价于 npm run test:acceptance:p
 
 release matrix 固定为五个公开仓库：Vite、Flask、Express、GitHub CLI、ripgrep；HTTPS URL、full commit、生态、分支和预期目录都在 test/acceptance/matrix.json。本地可通过各仓库的 HY_ACCEPTANCE_*_MIRROR 指向含精确 commit 的只读 clone；未提供时才走有界 HTTPS fetch。release workflow 预先 checkout 五个固定 commit，再把本地路径传给 runner。
 
-release pressure 覆盖真实 doclint/codelint 压力、PTY、managed AGENTS 迁移、客户端 shadow refusal、artifact drift、32 并发 setup、七个持久化 failpoint 的精确回滚、MCP 文档读取、unset、进程树/磁盘预算、远程写拒绝和 worktree 边界。任何 timeout、partial result、skip、零文件假绿、兼容 JSON 未恢复或 structured evidence 缺失都失败。
+release pressure 直接通过已安装 tarball 运行统一内置 lint，不下载或准备第三方 lint 包。它允许真实仓库存在结构化 lint findings，但要求报告 schema、十条规则、适用性、计数、确定性顺序和退出码一致，并证明兼容 JSON 字节不变。其余覆盖仍包括 PTY、managed AGENTS 迁移、客户端 shadow refusal、artifact drift、32 并发 setup、七个持久化 failpoint 的精确回滚、MCP 文档读取、unset、进程树/磁盘预算、远程写拒绝和 worktree 边界。任何 timeout、partial result、skip、零文件假绿或 structured evidence 缺失都失败。
 
 ## Verify integration
 

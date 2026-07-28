@@ -29,6 +29,8 @@ assert(init.includes("harness_missing"), "dist init should expose structured mis
 assert(!server.includes("初始化项目：部署 hy-harness"), "dist server description must not claim hy_init deploys hy-harness");
 assert(server.includes("默认不写项目或 .git"), "dist server description should describe zero-project-change init");
 assert(server.includes('argv[0] === "setup" || argv[0] === "unset"'), "dist server should expose setup and unset through one CLI engine");
+assert(server.includes('argv[0] === "lint"'), "dist server should expose the built-in lint CLI");
+assert(readDist("lint.js").includes("templates/lint/index.mjs"), "dist lint adapter should execute the packaged first-party engine");
 
 assert(server.includes("hy_read_docs"), "dist server should register hy_read_docs");
 assert(readDocs.includes("before_plan"), "dist read_docs should implement before_plan stage");

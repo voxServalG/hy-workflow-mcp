@@ -10,7 +10,6 @@ import {
   terminateAllAcceptanceChildren,
 } from "./harness.js";
 import {
-  prepareLintPressurePackages,
   runConcurrencyScenario,
   runFaultScenario,
   runRepositoryScenario,
@@ -23,7 +22,6 @@ type AcceptanceReport = {
   profile: "release";
   sourceCommit: string;
   packageArchive?: string;
-  lintPreparation?: Array<Record<string, unknown>>;
   workspace: string;
   startedAt: string;
   durationMs: number;
@@ -72,8 +70,6 @@ async function main(): Promise<void> {
   const { run } = await import("./harness.js");
   report.sourceCommit = (await run("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, env: workspace.env })).stdout.trim();
   report.packageArchive = await packAndInstall(workspace, matrix.companionPackage, packageArchive);
-  report.lintPreparation = await prepareLintPressurePackages(workspace);
-  process.stdout.write(JSON.stringify({ event: "acceptance-lint-prepared", tools: report.lintPreparation }) + "\n");
   for (const [index, repo] of matrix.repositories.entries()) {
     const result = await runRepositoryScenario(workspace, repo, index);
     report.results.push(result);

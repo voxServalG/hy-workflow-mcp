@@ -12,10 +12,12 @@
     "lintDirs": [
       "src"
     ],
-    "maxLines": 500
+    "maxLinesWarning": 500,
+    "maxLinesError": 1200
   },
   "doclint": {
-    "maxLines": 200
+    "maxLinesWarning": 200,
+    "maxLinesError": 500
   },
   "docsGardener": {
     "catalogs": {}

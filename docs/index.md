@@ -21,4 +21,5 @@ This documentation is the contract source for hy-workflow-mcp. Source code imple
 - [Setup](./setup.md)
 - [Release Acceptance](./acceptance.md)
 - [Workflow Contract Lint](./lint-contract.md)
+- [Built-in Lint Rules](./lint-rules.md)
 - [Core Skill](./skills/core/SKILL.md)

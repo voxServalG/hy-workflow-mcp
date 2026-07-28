@@ -30,7 +30,7 @@ for (const token of [
 const nativeMarker = "      - name: Run native project CI\n";
 const nativeStart = yaml.indexOf(nativeMarker);
 assert(nativeStart >= 0, "native CI step missing");
-const nativeEnd = yaml.indexOf("      - name: Run doclint and codelint\n", nativeStart);
+const nativeEnd = yaml.indexOf("      - name: Run built-in doclint and codelint\n", nativeStart);
 assert(nativeEnd > nativeStart, "native CI step boundary missing");
 const nativeStep = yaml.slice(nativeStart, nativeEnd);
 const heredocStart = nativeStep.indexOf("          node <<'NODE'\n");
