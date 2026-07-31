@@ -3,10 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildDocsGraph } from "../../src/docs_graph.js";
-import { DOCUMENT_READ_BUDGET, MANAGED_RULES_VERSION } from "../../src/policy/docs.js";
+import { DOCUMENT_READ_BUDGET } from "../../src/policy/docs.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import { readState, writeState, type WorkflowState } from "../../src/state.js";
 import { handleReadDocs } from "../../src/tools/read_docs.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
@@ -48,7 +51,7 @@ try {
   init(root);
   write(root, "AGENTS.md", [
     "<!-- hy-workflow-rules -->",
-    `<!-- hy-workflow-rules-version: ${MANAGED_RULES_VERSION} -->`,
+    "<!-- hy-workflow-rules-version: legacy -->",
     "Use the documented workflow and preserve project boundaries.",
     "<!-- /hy-workflow-rules -->",
     "",
@@ -68,6 +71,7 @@ try {
   write(root, "docs/generated/api.md", "# Generated\n\nGenerated material must never enter project facts.\n");
   git(root, ["add", "."]);
   git(root, ["commit", "-m", "docs"]);
+  fs.chmodSync(path.join(root, "AGENTS.md"), 0o000);
   process.chdir(root);
 
   const graph = buildDocsGraph(root, "docs");
@@ -115,11 +119,14 @@ try {
   ].join("\n"));
   git(staleRoot, ["add", "."]);
   git(staleRoot, ["commit", "-m", "stale rules"]);
+  fs.chmodSync(path.join(staleRoot, "AGENTS.md"), 0o000);
   process.chdir(staleRoot);
   writeState(planState());
   const stale = await handleReadDocs({ stage: "before_plan", task: "plan a feature" });
-  assert(stale.error?.code === "STALE_MANAGED_AGENTS" && stale.stop_here, `stale managed AGENTS rules must block planning: ${JSON.stringify(stale)}`);
-  assert(/hy-workflow setup/.test(stale.hint ?? ""), "stale AGENTS hint must point to setup auto-migration");
+  assert(stale.phase === "plan" && stale.snapshot, `legacy AGENTS.md must not block configured document reading: ${JSON.stringify(stale)}`);
+  assert(!stale.snapshot.files.some((file: any) => file.path === "AGENTS.md"), "legacy AGENTS.md must not enter the document snapshot");
+  fs.chmodSync(path.join(staleRoot, "AGENTS.md"), 0o644);
 } finally {
+  try { fs.chmodSync(path.join(root, "AGENTS.md"), 0o644); } catch {}
   process.chdir(originalCwd);
 }

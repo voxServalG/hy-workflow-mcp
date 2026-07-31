@@ -1,8 +1,9 @@
-import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computePlanHash, currentBranch, type PlanDoc } from "../state.js";
+import { approvalMatchesPlan, readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computePlanHash, currentBranch, type PlanDoc } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { requireRuntimeConfig } from "../config.js";
 import { commitScope, push, createPr, inspectScopedWorktree, resolveHeadCommit, resolveOriginRepository, parseCommitRecovery, checkCi, type CommitRecoveryRecord } from "../git.js";
-import { toolResult, type ToolResult } from "./_base.js";
+import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
+import type { ToolResultFields } from "../output/envelope.js";
 
 function markdownFenceFor(value: string): string {
   const runs = value.match(/`+/g) ?? [];
@@ -57,6 +58,8 @@ function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown
 
   return toolResult("edit", {
     phase: "edit",
+    stage: "edit.implementation",
+    status: "failed",
     error,
     display: {
       title: "Verified implementation changed — returned to edit",
@@ -66,24 +69,75 @@ function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown
     allowedTools: ["hy_edit", "hy_read_docs", "hy_status"],
     blockedTools: ["hy_commit", "hy_merge"],
     recovery: {
+      strategy: "repair_and_retry",
       tool: "hy_edit",
       instruction: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
     },
+    nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
+    control: { automatic: true, stop: false, reason: "repair_required" },
+    userAction: null,
+  });
+}
+
+function verificationRecoveryResult(
+  state: ReturnType<typeof readState>,
+  fields: ToolResultFields,
+): ToolResult {
+  const next = state.phase === "edit" ? { ...state } : transition(state, "edit");
+  next.stage = "edit.implementation";
+  writeState(next);
+
+  const automatic = !fields.requires_user && !fields.stop_here;
+  return toolResult("edit", {
+    ...fields,
+    phase: "edit",
+    stage: "edit.implementation",
+    nextAction: {
+      tool: "hy_verify",
+      phase: "verify",
+      stage: "verify.run",
+      automatic,
+    },
+    control: {
+      automatic,
+      stop: !automatic,
+      reason: automatic ? "repair_required" : "review_required",
+    },
+    userAction: fields.userAction ?? (automatic
+      ? null
+      : { kind: "review_failure", instruction: "Resolve the displayed failure, then rerun verification from edit phase." }),
   });
 }
 
 export async function handleCommit(args: { title: string; body: string }): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "commit");
+  const commitArguments = { title: args.title, body: args.body };
+  const currentStage = state.stage ?? "commit.prepare";
 
-  if (!state.plan) return toolResult("commit", { error: "No plan", allowedTools: ["hy_status"] });
-  if (!state.verifiedImplementationDigest) return toolResult("commit", { error: "Missing verified implementation digest", hint: "Run hy_verify for short suites or hy_exam_plan and hy_exam_submit for long suites before hy_commit.", allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"] });
-  if (!state.branch) return toolResult("commit", { error: "No active branch", allowedTools: ["hy_status"] });
+  if (!state.plan) {
+    return invalidWorkflowStateResult(
+      state,
+      "COMMIT_PLAN_MISSING",
+      "Workflow state reached commit without an active PlanDoc.",
+      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+    );
+  }
+  if (!state.verifiedImplementationDigest) return verificationRecoveryResult(state, { error: "Missing verified implementation digest", hint: "Run hy_verify for short suites or hy_exam_plan and hy_exam_submit for long suites before hy_commit.", allowedTools: ["hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_status"] });
+  if (!state.branch) {
+    return invalidWorkflowStateResult(
+      state,
+      "COMMIT_BRANCH_MISSING",
+      "Workflow state reached commit without an active branch.",
+      "Reset the impossible workflow state before starting a new approved task.",
+    );
+  }
 
   const root = projectRoot();
   const actualBranch = currentBranch(root);
   if (actualBranch !== state.branch) {
     return toolResult("commit", {
+      stage: currentStage,
       error: {
         type: "workflow_state",
         subtype: "invalid_phase",
@@ -103,7 +157,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   try {
     currentManifest = buildImplementationManifest(root);
   } catch (e: any) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "scope",
         subtype: "scope_drift",
@@ -118,15 +172,13 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     });
   }
 
-  if (!state.approval) {
-    return toolResult("commit", {
-      error: "Missing approval state",
-      hint: "Reset the invalid workflow state before committing.",
-      requires_user: true,
-      stop_here: true,
-      allowedTools: ["hy_status"],
-      blockedTools: ["hy_merge"],
-    });
+  if (!approvalMatchesPlan(state.approval, state.plan)) {
+    return invalidWorkflowStateResult(
+      state,
+      "APPROVAL_PLAN_MISMATCH",
+      "The persisted approval does not match the current PlanDoc.",
+      "Reset the invalid workflow state before creating a new approved PlanDoc.",
+    );
   }
 
   // ── Recovery parse (before digest — skip integrity when worktree is clean after prior commit) ──
@@ -154,6 +206,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     baseBranch = getBaseBranch(root);
   } catch (caught: any) {
     return toolResult("commit", {
+      stage: currentStage,
       error: caught,
       requires_user: true,
       stop_here: true,
@@ -164,6 +217,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   const origin = resolveOriginRepository(root);
   if (!origin.ok) {
     return toolResult("commit", {
+      stage: currentStage,
       error: origin.error,
       data: { executor: { origin: origin.executor } },
       requires_user: true,
@@ -179,7 +233,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     || sameDigestRecovery.baseBranch !== baseBranch
     || sameDigestRecovery.repository !== repository
   )) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "workflow_state",
         subtype: "invalid_phase",
@@ -211,6 +265,8 @@ export async function handleCommit(args: { title: string; body: string }): Promi
 
   const digest = state.verifiedImplementationDigest ?? "none";
   const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: digest });
+  state.stage = "commit.publish";
+  writeState(state);
 
   let c: ReturnType<typeof commitScope>;
   let noScopedChanges: boolean;
@@ -218,6 +274,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     const inspectedScope = inspectScopedWorktree(root, state.plan.scope);
     if (!inspectedScope.ok) {
       return toolResult("commit", {
+        stage: "commit.publish",
         error: inspectedScope.error,
         data: { executor: { commit: inspectedScope.executor }, stagedPaths: inspectedScope.changedPaths },
         requires_user: true,
@@ -227,7 +284,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       });
     }
     if (inspectedScope.changedPaths.length) {
-      return toolResult("commit", {
+      return verificationRecoveryResult(state, {
         error: {
           type: "workflow_state",
           subtype: "invalid_phase",
@@ -254,9 +311,9 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     c = commitScope(root, state.plan.scope, args.title, body);
     noScopedChanges = !c.ok && (c.error as any)?.code === "NO_SCOPED_CHANGES";
   }
-  if (!c.ok && !noScopedChanges) return toolResult("commit", { error: c.error, data: { executor: { commit: c.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!c.ok && !noScopedChanges) return toolResult("commit", { stage: "commit.publish", error: c.error, data: { executor: { commit: c.executor }, stagedPaths: c.stagedPaths }, requires_user: true, stop_here: true, recovery: { strategy: "repair_and_retry", tool: "hy_commit", arguments: commitArguments, instruction: "Fix the commit error, then retry hy_commit without changing files unless necessary." }, allowedTools: ["hy_commit", "hy_status"] });
   if (noScopedChanges && !matchingRecovery) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "workflow_state",
         subtype: "invalid_phase",
@@ -275,6 +332,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   const resolvedHead = resolveHeadCommit(root);
   if (!resolvedHead.ok || !resolvedHead.hash) {
     return toolResult("commit", {
+      stage: "commit.publish",
       error: resolvedHead.error ?? {
         type: "workflow_state",
         subtype: "invalid_phase",
@@ -285,12 +343,12 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor }, stagedPaths: c.stagedPaths },
       requires_user: true,
       stop_here: true,
-      recovery: { tool: "hy_commit", instruction: "Repair the workflow branch and retry hy_commit without creating an empty commit." },
+      recovery: { strategy: "repair_and_retry", tool: "hy_commit", arguments: commitArguments, instruction: "Repair the workflow branch and retry hy_commit without creating an empty commit." },
       allowedTools: ["hy_commit", "hy_status"],
     });
   }
   if (c.ok && c.hash !== resolvedHead.hash) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "workflow_state",
         subtype: "invalid_phase",
@@ -307,7 +365,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     });
   }
   if (noScopedChanges && matchingRecovery && resolvedHead.hash !== matchingRecovery.commitOid) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "workflow_state",
         subtype: "invalid_phase",
@@ -329,7 +387,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   try {
     postCommitManifest = buildImplementationManifest(root);
   } catch (e: any) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "scope",
         subtype: "scope_drift",
@@ -348,7 +406,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   const afterPaths = [...postCommitManifest.changed].sort();
   const postCommitDigest = computeImplementationDigest(root, postCommitManifest);
   if (JSON.stringify(beforePaths) !== JSON.stringify(afterPaths) || postCommitDigest !== state.verifiedImplementationDigest) {
-    return toolResult("commit", {
+    return verificationRecoveryResult(state, {
       error: {
         type: "verification",
         subtype: "check_failed",
@@ -377,12 +435,14 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     };
     activeState = {
       ...state,
+      stage: "commit.publish",
       approval: { ...state.approval, commitRecovery } as typeof state.approval,
     };
     try {
       writeState(activeState);
     } catch (caught: any) {
       return toolResult("commit", {
+        stage: "commit.publish",
         error: {
           type: "io",
           subtype: "io_failure",
@@ -400,13 +460,14 @@ export async function handleCommit(args: { title: string; body: string }): Promi
   }
 
   const p = push(root, state.branch, commitHash, repository);
-  if (!p.ok) return toolResult("commit", { error: p.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the push failure, then retry hy_commit; it will reuse the same verified commit instead of creating an empty commit." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!p.ok) return toolResult("commit", { stage: "commit.publish", error: p.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash } }, requires_user: true, stop_here: true, recovery: { strategy: "repair_and_retry", tool: "hy_commit", arguments: commitArguments, instruction: "Resolve the push failure, then retry hy_commit; it will reuse the same verified commit instead of creating an empty commit." }, allowedTools: ["hy_commit", "hy_status"] });
 
   const pr = createPr(root, args.title, body, baseBranch, state.branch, commitHash, repository);
-  if (!pr.ok) return toolResult("commit", { error: pr.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash } }, requires_user: true, stop_here: true, recovery: { tool: "hy_commit", instruction: "Resolve the PR lookup or creation failure, then retry hy_commit. The retry will reuse the verified commit and must not create a duplicate PR." }, allowedTools: ["hy_commit", "hy_status"] });
+  if (!pr.ok) return toolResult("commit", { stage: "commit.publish", error: pr.error, data: { executor: { commit: c.executor, resolveHead: resolvedHead.executor, push: p.executor, createPr: pr.executor }, stagedPaths: c.stagedPaths, commit: { action: commitAction, sha: commitHash }, push: { sha: p.hash } }, requires_user: true, stop_here: true, recovery: { strategy: "repair_and_retry", tool: "hy_commit", arguments: commitArguments, instruction: "Resolve the PR lookup or creation failure, then retry hy_commit. The retry will reuse the verified commit and must not create a duplicate PR." }, allowedTools: ["hy_commit", "hy_status"] });
 
   activeState.prNumber = pr.prNumber ?? null;
   activeState.plan!.pr_number = activeState.prNumber;
+  activeState.stage = "commit.ci";
   writeState(activeState);
   const action = pr.reused ? "reused" : "created";
 
@@ -441,9 +502,14 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor }, checks: ciResult.checks },
       requires_user: true,
       stop_here: true,
+      stage: "commit.ci",
+      status: "pending",
       display: { title: "CI query failed", body: `PR #${activeState.prNumber} was created but CI status could not be read.` },
       hint: "Retry hy_commit to re-check CI status; it will not create a duplicate commit or PR.",
       allowedTools: ["hy_commit", "hy_status"],
+      nextAction: { tool: "hy_commit", arguments: commitArguments, phase: "commit", stage: "commit.ci", automatic: false },
+      control: { automatic: false, stop: true, reason: "wait_required" },
+      userAction: { kind: "wait", instruction: "Retry the same CI query after the temporary failure clears." },
       message: `PR #${activeState.prNumber} ${action}. CI query failed — retry hy_commit.`,
     });
   }
@@ -474,9 +540,14 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       display: { title: "CI checks required", body: `${reason} for PR #${activeState.prNumber}.` },
       requires_user: true,
       stop_here: true,
+      stage: "commit.ci",
+      status: "blocked",
       allowedTools: ["hy_commit", "hy_status"],
       blockedTools: ["hy_merge"],
-      recovery: { tool: "hy_commit", instruction: "Ensure the required Verify check completes successfully, then rerun hy_commit." },
+      recovery: { strategy: "external_action", tool: "hy_commit", arguments: commitArguments, instruction: "Ensure the required Verify check completes successfully, then rerun hy_commit." },
+      nextAction: { tool: "hy_commit", arguments: commitArguments, phase: "commit", stage: "commit.ci", automatic: false },
+      control: { automatic: false, stop: true, reason: "external_action_required" },
+      userAction: { kind: "external_action", instruction: "Restore the required CI check, then retry hy_commit." },
       message: `${reason}. Merge remains blocked — retry hy_commit.`,
     });
   }
@@ -497,10 +568,15 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         display: { title: "CI still pending", body: `PR #${activeState.prNumber} checks are still running.` },
         requires_user: true,
         stop_here: true,
+        stage: "commit.ci",
+        status: "pending",
         hint: "CI is still pending after bounded polling. Retry hy_commit later; it will resume polling without creating duplicate commits.",
         allowedTools: ["hy_commit", "hy_status"],
         blockedTools: ["hy_merge"],
-        recovery: { tool: "hy_commit", instruction: "Wait for pending CI checks, then rerun hy_commit to continue polling." },
+        recovery: { strategy: "wait_and_retry", tool: "hy_commit", arguments: commitArguments, instruction: "Wait for pending CI checks, then rerun hy_commit to continue polling." },
+        nextAction: { tool: "hy_commit", arguments: commitArguments, phase: "commit", stage: "commit.ci", automatic: false },
+        control: { automatic: false, stop: true, reason: "wait_required" },
+        userAction: { kind: "wait", instruction: "Wait for CI checks; no new approval is needed." },
         message: `CI is still pending after ${timeoutSeconds}s. Retry hy_commit after checks complete.`,
       });
     }
@@ -517,20 +593,28 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor } },
       requires_user: true,
       stop_here: true,
+      stage: "edit.implementation",
+      status: "failed",
       display: { title: "CI not all green", body: `Failed checks: ${failedNames.join(", ")}. Returned to edit phase.` },
       hint: "CI is not green. Read failed checks before editing. After fixes, run hy_verify, then hy_commit again.",
       allowedTools: ["hy_edit", "hy_verify", "hy_status"],
       blockedTools: ["hy_merge"],
-      recovery: { tool: "hy_edit", instruction: "Fix CI failures locally, rerun hy_verify, then hy_commit." },
+      recovery: { strategy: "repair_and_retry", tool: "hy_edit", instruction: "Fix CI failures locally, rerun hy_verify, then hy_commit." },
+      nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
+      control: { automatic: true, stop: false, reason: "repair_required" },
+      userAction: null,
       message: `CI not all green. Failed: ${failedNames.join(", ")}. Fix issues and re-run hy_commit.`,
     });
   }
 
   // CI all green — advance to merge
   const next = transition(activeState, "merge");
+  next.stage = "merge.reconcile";
   writeState(next);
 
   return toolResult("merge", {
+    stage: "merge.reconcile",
+    status: "passed",
     prNumber: activeState.prNumber,
     url: pr.url,
     reused: Boolean(pr.reused),
@@ -542,6 +626,9 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     },
     hint: "Continue to hy_merge. The approved workflow does not stop after CI success.",
     allowedTools: ["hy_merge", "hy_status"],
+    nextAction: { tool: "hy_merge", phase: "merge", stage: "merge.reconcile", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
     message: `PR #${activeState.prNumber} ${action}. Required Verify and all effective CI checks passed. Ready to merge.`,
   });
 }

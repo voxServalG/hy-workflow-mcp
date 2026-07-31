@@ -8,7 +8,9 @@ npm run test:acceptance:baseline 是每次进入 dev 前的项目级、离线、
 
 baseline 先 npm pack，检查 tarball 不含源码、测试和本地运行态，再从解包后的 dist 执行产品。它不访问 registry 或外部仓库；运行依赖来自本次 npm ci，docs-gardener 使用只实现版本与 MCP catalog 握手的有限 stub。隔离 HOME、XDG、客户端状态、npm prefix/cache 和凭证边界沿用 acceptance harness。
 
-test/acceptance/baseline-matrix.json 用六个确定性 fixture 覆盖 Node/main、TypeScript/dev monorepo、Python/trunk、Rust/master、混合语言/非标准目录，以及 `INC-LINT-INTERNAL-OFFLINE`。每个 fixture 必须绑定唯一 INC-* 历史事故 ID，并执行 dry-run 无副作用、两次 setup 收敛、offline doctor、项目文件边界、unset 保留团队产物与清理 runtime artifacts；lint fixture 还证明已安装 tarball 能离线产出十条规则的统一报告，且三个旧兼容 JSON 不出现。场景不得 skip；缺项、超时、非零退出、非 JSON envelope、边界越界或清理不完整均 fail closed。
+test/acceptance/baseline-matrix.json 用六个确定性 fixture 覆盖 Node/main、TypeScript/dev monorepo、Python/trunk、Rust/master、混合语言/非标准目录，以及 `INC-LINT-INTERNAL-OFFLINE`。Fresh-install oracle 必须证明只创建 `hy-workflow.json` 与小型 exact-version `.github/workflows/hy-workflow.yml`，且不自动注入 `AGENTS.md` 或迁移项目 client。每个 fixture 绑定唯一 INC-* 历史事故 ID，并执行 dry-run 无副作用、两次 setup 收敛、offline doctor、项目文件边界和 unset。场景不得 skip；缺项、超时、非零退出、非 JSON envelope、边界越界或清理不完整均 fail closed。
+
+`INC-SEAMLESS-UPGRADE` 是强制事故 oracle：旧 root config、tracked workflow、managed AGENTS block、`.hy/`、项目 client 文件和旧 lint JSON 的 bytes 必须完全不变且对 hy-workflow 非 authoritative；外置 stage、scope、approval 与 Git worktree 必须保留。upgrade 不得读取、hash、validate、gate、migrate、rewrite、move 或 delete 这些注入。清理只能是可选独立 PR。
 
 新增重大 bug 时，修复 PR 必须先增加能复现该 bug 的事故 fixture/oracle；优先扩展现有 pairwise fixture，只有出现新的独立项目维度才增加 fixture。baseline 不负责公网兼容压力，也不允许以减少 release 场景换取速度。
 
@@ -27,8 +29,8 @@ npm run test:acceptance 保持兼容入口，等价于 npm run test:acceptance:p
 
 release matrix 固定为五个公开仓库：Vite、Flask、Express、GitHub CLI、ripgrep；HTTPS URL、full commit、生态、分支和预期目录都在 test/acceptance/matrix.json。本地可通过各仓库的 HY_ACCEPTANCE_*_MIRROR 指向含精确 commit 的只读 clone；未提供时才走有界 HTTPS fetch。release workflow 预先 checkout 五个固定 commit，再把本地路径传给 runner。
 
-release pressure 直接通过已安装 tarball 运行统一内置 lint，不下载或准备第三方 lint 包。它允许真实仓库存在结构化 lint findings，但要求报告 schema、十条规则、适用性、计数、确定性顺序和退出码一致，并证明兼容 JSON 字节不变。其余覆盖仍包括 PTY、managed AGENTS 迁移、客户端 shadow refusal、artifact drift、32 并发 setup、七个持久化 failpoint 的精确回滚、MCP 文档读取、unset、进程树/磁盘预算、远程写拒绝和 worktree 边界。任何 timeout、partial result、skip、零文件假绿或 structured evidence 缺失都失败。
+release pressure 通过已安装 tarball 运行统一 lint，要求报告 schema、十条规则、适用性、计数、确定性顺序和退出码一致，并再次证明 legacy bytes 不变、只产生两个 fresh artifacts、没有自动 AGENTS 或 project-client migration。其余覆盖包括 PTY、项目客户端文件保持 untouched and inert 的证明、artifact drift、并发 setup、持久化 failpoint 回滚、MCP 文档读取、unset、进程树/磁盘预算、远程写拒绝和 worktree 边界。任何 timeout、partial result、skip、零文件假绿或 structured evidence 缺失都失败。
 
 ## Verify integration
 
-baseline 和 pressure 都是长命令。PlanDoc 应把它们列入 tests/entry points，但执行时使用异步 verify-as-oracle：hy_exam_plan 获取带 nonce 的精确命令，agent 在 MCP 外执行并收集退出码与 stdout tail，再用 hy_exam_submit 阅卷。不要把长 acceptance 塞进同步 hy_verify；两个 verify 路径成功后生成等价 verifyHash；异步阅卷还必须原子持久化 implementation manifest、manifest hash 和 implementation digest，hy_commit 才能消费该证据。
+baseline 和 pressure 都是长命令。PlanDoc 应把它们列入 tests/entry points，但执行时使用异步 verify-as-oracle：hy_exam_plan 获取绑定精确 planHash、完整实现指纹和 nonce 的命令清单，agent 在 MCP 外逐条执行并收集退出码与 stdout tail，再把完整结果集交给 hy_exam_submit。不要把长 acceptance 塞进同步 hy_verify；两个路径成功后都会持久化相同的 canonical evidence，也就是 implementation manifest 与 verified implementation digest。兼容输出或 PR 标签中仍叫 verifyHash 的值只是该 digest 的别名，不是独立状态 gate。异步阅卷还会复核当前审批、文档证据、本地 scope 与 no_new_external 边界；任何失败都会回到 edit，修复后必须刷新 after_edit、sync_docs 并领取新试卷，不能局部补交原试卷。

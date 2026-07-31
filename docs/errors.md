@@ -74,16 +74,16 @@ Each returned failure has top-level `ok: false`, `phase`, `next`, and `error`. T
 
 Agents should show `error.message`, add `error.hint` when present, route recovery from `error.type` and `error.subtype`, and include `error.code`, `error.console_url`, `error.request_id`, and `error.trace_id` in troubleshooting output. `permission_violations` and `missing_scopes` require explicit user or operator action; they should not be hidden inside prose.
 
-`setup_update_required` refers to the external deployment selected by the canonical project identity. `setup_artifacts_missing` may refer to that deployment or to the required root `hy-workflow.json`. Recovery is to rerun `hy-workflow setup` from the project. Setup may create or update exactly `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the managed `AGENTS.md` block; review and commit those team surfaces through a dedicated setup artifact sync PR. Runtime and client artifacts remain external. Legacy compatibility JSON is read-only migration/drift evidence and is never a lint runtime artifact.
+`setup_update_required` and `setup_artifacts_missing` refer to the external deployment selected by the canonical project identity, not to repository artifact presence. Recovery is to rerun `hy-workflow setup` from the project. With both target paths absent, fresh setup creates exactly `hy-workflow.json` and `.github/workflows/hy-workflow.yml` without a separate artifact-review gate; it never injects or migrates `AGENTS.md` or project client files. Occupied targets are read or changed only by a separately requested exact artifact sync. Runtime and client artifacts remain external.
 
-MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input. A missing or invalid root config is therefore a setup/config failure, never permission to fall back to user-local or compatibility JSON. `ROOT_CONFIG_REQUIRED` means the root file is absent; `ROOT_CONFIG_INVALID` also covers runtime-required fields omitted from the raw file even when normalization could infer defaults. A project-local legacy setup stamp never satisfies the external deployment gate.
+Runtime uses only the configuration selected by the current external authority. An old injected root config, compatibility JSON, or setup stamp is never a fallback or migration input and cannot satisfy the gate. `ROOT_CONFIG_REQUIRED` and `ROOT_CONFIG_INVALID` concern only the newly selected root authority.
 
 ## Setup failures
 
 Setup and doctor use `type: "setup"` with a stable subtype and code. A setup
 result may report success only after its effective client definitions, direct
-installed binaries, bounded MCP handshakes, all three team artifacts (`hy-workflow.json`,
-`.github/workflows/hy-workflow.yml`, and the managed `AGENTS.md` block), deployment,
+installed binaries, bounded MCP handshakes, both team artifacts (`hy-workflow.json`
+and `.github/workflows/hy-workflow.yml`), deployment,
 registry, and ownership postconditions agree. Important codes include:
 
 - `SETUP_PREFLIGHT_FAILED`, `SETUP_BINARY_MISSING`, and
@@ -118,4 +118,4 @@ Stable merge recovery codes distinguish uncertainty from unsafe state:
 
 `retryable: false` is a state-integrity decision, not an invitation to repeat `hy_merge`. Inspect the detail, then explicitly use `hy_reset` to abandon the stale receipt or repair state through a reviewed recovery; automatic reset is forbidden. Legacy workflows with no receipt may recognize an already-integrated verified OID, then rebuild only agent-prefix stacks proven by verified ancestry and equal local/remote OIDs. Unrelated branches are ignored; a diverged true stack returns `POST_MERGE_SYNC_INCOMPLETE` without overwriting either ref.
 
-Missing CI evidence is not success. When GitHub reports no checks, or only skipped/neutral checks, `hy_ci` returns `error.code: "CI_CHECKS_REQUIRED"` with a structured stop result, remains in the CI phase, and must not enable `hy_merge`. Recovery is to verify the generated workflow and ask a repository administrator to configure its Verify check as required in a GitHub ruleset or branch protection rule; setup does not make that administrative change.
+Missing CI evidence is not success. When GitHub reports no checks, or only skipped/neutral checks, `hy_commit` returns `error.code: "CI_CHECKS_REQUIRED"` from stage `commit.ci`, remains retryable in commit, and must not enable `hy_merge`. Recovery is to verify the generated workflow and ask a repository administrator to configure its Verify check as required in a GitHub ruleset or branch protection rule; setup does not make that administrative change.

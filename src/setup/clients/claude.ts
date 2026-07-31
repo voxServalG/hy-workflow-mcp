@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { SetupFailure, type ClientAdapter, type ClientConfigScope, type ClientDetection, type ClientServerSnapshot, type McpDefinition, type ServerName } from "../types.js";
 import { assertClientSnapshotUnchanged } from "./effective.js";
-import { definitionEquals, resolveExecutable, runExecutable, versionOf } from "./index.js";
+import { definitionEquals, neutralCommandCwd, resolveExecutable, runExecutable, versionOf } from "./index.js";
 
 export function parseClaudeGet(output: string): McpDefinition | null {
   const lines = output.split(/\r?\n/);
@@ -54,9 +54,9 @@ export function parseClaudeScope(output: string): ClientConfigScope {
   return "unknown";
 }
 
-function add(executable: string, server: ServerName, definition: McpDefinition): void {
+function add(executable: string, server: ServerName, definition: McpDefinition, cwd: string): void {
   const env = Object.entries(definition.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-  const result = runExecutable(executable, ["mcp", "add", "-s", "user", ...env, server, "--", definition.command, ...definition.args]);
+  const result = runExecutable(executable, ["mcp", "add", "-s", "user", ...env, server, "--", definition.command, ...definition.args], 15_000, { cwd });
   if (!result.ok) throw new Error(`claude mcp add ${server} failed: ${result.stderr || result.stdout}`);
 }
 
@@ -87,6 +87,7 @@ function unsafeClaudeStorage(root: string): { variable: string; value: string } 
 export function createClaudeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?? process.cwd()): ClientAdapter {
   const executable = resolveExecutable("claude");
   const unsafeStorage = unsafeClaudeStorage(root);
+  const commandCwd = neutralCommandCwd(root);
   const inspect = (server: ServerName): ClientServerSnapshot => {
     if (unsafeStorage) {
       return {
@@ -98,7 +99,7 @@ export function createClaudeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT 
       };
     }
     if (!executable) return { definition: null, state: "absent", scope: "user" };
-    const result = runExecutable(executable, ["mcp", "get", server]);
+    const result = runExecutable(executable, ["mcp", "get", server], 15_000, { cwd: commandCwd });
     if (!result.ok) {
       const diagnostic = `${result.stderr}\n${result.stdout}`.trim();
       if (/not found|does not exist|no mcp server|unknown mcp server/i.test(diagnostic)) return { definition: null, state: "absent", scope: "user" };
@@ -119,14 +120,14 @@ export function createClaudeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT 
   };
   const removeOnly = (server: ServerName): void => {
     if (!executable) throw new Error("claude is not installed");
-    const result = runExecutable(executable, ["mcp", "remove", "-s", "user", server]);
+    const result = runExecutable(executable, ["mcp", "remove", "-s", "user", server], 15_000, { cwd: commandCwd });
     if (!result.ok) throw new Error(`claude mcp remove ${server} failed: ${result.stderr || result.stdout}`);
   };
   return {
     name: "claude",
     detect(): ClientDetection {
       const configured = (["hy-workflow", "docs-gardener"] as ServerName[]).filter(server => Boolean(inspect(server).definition ?? inspect(server).raw));
-      return { name: "claude", installed: Boolean(executable), executable, version: executable ? versionOf(executable) : null, configured };
+      return { name: "claude", installed: Boolean(executable), executable, version: executable ? versionOf(executable, commandCwd) : null, configured };
     },
     inspect,
     install(server, definition, expectedPrevious) {
@@ -140,9 +141,9 @@ export function createClaudeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT 
       if (previous.raw && !previous.definition) throw new Error(`claude ${server} exists but could not be inspected safely`);
       if (previous.definition) removeOnly(server);
       try {
-        add(executable, server, definition);
+        add(executable, server, definition, commandCwd);
       } catch (error) {
-        if (previous.definition) add(executable, server, previous.definition);
+        if (previous.definition) add(executable, server, previous.definition, commandCwd);
         throw error;
       }
       return previous;
@@ -157,7 +158,7 @@ export function createClaudeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT 
       }
       if (!definitionEquals(current.definition, expected)) throw new SetupFailure("ownership", "SETUP_CLIENT_OWNERSHIP_MISMATCH", `Claude Code ${server} changed after setup; refusing to remove it.`, "Restore the setup-owned definition or resolve ownership manually, then retry unset.", { server, expected, current });
       removeOnly(server);
-      if (previous?.definition) add(executable, server, previous.definition);
+      if (previous?.definition) add(executable, server, previous.definition, commandCwd);
     },
   };
 }

@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import { checkCi, commitScope, createPr, mergePr } from "../../src/git.js";
 import { computeImplementationDigest, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { handleCommit } from "../../src/tools/commit.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function git(root: string, args: string[]): string {
   return execFileSync("git", args, { cwd: root, encoding: "utf-8" }).trim();
@@ -293,18 +296,27 @@ exec "${realGit}" "$@"
   process.env.HY_TEST_ORIGIN_OVERRIDE = "https://github.com/evil/other.git";
   const pushesBeforeOriginAttack = readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push ")).length;
   const originAttack = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
-  assert(originAttack.next === "commit" && originAttack.error?.code === "COMMIT_RECOVERY_IDENTITY_MISMATCH", `origin drift under the same verify hash must not create a replacement commit: ${JSON.stringify(originAttack)}`);
+  assert(originAttack.next === "edit" && originAttack.phase === "edit" && originAttack.nextAction.tool === "hy_verify" && originAttack.error?.code === "COMMIT_RECOVERY_IDENTITY_MISMATCH", `origin drift must invalidate commit-phase verification instead of creating a replacement commit: ${JSON.stringify(originAttack)}`);
+  assert(readState().phase === "edit", "commit recovery identity drift must persist the return to edit before routing verification");
   assert(readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push ")).length === pushesBeforeOriginAttack, "origin-drift recovery mismatch must stop before push");
   delete process.env.HY_TEST_ORIGIN_OVERRIDE;
   git(workflowRoot, ["reset", "--hard", committedHead]);
+  const afterOriginAttack = readState();
+  afterOriginAttack.phase = "commit";
+  afterOriginAttack.stage = "commit.prepare";
+  writeState(afterOriginAttack);
 
   git(workflowRoot, ["reset", "--mixed", "HEAD^"]);
   const pushesBeforeResetAttack = readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push ")).length;
   const resetAttack = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
-  assert(resetAttack.next === "commit" && resetAttack.error?.code === "COMMIT_RECOVERY_WORKTREE_CHANGED", `a mixed reset must not turn recovery into a new commit: ${JSON.stringify(resetAttack)}`);
+  assert(resetAttack.next === "edit" && resetAttack.phase === "edit" && resetAttack.nextAction.tool === "hy_verify" && resetAttack.error?.code === "COMMIT_RECOVERY_WORKTREE_CHANGED", `a mixed reset must invalidate verification instead of becoming a new commit: ${JSON.stringify(resetAttack)}`);
   assert(git(workflowRoot, ["rev-parse", "HEAD"]) !== committedHead, "mixed-reset attack should exercise a moved HEAD with dirty scoped content");
   assert(readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push ")).length === pushesBeforeResetAttack, "dirty recovery mismatch must stop before push");
   git(workflowRoot, ["reset", "--hard", committedHead]);
+  const afterResetAttack = readState();
+  afterResetAttack.phase = "commit";
+  afterResetAttack.stage = "commit.prepare";
+  writeState(afterResetAttack);
 
   const secondAttempt = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
   assert(secondAttempt.next === "merge" && secondAttempt.reused === true && secondAttempt.prNumber === 190, `second attempt should reuse the exact PR and advance to merge: ${JSON.stringify(secondAttempt)}`);
@@ -358,7 +370,7 @@ exec "${realGit}" "$@"
   resetScenario("workflow-retry");
   writeFileSync(gitLog, "", "utf-8");
   const attacked = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
-  assert(attacked.next === "commit" && attacked.error?.code === "GIT_RECOVERY_OID_MISMATCH", `a clean but moved HEAD must not be recovered as verified: ${JSON.stringify(attacked)}`);
+  assert(attacked.next === "edit" && attacked.phase === "edit" && attacked.nextAction.tool === "hy_verify" && attacked.error?.code === "GIT_RECOVERY_OID_MISMATCH", `a clean but moved HEAD must invalidate verification instead of being recovered as verified: ${JSON.stringify(attacked)}`);
   assert(!readFileSync(gitLog, "utf-8").split("\n").some(line => line.startsWith("push ")), "OID mismatch must stop before push");
 
   const unboundState = readState();

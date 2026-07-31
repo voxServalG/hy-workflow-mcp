@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { lintCode } from "../../templates/lint/code.mjs";
 import { runLint } from "../../templates/lint/index.mjs";
+import { resolveLintPolicyRule } from "../../src/policy/effective.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -114,4 +115,23 @@ function config(): Record<string, unknown> {
   fs.mkdirSync(path.join(project, "src"), { recursive: true });
   const result = lintCode({ root: project, config: config() });
   assert(result.findings.some(item => item.rule === "C001" && item.severity === "error"), `zero-file scan must fail closed: ${JSON.stringify(result.findings)}`);
+}
+
+{
+  const project = root();
+  write(project, "docs/index.md", "# Docs\n");
+  write(project, "src/app.ts", "export const one = 1;\nexport const two = 2;\nexport const three = 3;\n");
+  const runtimeConfig: any = config();
+  delete runtimeConfig.codelint.tiers;
+  runtimeConfig.policy = {
+    profile: "standard",
+    rules: { "code.max-lines": { severity: "advisory", warning: 2, error: 3 } },
+  };
+  const report = runLint({
+    root: project,
+    config: runtimeConfig,
+    resolvePolicyRule: (rule: any, file?: string) => resolveLintPolicyRule(runtimeConfig, rule, file),
+  });
+  assert(report.ok && report.counts.errors === 0 && report.counts.advisories > 0, `advisory code policy must remain visible without failing: ${JSON.stringify(report)}`);
+  assert(report.checks.find(item => item.rule === "C002")?.status === "advisory", "C002 check must expose advisory status");
 }

@@ -27,6 +27,7 @@ function stableFindings(findings) {
 function checkStatus(rule, ruleFindings, context) {
   if (ruleFindings.some(item => item.severity === "error")) return "failed";
   if (ruleFindings.some(item => item.severity === "warning")) return "warning";
+  if (ruleFindings.some(item => item.severity === "advisory")) return "advisory";
   if (rule === "C003" && !context.tierConfigured) return "not_configured";
   if ((rule === "C004" || rule === "C005") && !context.supportsDependencies) return "not_applicable";
   if (rule.startsWith("D") && context.docsFiles === 0 && rule !== "D001") return "not_applicable";
@@ -34,11 +35,11 @@ function checkStatus(rule, ruleFindings, context) {
   return "passed";
 }
 
-function checkMessage(rule, status, errors, warnings, files) {
+function checkMessage(rule, status, errors, warnings, advisories, files) {
   if (status === "not_configured") return `${rule} is not configured`;
   if (status === "not_applicable") return `${rule} is not applicable`;
   if (status === "passed") return `${rule} passed across ${files} file${files === 1 ? "" : "s"}`;
-  return `${rule} produced ${errors} error${errors === 1 ? "" : "s"} and ${warnings} warning${warnings === 1 ? "" : "s"}`;
+  return `${rule} produced ${errors} error${errors === 1 ? "" : "s"}, ${warnings} warning${warnings === 1 ? "" : "s"}, and ${advisories} advisory finding${advisories === 1 ? "" : "s"}`;
 }
 
 function buildReport(root, docs, code, extraFindings = []) {
@@ -53,12 +54,14 @@ function buildReport(root, docs, code, extraFindings = []) {
     const ruleFindings = findings.filter(item => item.rule === rule);
     const errors = ruleFindings.filter(item => item.severity === "error").length;
     const warnings = ruleFindings.filter(item => item.severity === "warning").length;
+    const advisories = ruleFindings.filter(item => item.severity === "advisory").length;
     const files = rule.startsWith("D") ? docs.files.length : code.files.length;
     const status = checkStatus(rule, ruleFindings, context);
-    return { rule, status, files, errors, warnings, message: checkMessage(rule, status, errors, warnings, files) };
+    return { rule, status, files, errors, warnings, advisories, message: checkMessage(rule, status, errors, warnings, advisories, files) };
   });
   const errors = findings.filter(item => item.severity === "error").length;
   const warnings = findings.filter(item => item.severity === "warning").length;
+  const advisories = findings.filter(item => item.severity === "advisory").length;
   return {
     schema: LINT_SCHEMA,
     version: LINT_VERSION,
@@ -69,6 +72,7 @@ function buildReport(root, docs, code, extraFindings = []) {
       failed: checks.filter(check => check.status === "failed").length,
       errors,
       warnings,
+      advisories,
       files: docs.files.length + code.files.length,
       docs: docs.files.length,
       code: code.files.length,
@@ -93,13 +97,13 @@ function emptyCode(findings = []) {
   };
 }
 
-export function runLint({ root, config, pythonCommand } = {}) {
+export function runLint({ root, config, pythonCommand, resolvePolicyRule } = {}) {
   const projectRoot = path.resolve(root ?? process.cwd());
   const runtimeConfig = config && typeof config === "object" && !Array.isArray(config) ? config : {};
   let docs;
   let code;
   try {
-    docs = lintDocs({ root: projectRoot, config: runtimeConfig });
+    docs = lintDocs({ root: projectRoot, config: runtimeConfig, resolvePolicyRule });
   } catch (error) {
     docs = emptyDocs([{
       rule: "D001",
@@ -109,7 +113,7 @@ export function runLint({ root, config, pythonCommand } = {}) {
     }]);
   }
   try {
-    code = lintCode({ root: projectRoot, config: runtimeConfig, pythonCommand });
+    code = lintCode({ root: projectRoot, config: runtimeConfig, pythonCommand, resolvePolicyRule });
   } catch (error) {
     code = emptyCode([{
       rule: "C005",

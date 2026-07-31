@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest, runAllChecks, runBoundaryCheck, runPlatform, runScopeCheck, runSmoke } from "../../src/checks.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -57,7 +60,7 @@ try {
   run("git config user.name Test", root);
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src", "app.ts"), "export const value = 1;\n");
-  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "main", codeExt: [".txt"], codeDirs: ["src"], docsDir: "docs" } }, null, 2) + "\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "main", codeExt: [".txt"], codeDirs: ["src"], docsDir: "docs" }, codelint: { lintDirs: ["src"] } }, null, 2) + "\n");
   run("git add .", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
@@ -103,7 +106,7 @@ try {
   run("git config user.name Test", missingOriginRoot);
   mkdirSync(join(missingOriginRoot, "src"), { recursive: true });
   writeFileSync(join(missingOriginRoot, "src", "app.ts"), "export const value = 1;\n");
-  writeFileSync(join(missingOriginRoot, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "missing", codeExt: [".txt"], codeDirs: ["src"], docsDir: "docs" } }, null, 2) + "\n");
+  writeFileSync(join(missingOriginRoot, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "missing", codeExt: [".txt"], codeDirs: ["src"], docsDir: "docs" }, codelint: { lintDirs: ["src"] } }, null, 2) + "\n");
   run("git add .", missingOriginRoot);
   run("git commit -m init", missingOriginRoot);
   const missingOriginBoundary = runBoundaryCheck(missingOriginRoot, plan).find(check => check.name === "no_new_external");

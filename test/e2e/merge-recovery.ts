@@ -2,11 +2,14 @@ import { chdir, cwd } from "node:process";
 import { handleMerge } from "../../src/tools/merge.js";
 import { acquireMergeLock, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import type { MergeReceipt } from "../../src/merge-recovery.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import {
   createGitGhHarness,
   type GitGhHarness,
   type GitFaultOperation,
 } from "../helpers/git-gh-harness.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -133,12 +136,37 @@ function basePushes(harness: GitGhHarness): string[] {
   });
 }
 
+function gitSideEffects(harness: GitGhHarness): string[] {
+  return harness.gitCalls().filter(call => /^(?:checkout|fetch|merge|pull|push|rebase|update-ref)(?:\s|$)/.test(call));
+}
+
 function assertAllowedTools(result: any, expected: string[], label: string): void {
   assert(
     JSON.stringify(result.allowedTools) === JSON.stringify(expected),
     `${label} must expose exactly ${JSON.stringify(expected)}: ${JSON.stringify(result.allowedTools)}`,
   );
 }
+
+await withHarness("merge-approval-mismatch", async harness => {
+  const state = readState();
+  assert(state.approval, "merge approval mismatch fixture requires an approval record");
+  state.approval = { ...state.approval, decisionId: "plan:000000000000", planHash: "000000000000", audit: undefined };
+  writeState(state);
+  const gitSideEffectsBefore = gitSideEffects(harness).length;
+  const ghCallsBefore = harness.ghCalls().length;
+
+  const result = await handleMerge();
+  assertMergeStopped(result, "merge approval mismatch");
+  assert(result.error?.code === "APPROVAL_PLAN_MISMATCH", `merge must reject approval bound to another PlanDoc: ${JSON.stringify(result)}`);
+  assert(result.stage === "merge.reconcile"
+    && result.nextAction?.tool === "hy_reset"
+    && result.recovery?.strategy === "reset",
+  `merge approval rejection must stop at the current canonical stage with explicit reset recovery: ${JSON.stringify(result)}`);
+  assert(gitSideEffects(harness).length === gitSideEffectsBefore, "merge approval rejection must happen before any Git side effect");
+  assert(harness.ghCalls().length === ghCallsBefore, "merge approval rejection must happen before any GitHub invocation");
+  assert(mergeCalls(harness).length === 0, "merge approval rejection must not execute the PR merge mutation");
+  assert(!harness.remoteContains(harness.baseBranch, harness.verifiedOid), "merge approval rejection must not integrate the verified commit remotely");
+});
 
 await withHarness("merge-lock-busy", async harness => {
   const lock = acquireMergeLock();
@@ -160,8 +188,38 @@ await withHarness("merge-state-retry", async harness => {
   const first = await handleMerge();
   assertMergeStopped(first, "post-merge base checkout failure");
   assert(first.error?.code === "POST_MERGE_SYNC_INCOMPLETE", `post-merge checkout failure must be distinguished from an unknown remote outcome: ${JSON.stringify(first)}`);
+  assert(first.stage === "merge.sync" && readState().stage === "merge.sync", `a persisted confirmed receipt must expose merge.sync: ${JSON.stringify(first)}`);
   assert(harness.remoteContains(harness.baseBranch, harness.verifiedOid), "remote merge must contain the verified commit before local recovery fails");
   assert(mergeCalls(harness).length === 1, "the first attempt must perform exactly one remote merge");
+
+  const confirmedState = readState();
+  const confirmedApproval = confirmedState.approval;
+  assert(confirmedApproval, "confirmed merge receipt fixture requires an approval record");
+  confirmedState.approval = { ...confirmedApproval, decisionId: "plan:000000000000", planHash: "000000000000", audit: undefined };
+  writeState(confirmedState);
+  const gitSideEffectsBeforeApprovalFailure = gitSideEffects(harness).length;
+  const ghCallsBeforeApprovalFailure = harness.ghCalls().length;
+  const approvalFailure = await handleMerge();
+  assertMergeStopped(approvalFailure, "merge.sync approval mismatch");
+  assert(approvalFailure.error?.code === "APPROVAL_PLAN_MISMATCH", `merge.sync must revalidate the PlanDoc approval binding: ${JSON.stringify(approvalFailure)}`);
+  assert(approvalFailure.stage === "merge.sync" && approvalFailure.nextAction?.stage === "merge.sync", `merge.sync approval failure must not drift back to merge.reconcile: ${JSON.stringify(approvalFailure)}`);
+  assert(gitSideEffects(harness).length === gitSideEffectsBeforeApprovalFailure, "merge.sync approval rejection must happen before local Git synchronization");
+  assert(harness.ghCalls().length === ghCallsBeforeApprovalFailure, "merge.sync approval rejection must happen before remote inspection");
+  assert(mergeCalls(harness).length === 1, "merge.sync approval rejection must not repeat the merge mutation");
+
+  const restoredState = readState();
+  restoredState.approval = confirmedApproval;
+  writeState(restoredState);
+  const lock = acquireMergeLock();
+  assert(lock.ok, `merge.sync stage fixture must acquire the first lock: ${JSON.stringify(lock)}`);
+  try {
+    const lockFailure = await handleMerge();
+    assertMergeStopped(lockFailure, "merge.sync concurrent lock");
+    assert(lockFailure.error?.code === "MERGE_LOCK_BUSY", `merge.sync concurrent lock must remain retryable: ${JSON.stringify(lockFailure)}`);
+    assert(lockFailure.stage === "merge.sync" && lockFailure.nextAction?.stage === "merge.sync", `merge.sync lock failure must not drift back to merge.reconcile: ${JSON.stringify(lockFailure)}`);
+  } finally {
+    lock.release();
+  }
 
   const fetchesBeforeRetry = harness.gitCalls("fetch ").length;
   const viewsBeforeRetry = harness.ghCalls("pr view ").length;
@@ -392,7 +450,7 @@ await withHarness("identity-mismatch", async harness => {
   assert(result.error?.code === "PR_IDENTITY_MISMATCH", `base mismatch should retain the stable identity error: ${JSON.stringify(result)}`);
   assert(result.error?.retryable === false, "PR identity mismatch must be explicitly non-retryable");
   assertAllowedTools(result, ["hy_reset", "hy_status"], "PR identity mismatch");
-  assert(result.recovery?.tool === "hy_reset", `PR identity mismatch must direct recovery to hy_reset: ${JSON.stringify(result.recovery)}`);
+  assert(result.recovery?.strategy === "reset" && result.recovery.tool === "hy_reset", `PR identity mismatch must use reset recovery through hy_reset: ${JSON.stringify(result.recovery)}`);
   assert(mergeCalls(harness).length === 0, "identity mismatch must stop before merge mutation");
 });
 
@@ -406,7 +464,7 @@ await withHarness("receipt-identity-mismatch", async harness => {
   assertMergeStopped(result, "persisted receipt identity mismatch");
   assert(result.error?.code === "PR_IDENTITY_MISMATCH" && result.error?.retryable === false, `receipt mismatch must be a stable non-retryable identity error: ${JSON.stringify(result)}`);
   assertAllowedTools(result, ["hy_reset", "hy_status"], "receipt identity mismatch");
-  assert(result.recovery?.tool === "hy_reset", `receipt mismatch must direct recovery to hy_reset: ${JSON.stringify(result.recovery)}`);
+  assert(result.recovery?.strategy === "reset" && result.recovery.tool === "hy_reset", `receipt mismatch must use reset recovery through hy_reset: ${JSON.stringify(result.recovery)}`);
   assert(mergeCalls(harness).length === 0, "receipt identity mismatch must stop before merge mutation");
 });
 
@@ -434,7 +492,7 @@ await withHarness("ancestor-negative", async harness => {
   assert(result.error?.code === "PR_MERGE_OUTCOME_UNCONFIRMED", `negative ancestry must expose the stable unknown-outcome error: ${JSON.stringify(result)}`);
   assert(result.error?.retryable === true, "negative ancestry must remain explicitly retryable");
   assertAllowedTools(result, ["hy_merge", "hy_status"], "negative ancestry");
-  assert(result.recovery?.tool === "hy_merge", `negative ancestry must direct recovery to hy_merge: ${JSON.stringify(result.recovery)}`);
+  assert(result.recovery?.strategy === "wait_and_retry" && result.recovery.tool === "hy_merge", `negative ancestry must wait and retry through hy_merge: ${JSON.stringify(result.recovery)}`);
   assert(harness.gitCalls("fetch ").some(call => call.includes(harness.baseBranch)), "negative ancestry must be based on a fresh base fetch");
   assert(!harness.remoteContains(harness.baseBranch, harness.verifiedOid), "negative ancestry fixture must not contain the verified commit");
   assert(mergeCalls(harness).length === 0, "negative ancestry must not fall back to pushing or merging the base");

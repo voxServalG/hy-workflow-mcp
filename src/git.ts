@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { requireGhExecutor, requireGitExecutor, type ExecutorCapability } from "./executors.js";
 import { requireRuntimeConfig } from "./config.js";
 import { parsePullRequestSnapshot, type GitIntegrationEvidence, type MergeIdentity, type PullRequestEvidence } from "./merge-recovery.js";
+import { isRuntimeIgnoredArtifact, runtimeArtifactExclusionPathspecs } from "./policy/artifacts.js";
 
 type RunResult = { ok: boolean; stdout: string; stderr: string; exitCode: number | null };
 
@@ -24,7 +25,7 @@ function run(cmd: string, args: string[], cwd?: string): RunResult {
 
 export function trackedFiles(root: string): string[] {
   const r = run("git", ["ls-files"], root);
-  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean) : [];
+  return r.ok ? r.stdout.split("\n").map(line => line.trim()).filter(Boolean).filter(file => !isRuntimeIgnoredArtifact(root, file)) : [];
 }
 
 function writeTempFile(content: string): string {
@@ -111,7 +112,7 @@ export function invalidPrNumberError(value: unknown): GitOperationError {
     "invalid_phase",
     "INVALID_PR_NUMBER",
     "Workflow state prNumber must be a positive integer.",
-    "Reset or repair workflow state before running hy_ci or hy_merge.",
+    "Reset or repair workflow state before resuming hy_commit or hy_merge.",
     { value },
   );
 }
@@ -522,7 +523,7 @@ export function createBranch(root: string, category: string, topic: string): { o
         subtype: "config_invalid",
         code: "BASE_BRANCH_REMOTE_MISSING",
         message: `Base branch remote ref is missing: ${remoteRef}.`,
-        hint: `Fetch or publish the configured base branch before retrying hy_branch, for example: git fetch origin ${base}. If this project uses a different base branch, update project.baseBranch in the root hy-workflow.json.`,
+        hint: `Fetch or publish the configured base branch before retrying hy_branch, for example: git fetch origin ${base}. If this project uses a different base branch, update project.baseBranch in the authoritative project configuration.`,
         detail: { branch: name, baseBranch: base, remoteRef },
         retryable: true,
       },
@@ -552,11 +553,11 @@ export function createBranch(root: string, category: string, topic: string): { o
 export function commitAll(root: string, title: string, body: string): { ok: boolean; hash?: string; error?: unknown; executor?: ExecutorCapability } {
   const required = requireGitExecutor();
   if (!required.ok) return { ok: false, error: required.error, executor: required.executor };
-  const r1 = run("git", ["add", "-A"], root);
+  const r1 = run("git", ["add", "-A", "--", ".", ...runtimeArtifactExclusionPathspecs(root)], root);
   if (!r1.ok) return { ok: false, error: r1.stderr, executor: required.executor };
   const msgFile = writeTempFile(`${title}\n\n${body}`);
   try {
-    const r2 = run("git", ["commit", "-F", msgFile], root);
+    const r2 = run("git", ["commit", "--only", "-F", msgFile, "--", ".", ...runtimeArtifactExclusionPathspecs(root)], root);
     if (!r2.ok) return { ok: false, error: r2.stderr, executor: required.executor };
     const r3 = run("git", ["rev-parse", "HEAD"], root);
     return { ok: true, hash: r3.stdout, executor: required.executor };
@@ -572,7 +573,8 @@ export type ScopedWorktreeResult =
 export function inspectScopedWorktree(root: string, scope: PlanDoc["scope"]): ScopedWorktreeResult {
   const required = requireGitExecutor();
   if (!required.ok) return { ok: false, changedPaths: [], error: required.error, executor: required.executor };
-  const files = [...new Set([...scope.changes, ...scope.new_files, ...scope.delete])];
+  const files = [...new Set([...scope.changes, ...scope.new_files, ...scope.delete])]
+    .filter(file => !isRuntimeIgnoredArtifact(root, file));
   if (!files.length) {
     return {
       ok: false,
@@ -581,8 +583,8 @@ export function inspectScopedWorktree(root: string, scope: PlanDoc["scope"]): Sc
         "workflow_state",
         "invalid_phase",
         "NO_SCOPE_FILES",
-        "PlanDoc scope does not declare any files to commit.",
-        "Return to hy_plan and declare every intended implementation path before committing.",
+        "PlanDoc scope does not declare any authoritative files to commit.",
+        "Return to hy_plan and declare every intended non-legacy implementation path before committing.",
       ),
       executor: required.executor,
     };
@@ -639,7 +641,7 @@ export function commitScope(root: string, scope: PlanDoc["scope"], title: string
   if (!r1.ok) return { ok: false, error: r1.stderr, executor: inspection.executor, stagedPaths: changedFiles };
   const msgFile = writeTempFile(`${title}\n\n${body}`);
   try {
-    const r2 = run("git", ["commit", "-F", msgFile], root);
+    const r2 = run("git", ["commit", "--only", "-F", msgFile, "--", ...changedFiles], root);
     if (!r2.ok) return { ok: false, error: r2.stderr, executor: inspection.executor, stagedPaths: changedFiles };
     const r3 = run("git", ["rev-parse", "HEAD"], root);
     return { ok: true, hash: r3.stdout, executor: inspection.executor, stagedPaths: changedFiles };
@@ -973,14 +975,14 @@ function queryCiChecks(root: string, prNumber: number, repoArgs: string[]): { ok
         "io_failure",
         "CI_QUERY_FAILED",
         "Could not read structured checks for PR #" + prNumber + ".",
-        "Update or repair gh so its pr checks JSON fields name,workflow,bucket,state,link are available, then retry hy_ci.",
+        "Update or repair gh so its pr checks JSON fields name,workflow,bucket,state,link are available, then retry hy_commit.",
         { prNumber },
         result.stderr || caught?.message || String(caught),
       ),
     };
   }
   if (!Array.isArray(parsed)) {
-    return { ok: false, error: error("io", "io_failure", "CI_QUERY_INVALID", "GitHub CLI returned an invalid checks list.", "Repair or update gh, then retry hy_ci.", { prNumber }) };
+    return { ok: false, error: error("io", "io_failure", "CI_QUERY_INVALID", "GitHub CLI returned an invalid checks list.", "Repair or update gh, then retry hy_commit.", { prNumber }) };
   }
   const checks = parsed.map((value: any): CiCheck => {
     const bucket = typeof value?.bucket === "string" ? value.bucket.toLowerCase() : "";
@@ -1038,16 +1040,16 @@ function verifyActionsRun(
   if (!result.ok) {
     return {
       ok: false,
-      error: error("io", "io_failure", "CI_PROVENANCE_QUERY_FAILED", "Could not verify GitHub Actions run " + runId + ".", "Resolve the GitHub API failure, then retry hy_ci; do not merge based on an unverified check name.", { repository, runId }, result.stderr),
+      error: error("io", "io_failure", "CI_PROVENANCE_QUERY_FAILED", "Could not verify GitHub Actions run " + runId + ".", "Resolve the GitHub API failure, then retry hy_commit; do not merge based on an unverified check name.", { repository, runId }, result.stderr),
     };
   }
   let data: any;
   try { data = JSON.parse(result.stdout); }
   catch (caught: any) {
-    return { ok: false, error: error("io", "io_failure", "CI_PROVENANCE_QUERY_INVALID", "GitHub Actions run " + runId + " returned invalid JSON.", "Repair or update gh, then retry hy_ci.", { repository, runId }, caught?.message ?? String(caught)) };
+    return { ok: false, error: error("io", "io_failure", "CI_PROVENANCE_QUERY_INVALID", "GitHub Actions run " + runId + " returned invalid JSON.", "Repair or update gh, then retry hy_commit.", { repository, runId }, caught?.message ?? String(caught)) };
   }
   if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return { ok: false, error: error("io", "io_failure", "CI_PROVENANCE_QUERY_INVALID", "GitHub Actions run " + runId + " returned an invalid object.", "Repair or update gh, then retry hy_ci.", { repository, runId }) };
+    return { ok: false, error: error("io", "io_failure", "CI_PROVENANCE_QUERY_INVALID", "GitHub Actions run " + runId + " returned an invalid object.", "Repair or update gh, then retry hy_commit.", { repository, runId }) };
   }
   const expectedFullName = (owner + "/" + name).toLowerCase();
   const expectedWorkflowPath = ".github/workflows/hy-workflow.yml";
@@ -1164,7 +1166,7 @@ export function pull(root: string): { ok: boolean; error?: unknown; executor?: E
 export function isWorktreeClean(root: string): GitBooleanResult {
   const required = requireGitExecutor();
   if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
-  const status = run("git", ["status", "--porcelain=v1", "-uall"], root);
+  const status = run("git", ["status", "--porcelain=v1", "-uall", "--", ".", ...runtimeArtifactExclusionPathspecs(root)], root);
   if (!status.ok) return { ok: false, error: error("io", "io_failure", "GIT_WORKTREE_STATUS_FAILED", "Could not inspect worktree cleanliness.", "Repair the Git worktree and retry synchronization.", undefined, status.stderr), executor: required.executor };
   return { ok: true, value: status.stdout.length === 0, executor: required.executor };
 }

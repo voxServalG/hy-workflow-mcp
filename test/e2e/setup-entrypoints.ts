@@ -26,9 +26,12 @@ assert(MCP_DEFINITIONS["hy-workflow"].command === "hy-workflow" && MCP_DEFINITIO
 assert(MCP_DEFINITIONS["docs-gardener"].command === "docs-gardener" && MCP_DEFINITIONS["docs-gardener"].args.join(" ") === "mcp", "docs-gardener MCP should use the installed binary directly");
 
 const template = read("templates/hy-workflow.yml");
-const workflow = read(".github/workflows/hy-workflow.yml");
-assert(template !== workflow && renderWorkflowTemplate() === workflow, "checked-in shared workflow must match the deterministically rendered packaged template");
-assert(template.includes("__HY_WORKFLOW_LINT_BUNDLE_BASE64__") && !workflow.includes("__HY_WORKFLOW_LINT_BUNDLE_BASE64__"), "setup must replace the packaged lint bundle placeholder");
+const rendered = renderWorkflowTemplate();
+assert(template.includes("__HY_WORKFLOW_PACKAGE_SPEC__") && !rendered.includes("__HY_WORKFLOW_PACKAGE_SPEC__"), "setup must replace the single package-spec placeholder");
+assert(rendered.includes(`@voxstudio/hy-workflow@${pkg.version}`), "rendered workflow must pin the installed package version exactly");
+assert(rendered.includes("HY_WORKFLOW_RUNTIME_CONFIG_SOURCE: hy-workflow.runtime-config-source.v1"), "thin workflow must select the exact new project config authority");
+assert(rendered.includes("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") && !rendered.includes("actions/checkout@v"), "thin workflow must pin checkout by commit SHA");
+assert(rendered.length < 2_000 && !rendered.includes("__HY_WORKFLOW_LINT_BUNDLE_BASE64__"), "rendered workflow must stay thin and contain no embedded lint bundle");
 assert(!template.includes('"setup"') && !template.includes('"setup.ps1"'), "default workflow must not reference removed installers");
 
 for (const file of ["README.md", "docs/setup.md"]) {

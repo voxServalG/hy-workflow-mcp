@@ -35,7 +35,12 @@ function run(root: string): { status: number | null; report: any } {
     cwd: root,
     encoding: "utf8",
     timeout: 30_000,
-    env: { ...process.env, npm_config_offline: "true", GIT_TERMINAL_PROMPT: "0" },
+    env: {
+      ...process.env,
+      npm_config_offline: "true",
+      GIT_TERMINAL_PROMPT: "0",
+      HY_WORKFLOW_RUNTIME_CONFIG_SOURCE: "hy-workflow.runtime-config-source.v1",
+    },
   });
   assert(!result.error && !result.signal, `lint process failed: ${result.error?.message ?? result.signal}`);
   let report: any;
@@ -54,6 +59,7 @@ const cleanRoot = fixture();
 const clean = run(cleanRoot);
 assert(clean.status === 0 && clean.report.schema === "hy-workflow.lint.v1" && clean.report.version === 1 && clean.report.ok === true, "clean built-in lint must exit zero with schema v1");
 assert(clean.report.counts?.checks === 10 && clean.report.checks?.map((check: any) => check.rule).join(",") === RULES.join(","), "built-in lint must return exactly ten ordered rules");
+assert(clean.report.counts?.advisories === 0, "lint report must expose an advisory count without changing clean compatibility");
 assert(clean.report.checks.find((check: any) => check.rule === "C003")?.status === "not_configured", "absent tiers must be explicit not_configured");
 assertCompatibility(cleanRoot);
 

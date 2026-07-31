@@ -25,10 +25,24 @@ The product should not become a large platform with many overlapping tools. The 
 The ideal first-time experience is:
 
 1. Install from README without reading all docs.
-2. Run setup, review its project/client/CI evidence and the three team-artifact diffs (`hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the auto-migrated `AGENTS.md` managed block), then commit those files through a focused PR.
+2. Run setup. With both target paths absent, it creates exactly two small project files (`hy-workflow.json` and `.github/workflows/hy-workflow.yml`) without a separate artifact-review prompt; commit them later through an ordinary focused PR.
 3. Restart the MCP client.
 4. Ask the agent to call `hy_status`.
 5. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
+
+An upgrade is different from a first install. Updating the package must not make an existing user review or repair old repository injections. Old config files, generated workflow content, managed prompt blocks, local state directories, project client files, and compatibility lint files remain untouched and are ignored by hy-workflow. Existing external stage, approval, scope, and worktree state continue unchanged.
+
+If either fresh target path is already occupied, setup does not guess whether its bytes are old or current. Ordinary setup leaves both paths untouched and uses complete external configuration. Reading or replacing occupied targets is allowed only through the separate explicit artifact-sync command with acceptance and exact before/after review tuples for every occupied path; it is never part of install or upgrade readiness.
+
+“Ignored by hy-workflow” has a clear boundary: a third party may still act on a tracked file. GitHub can continue to run an old committed Actions workflow until the team removes or disables it in a normal repository change. Optional cleanup must be separate from upgrade readiness.
+
+### Project Parameters, Central Policy
+
+Projects should own values such as source paths, base branch, profile choice, thresholds, scoped overrides, and time-bounded exceptions. The package should own rule meaning, validation, precedence, and immutable safety boundaries. Generated code and prompt injection are not configuration authorities.
+
+Runtime must select configuration deterministically: a complete external config is authoritative, an exact external marker or clean-runner signal may authorize the new root config, and otherwise read-only project detection supplies frozen legacy-compatible defaults. File presence, old mode fields, or approximate markers never grant authority.
+
+Policy resolution must be explainable. A user should be able to ask for one rule and one file and receive the effective value plus the ordered sources that produced it. New quality rules should enter as advisory or warning where compatibility requires it; an upgrade must not unexpectedly block an old project. Scan integrity, project identity, evidence freshness, and scope/path boundaries remain non-disableable safety rules.
 
 ### `hy_status` Is The Dashboard
 
@@ -51,7 +65,7 @@ Target dashboard fields:
 Target behavior:
 
 - Gate errors include `field`, `bad_value`, and `example_fix`.
-- Built-in examples cover docs-only, code-change, and setup-artifact-sync tasks.
+- Built-in examples cover docs-only, code-change, and fresh-install configuration tasks.
 - Approval summaries state what changes, why, how it will be verified, and what risks remain.
 
 ### Verification Is Evidence
@@ -105,8 +119,10 @@ The workflow must continue to reject:
 
 Artifact boundaries stay central:
 
-- setup always maintains exactly three team-owned repository surfaces as source: `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the `<!-- hy-workflow-rules -->` managed block in `AGENTS.md` (content outside the markers stays team-owned and is migrated, not overwritten);
-- unset and hy_init never delete or rewrite those team files; deployment/state/cache, client config, and legacy/runtime/compat artifacts stay external or untracked.
+- fresh setup maintains exactly two team-owned repository surfaces: `hy-workflow.json` and a thin, exact-version `.github/workflows/hy-workflow.yml`;
+- setup never injects or maintains `AGENTS.md`;
+- an existing installation never reads, hashes, validates, migrates, or deletes legacy injected project files as an upgrade condition;
+- unset and hy_init never delete or rewrite project files; deployment/state/cache and client configuration stay external.
 
 ## Documentation Model
 
@@ -119,7 +135,8 @@ Important recipe areas:
 - code change;
 - verify failure;
 - CI red;
-- setup artifact sync;
+- explicit occupied-target artifact synchronization;
+- seamless upgrade and optional legacy cleanup;
 - promotion;
 - reset and recovery.
 
@@ -134,11 +151,11 @@ Each recipe should say when to use it, when not to use it, what can go wrong, wh
 - Extend command catalog metadata for read-only, file/network mutation, user gates, safe next action, common failures, and recovery.
 - Improve PlanDoc gate errors with `field`, `bad_value`, and `example_fix`.
 - Stabilize verify check structure with expected, observed, fix, and recovery data.
-- Add short recipes for first-run, docs-only, code-change, verify-fail, CI-red, and setup-artifact-sync.
+- Add short recipes for first-run, seamless upgrade, optional cleanup, docs-only, code-change, verify-fail, and CI-red.
 
 ### P1: Make It Feel Like A Mature MCP Product
 
-- Keep the `hy-workflow doctor --offline --json` recipe aligned with effective client scopes, direct bins/catalogs, external state, baseBranch/docs readiness and artifact drift.
+- Keep the `hy-workflow doctor --offline --json` recipe aligned with effective client scopes, direct bins/catalogs, external state, configuration authority, baseBranch, and docs readiness without inspecting inert legacy injections.
 - Add LLM-readable docs entry points such as `llms.txt` or an equivalent generated index.
 - Define profile/toolset language for audit, plan-only, local-dev, repo-ops, and promotion modes.
 - Generate public tool tables from contract metadata and enforce drift through contract lint.
@@ -157,7 +174,9 @@ Each recipe should say when to use it, when not to use it, what can go wrong, wh
 hy-workflow-mcp is moving toward this vision when:
 
 - a new user can install it and call `hy_status` within five minutes;
-- setup never reports success until effective client configuration, native CI evidence, team artifacts and external deployment agree;
+- fresh setup never reports success until effective client configuration, the two new project artifacts, and external deployment agree;
+- updating an existing installation never requires repository cleanup, repeated artifact approvals, or workflow-state reset;
+- every effective policy value can be explained with ordered provenance;
 - an agent can choose the correct next tool in any phase from `hy_status` and the last tool result;
 - every destructive action is visible in runtime output, schema/tool metadata, and docs;
 - every verify failure has one minimal recovery direction;

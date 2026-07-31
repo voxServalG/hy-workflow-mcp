@@ -1,8 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-
-export const MANAGED_RULES_VERSION = "2026.07.16.1";
+import { isLegacyIgnoredArtifact, isLocalArtifact } from "./artifacts.js";
 
 export const DOCUMENT_READ_BUDGET = Object.freeze({
   maxFiles: 12,
@@ -19,7 +18,7 @@ export const IGNORED_DOC_DIRECTORIES = new Set([
 ]);
 
 export interface DocumentationIssue {
-  code: "DOCS_EMPTY" | "DOCS_NO_FACTS" | "STALE_MANAGED_AGENTS";
+  code: "DOCS_EMPTY" | "DOCS_NO_FACTS";
   message: string;
   file?: string;
   recovery: string;
@@ -66,7 +65,10 @@ function sha256(value: string): string {
 }
 
 export function shouldIgnoreDocumentPath(relativePath: string): boolean {
-  const parts = slash(relativePath).split("/").filter(Boolean);
+  const normalized = slash(relativePath);
+  const parts = normalized.split("/").filter(Boolean);
+  if (!normalized || path.posix.isAbsolute(normalized) || /^[A-Za-z]:\//.test(normalized) || parts.includes("..")) return true;
+  if (isLocalArtifact(normalized) || isLegacyIgnoredArtifact(normalized)) return true;
   return parts.some((part, index) => {
     if (IGNORED_DOC_DIRECTORIES.has(part.toLowerCase())) return true;
     return index < parts.length - 1 && part.startsWith(".");
@@ -90,33 +92,12 @@ export function isSubstantiveDocument(content: string): boolean {
   return text.length >= 12 && /[A-Za-z0-9\u4e00-\u9fff]{3}/.test(text);
 }
 
-export function staleManagedAgentsReasons(content: string): string[] {
-  if (!content.includes("<!-- hy-workflow-rules -->")) return [];
-  const managed = content.split("<!-- hy-workflow-rules -->", 2)[1]?.split("<!-- /hy-workflow-rules -->", 1)[0] ?? content;
-  const reasons: string[] = [];
-  const versionMatch = /<!--\s*hy-workflow-rules-version:\s*([^\s]+)\s*-->/.exec(managed);
-  if (!versionMatch) reasons.push(`managed rules version marker is missing; expected ${MANAGED_RULES_VERSION}`);
-  else if (versionMatch[1] !== MANAGED_RULES_VERSION) reasons.push(`managed rules version ${versionMatch[1]} is stale; expected ${MANAGED_RULES_VERSION}`);
-  const hasCanonicalStructure = managed.includes("### 流程顺序") && managed.includes("### Artifact contract");
-  if (hasCanonicalStructure && !managed.includes("内置、离线、第一方规则")) reasons.push("managed rules do not describe the built-in offline doclint/codelint contract");
-  if (hasCanonicalStructure && !managed.includes("只读迁移或漂移输入")) reasons.push("managed rules do not preserve the read-only legacy lint JSON boundary");
-  const obsolete: Array<[RegExp, string]> = [
-    [/选择部署模式|choose deployment mode/i, "managed rules still require a deployment-mode choice"],
-    [/共享模式（|本机模式（|shared mode \(|local mode \(/i, "managed rules still describe removed local/shared setup modes"],
-    [/(?:^|\s)--local(?:\s|$)|(?:^|\s)--shared(?:\s|$)/im, "managed rules still advertise removed setup flags"],
-    [/mode\s*[=:]\s*["']?(?:local|shared)/i, "managed rules still encode a legacy deployment mode"],
-    [/hy_init[^\n。]*(?:创建|生成|writes?|creates?)[^\n。]*(?:\.hy\/|AGENTS\.md)/i, "managed rules say hy_init writes legacy project artifacts"],
-  ];
-  for (const [pattern, reason] of obsolete) if (pattern.test(managed)) reasons.push(reason);
-  return reasons;
-}
-
 export function inspectDocumentation(
   root: string,
   files: string[],
-  options: { includeAgents?: boolean } = {},
+  _options: { includeAgents?: boolean } = {},
 ): { substantiveFiles: string[]; issues: DocumentationIssue[] } {
-  const existing = files.filter(file => {
+  const existing = files.filter(file => !shouldIgnoreDocumentPath(file)).filter(file => {
     try { return fs.statSync(path.join(root, file)).isFile(); }
     catch { return false; }
   });
@@ -139,20 +120,6 @@ export function inspectDocumentation(
     });
   }
 
-  if (options.includeAgents !== false) {
-    const agents = existing.find(file => slash(file).toLowerCase() === "agents.md");
-    if (agents) {
-      const reasons = staleManagedAgentsReasons(fs.readFileSync(path.join(root, agents), "utf-8"));
-      if (reasons.length) {
-        issues.push({
-          code: "STALE_MANAGED_AGENTS",
-          file: agents,
-          message: `Managed AGENTS rules are stale: ${reasons.join("; ")}.`,
-          recovery: "Run hy-workflow setup in the project root; setup automatically migrates the managed hy-workflow block inside AGENTS.md while preserving all content outside the <!-- hy-workflow-rules --> markers.",
-        });
-      }
-    }
-  }
   return { substantiveFiles, issues };
 }
 
@@ -165,7 +132,6 @@ function rootEntryScore(file: string): number {
   const basename = path.posix.basename(normalized);
   if (/^index\.(md|mdx|rst|txt)$/.test(basename)) return normalized.split("/").length <= 2 ? 120 : 80;
   if (/^readme\.(md|mdx|rst|txt)$/.test(basename)) return normalized.split("/").length <= 2 ? 110 : 70;
-  if (normalized === "agents.md") return 105;
   return 0;
 }
 
@@ -209,7 +175,7 @@ export function selectDocumentPage(
   cursor?: string,
 ): DocumentPage {
   const entrySet = new Set(entryPoints);
-  const ranked = [...new Set(candidates)].flatMap(file => {
+  const ranked = [...new Set(candidates)].filter(file => !shouldIgnoreDocumentPath(file)).flatMap(file => {
     try {
       const content = fs.readFileSync(path.join(root, file), "utf-8");
       if (!isSubstantiveDocument(content)) return [];

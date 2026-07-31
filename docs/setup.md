@@ -1,8 +1,8 @@
 # Setup and Unset
 
-## User flow
+## Install
 
-Install or update the two public npm packages, enter a Git project, and run the same command on Windows, macOS, or Linux:
+Install the two public packages, enter a Git project, and run setup:
 
 ```bash
 npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest
@@ -16,19 +16,29 @@ npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest --r
 hy-workflow setup
 ```
 
-The Node TUI shows its intro/spinner before a bounded inspection of Codex, Claude Code, OpenCode, project profile, docs readiness and artifact drift. It offers install/update or unset with no deployment mode choice. Setup shows detected native CI commands and requires confirmation (or one explicit command when inference is unsafe). Restart selected clients after setup, then call `hy_init`.
+Setup configures the selected MCP clients in the current user's configuration. The clients run the installed binaries directly:
 
-## Single deployment model
+- `hy-workflow`: command `hy-workflow`, no arguments
+- `docs-gardener`: command `docs-gardener`, arguments `["mcp"]`
 
-Setup creates or updates repository files in two categories:
+Do not put `npx`, GitHub URLs, or SSH URLs in MCP startup configuration. Package installation is an explicit npm operation, not part of MCP startup.
 
-Team-owned configuration and CI:
-- `hy-workflow.json`
-- `.github/workflows/hy-workflow.yml`
+## What a fresh setup writes
 
-Agent instruction injection in `AGENTS.md`. Setup owns only the `<!-- hy-workflow-rules --> ... <!-- /hy-workflow-rules -->` block. When `AGENTS.md` does not exist, setup creates it with the current managed block. When the file exists but the block is missing, stale, or malformed (missing version marker, removed setup flags, old mode text), setup replaces just that block in place while preserving every byte outside the two markers. Custom agent instructions written before or after the managed block are never overwritten. Setup refuses to silently overwrite a hand-edited `hy-workflow.json` or workflow template; those changes still go through the artifact drift review path described below.
+A fresh setup has one small repository contract:
 
-Review and commit `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and any auto-migrated `AGENTS.md` managed block in a dedicated setup artifact sync PR. All other setup state (deployment, registry, workflow state, scope locks, DocsGraph cache, client MCP configuration) remains outside the repository. External data is keyed by a stable project identity derived from canonical project root, Git common dir, and origin remote:
+- `hy-workflow.json` contains project-owned paths, branches, policy choices, overrides, and exceptions.
+- `.github/workflows/hy-workflow.yml` is a thin pull-request check that invokes one exact published hy-workflow package version.
+
+Setup does not create or update `AGENTS.md`. It also does not create `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, `codelint.json`, `doclint.json`, or `docs-gardener.json` in the project.
+
+“Fresh” means that both target paths are absent. Setup creates the two files directly and requires no artifact-review flag or approval; review and commit them later through an ordinary focused repository change. If either path already exists and there is no exact new external deployment, ordinary setup checks only that the path exists: it does not open, parse, diff, or hash either artifact. Setup leaves both paths untouched, configures user-scope clients, stores a complete external configuration, and records an external-only deployment with no project-file evidence. The project therefore starts working without deciding whether the existing bytes are old, current, or malformed.
+
+Replacing or adopting those occupied paths is a separate explicit artifact-sync operation, not an upgrade step. The caller must pass the independent intent flag `--sync-project-artifacts`, `--accept-artifact-changes`, and one complete `--review-artifact` before/after SHA-256 tuple for every occupied target. Only that complete request authorizes setup to open and verify the named files. A bare accept/review input never selects this path. Ordinary `--dry-run` emits no orphan content, diff, or hash and cannot manufacture the review tuples.
+
+Setup JSON makes this choice visible. `projectFileDisposition` reports `fresh`, `managed`, `explicit-sync`, `external-only`, or `legacy-inert`; `configAuthority` reports `project`, `external`, or `preserved`. An external-only success message says the project is ready using complete external configuration rather than presenting untouched legacy files as a failure.
+
+Deployment identity, workflow state, approvals, scope locks, DocsGraph cache, and MCP client ownership stay under the operating-system user roots:
 
 | Data | Linux default | macOS default | Windows default |
 | --- | --- | --- | --- |
@@ -38,25 +48,60 @@ Review and commit `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and a
 
 When XDG variables are absent, Linux uses `~/.config`, `~/.local/state`, and `~/.cache`. Tests and managed environments may override the roots with `HY_WORKFLOW_CONFIG_HOME`, `HY_WORKFLOW_STATE_HOME`, and `HY_WORKFLOW_CACHE_HOME`.
 
-MCP clients run installed bins directly:
+## Seamless upgrades for existing projects
 
-- `hy-workflow`: command `hy-workflow`, no arguments
-- `docs-gardener`: command `docs-gardener`, arguments `["mcp"]`
+Updating the npm package must not turn an old installation into a repository migration. After an upgrade, hy-workflow runtime and setup do not read, hash, validate, rewrite, move, or delete old injected project files. In particular, they do not use an existing root `hy-workflow.json`, generated workflow, managed `AGENTS.md` block, `.hy/`, project-level MCP client files, or the three old lint JSON files as an upgrade gate. Those files remain byte-for-byte untouched and non-authoritative to hy-workflow. Existing external workflow state, locked scope, approval, and Git worktree are preserved.
 
-Do not put `npx`, GitHub URLs, or SSH URLs in client startup configuration. Package download/update is an explicit npm HTTPS operation, never part of MCP startup.
+This is what “inert” means inside hy-workflow. MCP cannot stop Codex, Claude Code, OpenCode, other agents, or GitHub Actions from independently loading or executing tracked old files. An old tracked workflow can continue under its own triggers until a separate repository change removes or disables it. Cleanup is an optional separate PR and is never required to use the upgraded MCP.
 
-The packaged template and root `hy-workflow.json` are canonical. Profile inference uses Git-tracked files and manifests for JS/TS/Python/Go/Rust, preserves multiple source extensions and real directory casing, then resolves base branch from origin HEAD/current/main/master/trunk/dev/develop. Material mixed, unknown, non-conventional-branch or otherwise low-confidence Git evidence stops for explicit confirmation. Optional `ci.commands` is an ordered, non-empty, confirmed native CI sequence; preserve-first migration never overwrites it or other manual values.
+Old deployment manifests remain compatible. Installing the new package and restarting the MCP client is sufficient; do not rerun setup merely to migrate old repository files.
 
-MCP runtime accepts only the root `hy-workflow.json`; legacy user config may be read only by setup/config CLI as a migration input.
+## Configuration authority
 
-Setup accepts an existing `docs`/`documentation`/`doc` directory, or `.` only when the repository root has a case-insensitive README/index document. It fails closed if that system is empty, contains no substantive project facts, or is dominated by excluded dependency/example/fixture/generated trees. A managed AGENTS block that lacks the current `hy-workflow-rules-version` is migrated automatically during setup rather than blocking the run. Create/repair the maintained docs or select another project-relative directory, then rerun:
+The runtime chooses exactly one configuration authority in this order:
+
+1. A complete pre-existing external project configuration remains authoritative. This preserves an installed project's behavior without consulting old repository injections.
+2. A fresh setup writes a small external authority marker. That exact marker authorizes the new root `hy-workflow.json`.
+3. The generated GitHub workflow supplies the exact `HY_WORKFLOW_RUNTIME_CONFIG_SOURCE=hy-workflow.runtime-config-source.v1` signal, which authorizes the root config on a clean runner.
+4. Without external authority or the exact CI signal, runtime detects only basic project facts and uses the frozen legacy-compatible defaults. It does not open an old root config to guess whether it should be trusted.
+
+Near matches, stale mode fields, filenames, or the mere presence of a root file never grant authority. This makes the selected source deterministic and prevents an old injection from becoming active by accident.
+
+Project policy stays data, not generated instructions. Teams choose `relaxed`, `standard`, or `strict`, then place project rules, path-specific overrides, and time-bounded exceptions in `hy-workflow.json`. Safety rules for scan integrity, project identity, evidence freshness, and scope/path boundaries cannot be disabled by a project profile.
+
+To see the final value for one rule and the ordered sources that produced it, run:
 
 ```bash
-hy-workflow config --apply --json --docs-dir '<existing-project-relative-dir>'
-hy-workflow setup
+hy-workflow config --explain-policy code.max-lines --file src/parser.ts --json
 ```
 
-`--apply` only changes the explicitly supplied fields and preserves the rest of an existing root or migrated legacy configuration. Use `--apply-suggested` only when the detected defaults should replace the configurable project and lint fields.
+The result reports the selected configuration authority, effective severity and thresholds, then the applied sources in order, such as profile, legacy-compatible threshold, project rule, matching file override, and a non-expired exception. This is the supported way to answer “why did this file get this rule?” without inspecting generated code.
+
+## CI boundary
+
+The generated workflow is deliberately thin. It runs only for pull requests and explicit manual dispatch, checks out with persisted credentials disabled, grants only `contents: read`, and invokes:
+
+```text
+npx --yes --package=@voxstudio/hy-workflow@<exact-version> hy-workflow lint --json
+```
+
+It does not infer a JavaScript, Python, Go, Rust, or mixed-project pipeline. It does not rerun the repository's native build and test commands. Keep those commands in the project's own CI jobs; hy-workflow contributes only its centralized policy/lint check. Mark the resulting `Verify` check required in GitHub rulesets or branch protection if the repository needs enforcement. Setup does not change repository administration settings.
+
+Because the workflow installs an exact npm package on the runner, npm network availability is part of this check. Exact version pinning prevents a later package release from silently changing an already committed workflow.
+
+## Automation
+
+```bash
+hy-workflow setup --yes --clients codex,claude,opencode --json
+hy-workflow setup --yes --clients codex --dry-run --json
+hy-workflow setup --yes --clients codex --sync-project-artifacts --accept-artifact-changes --review-artifact "hy-workflow.json:<before>:<after>" --json
+hy-workflow setup --yes --clients codex --force-client-overwrite codex --json
+hy-workflow unset --yes --clients all --remove-global --json
+```
+
+Non-interactive setup requires `--yes` and explicit `--clients`. `--dry-run` emits one JSON envelope and makes no change. On an external-only orphan path, that envelope contains no artifact hashes or diffs. Exact `--review-artifact` hashes belong to the separately requested `--sync-project-artifacts` operation; the tuple set must cover every occupied target and stale hashes fail closed.
+
+`--force-client-overwrite` applies only to the hy-workflow-owned user-level MCP definition. The deprecated `--migrate-legacy-clients` flag remains accepted for command compatibility but does not scan, back up, move, or delete project files.
 
 ## Reversible unset
 
@@ -64,34 +109,7 @@ hy-workflow setup
 hy-workflow unset
 ```
 
-Unset uses the same TUI and removes only the current project's deployment, workflow state/cache, and registry entry. Global MCP entries and their ownership manifest remain while other registered projects exist. On the final project, the ownership manifest is updated or cleared only when the user explicitly requests removal of the owned global MCP entries; ownership snapshots ensure unrelated or subsequently edited client configuration is not deleted. Legacy user config remains untouched.
-
-Repository files are never silently removed by unset because they are team-owned and may be committed. Remove them through an ordinary reviewed repository change if the team wants to retire hy-workflow.
-
-## Automation
-
-```bash
-hy-workflow setup --yes --clients codex,claude,opencode --json
-hy-workflow setup --yes --clients codex --ci-command 'npm ci' --ci-command 'npm test' --json
-hy-workflow setup --yes --clients codex --dry-run --json
-hy-workflow setup --yes --clients codex --ci-command 'npm test' --accept-artifact-changes --review-artifact 'hy-workflow.json:<before>:<after>' --json
-hy-workflow setup --yes --clients codex --ci-command 'npm test' --accept-artifact-changes --json
-hy-workflow setup --yes --clients codex --force-client-overwrite codex --json
-hy-workflow setup --yes --clients codex --migrate-legacy-clients --json
-hy-workflow unset --yes --clients all --remove-global --json
-```
-
-Non-interactive use requires `--yes`, explicit `--clients`, and either existing valid `ci.commands` or explicit repeatable `--ci-command`. A bare `--accept-ci-commands` is rejected because it does not identify what was reviewed. `--dry-run` reports project evidence, CI candidates, artifact diff/hash/change-kind and confirmation requirements without writing; JSON emits one envelope. After `--dry-run --json` the exact artifact hashes are cached on the OS user state for 5 minutes, so an immediate `--accept-artifact-changes` (without `--review-artifact`) will reuse them automatically. To apply drift non-interactively on `hy-workflow.json` or `.github/workflows/hy-workflow.yml`, pass `--accept-artifact-changes` plus one exact `--review-artifact <file>:<before-sha256|absent>:<after-sha256>` for every accepted diff; stale or self-generated approval hashes fail closed.
-
-`--force-client-overwrite <client1,client2>` re-installs the hy-workflow-owned user-scope MCP definition for those clients even when the existing entry is unreadable, shadowed, or drifted from the owned definition. It does not touch project-scope (tracked) files; combine with `--migrate-legacy-clients` if legacy project-level MCP files (.mcp.json, .opencode/, .codex/, .claude/) are blocking setup.
-
-`--migrate-legacy-clients` scans the project root for legacy client MCP definitions referencing hy-workflow or docs-gardener, backs them up to `.hy-cleanup-backup/<timestamp>/`, ensures user-scope definitions exist, then moves the project-level files out of the way. Project files are moved (not deleted) so they can be reviewed and `git rm`'d later.
-
-Setup auto-migrates the managed `AGENTS.md` block without an acceptance flag: existing hand-written content outside the markers is preserved byte-for-byte, and malformed legacy blocks are rewritten to the canonical versioned block.
-
-## CI enforcement
-
-The generated Verify job runs on pull requests and explicit `workflow_dispatch`, not on generic pushes. It executes confirmed `ci.commands` as the complete native sequence, then decodes the package's deterministic first-party lint bundle into runner-temporary storage and runs built-in doclint/codelint offline. Missing/empty commands, unknown unsafe inference, zero documentation files, invalid configuration, parser/report failure, or lint errors fail closed. Existing legacy compatibility JSON remains byte-identical because the workflow never creates, rewrites, or restores it. `hy_ci` requires the stable Verify check and every effective check to succeed. An administrator must separately mark Verify required; setup does not mutate repository rules.
+Unset removes only the current local deployment, registry/state/cache entries, and client definitions owned by hy-workflow when explicitly requested. It does not remove repository files, including either of the two new setup files or any old injection. Repository cleanup is always an ordinary reviewed repository change.
 
 ## Runtime prerequisites
 
@@ -99,14 +117,6 @@ The generated Verify job runs on pull requests and explicit `workflow_dispatch`,
 - `git` on PATH for project identity and repository operations
 - authenticated `gh` for PR creation, CI status, and merge operations
 
-`hy_status` reports Git/GitHub capability state. Missing mutation capabilities fail closed with recovery guidance; there is no hidden GitHub mutation backend.
+`hy_status` reports the current stage, allowed next action, and Git/GitHub capability state. Missing mutation capabilities fail closed with recovery guidance; there is no hidden GitHub mutation backend.
 
-Merge recovery 的 **read-only Git fallback** 不是隐藏的 GitHub mutation 替代品。它只对 `origin/<base>` 执行 fresh fetch，将远端 tip 固定为 immutable `baseOid`，并检查 verified head 是否为其祖先；绝不直接 merge 或 push base。创建 PR 和首次执行 merge mutation 仍要求已认证的 `gh`。如果 legacy workflow 没有 merge receipt，但 Git 证据已经证明 verified head 被包含，`hy_merge` 会同步由 agent prefix、verified ancestry 与 local=remote 共同证明的 stacked branches；unrelated branch 忽略，真实 stack 的 ref 漂移 fail closed。
-
-正常 pre-mutation snapshot 还要求候选建立在 fresh prepared base 上。确认合入后以 `syncBaseOid` 固定同步基准，`detached staging` 的 `rebasing`/`resultOid` 进度先落盘，再通过 local ref `compare-and-swap` 与 exact `force-with-lease` 安装。project-specific merge lock 只串行化共享同一本地状态根和工作树的进程；它不提供跨主机强一致。receipt 和 lock 的恢复协议面向已完成状态写入后的普通工具或进程中断，文档不承诺机器断电或缺少 `fsync` 时的存储持久性。
-
-## Version migration
-
-Every `hy_*` dispatch checks schema-3 deployment version, direct binaries/versions, MCP catalog hashes and all three team artifact SHA/size (`hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and the managed `AGENTS.md` block). `hy_init` additionally requires the root config/workflow, resolvable base ref, substantive docs and current managed rules. Missing, unreadable, outdated, tool-mismatch or artifact-drift evidence returns a structured setup/artifact-sync stop; legacy state is never deleted or treated as a second mode.
-
-The npm package contains compiled `dist/`, docs, the shared workflow template, the `templates/lint/*.mjs` engine modules, and README. It contains no Bash/PowerShell installer. Installation does not compile locally.
+The npm package contains compiled `dist/`, docs, schema files, the thin workflow template, and README. It contains no Bash or PowerShell installer, and installation does not compile locally.

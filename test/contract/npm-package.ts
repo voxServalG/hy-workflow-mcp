@@ -1,5 +1,6 @@
 import { readPackageJson, npmPackDryRun, parseNpmPackEntries, parseNpmPackFiles } from "../../src/npm/package.js";
-import { execFileSync, execSync } from "node:child_process";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,7 +49,7 @@ for (const lifecycle of ["prepare", "install", "postinstall"]) {
 }
 
 // files include compiled runtime, docs, shared templates, and README; platform scripts are gone
-const requiredFiles = ["dist", "docs", "templates", "AGENTS.md", "README.md"];
+const requiredFiles = ["dist", "docs", "schemas", "templates", "README.md"];
 for (const file of requiredFiles) {
   assert(pkg.files?.includes(file) === true, `package.json files must include ${file}`);
 }
@@ -78,11 +79,18 @@ assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must include t
 for (const module of ["code.mjs", "docs.mjs", "fs.mjs", "index.mjs", "markdown.mjs", "python.mjs", "rust.mjs"]) {
   assert(packFiles.includes(`templates/lint/${module}`), `npm pack must include templates/lint/${module}`);
 }
-assert(packFiles.includes("AGENTS.md"), "npm pack must include the canonical managed-rules migration source");
-const lintReport = JSON.parse(execFileSync(process.execPath, [serverPath, "lint", "--json"], { cwd: process.cwd(), encoding: "utf8" }));
+assert(!packFiles.includes("AGENTS.md"), "npm pack must exclude AGENTS.md");
+const lintReport = JSON.parse(execFileSync(process.execPath, [serverPath, "lint", "--json"], {
+  cwd: process.cwd(),
+  encoding: "utf8",
+  env: { ...process.env, [RUNTIME_CONFIG_SOURCE_ENV]: RUNTIME_CONFIG_SOURCE_SCHEMA },
+}));
 assert(lintReport.schema === "hy-workflow.lint.v1" && lintReport.counts?.checks === 10 && lintReport.counts?.errors === 0, "packed CLI entrypoint must execute the built-in ten-rule lint report");
-const managedRules = execFileSync(process.execPath, [serverPath, "config", "--print-managed-rules"], { cwd: nonGitDirectory, encoding: "utf8" });
-assert(managedRules.startsWith("<!-- hy-workflow-rules -->") && managedRules.includes("hy-workflow-rules-version:"), "installed CLI must print a complete versioned managed-rules block outside a Git project");
+const managedRules = spawnSync(process.execPath, [serverPath, "config", "--print-managed-rules", "--json"], { cwd: nonGitDirectory, encoding: "utf8" });
+assert(managedRules.status === 1, "removed --print-managed-rules option must exit 1");
+const managedRulesEnvelope = JSON.parse(managedRules.stdout);
+assert(managedRulesEnvelope.ok === false && typeof managedRulesEnvelope.error === "object", "removed --print-managed-rules option must return a typed error envelope");
+assert(["UNKNOWN_OPTION", "INVALID_ARGUMENTS"].includes(managedRulesEnvelope.error.code), "removed --print-managed-rules option must return the normal unknown-option or invalid-arguments code");
 assert(!packFiles.includes("setup") && !packFiles.includes("setup.ps1"), "npm pack must not include removed platform installers");
 for (const file of packFiles) {
   for (const prefix of forbidden) {
@@ -123,8 +131,7 @@ const matrix = JSON.parse(readFileSync("test/acceptance/matrix.json", "utf8"));
 assert(matrix.repositories.length === 5, "release acceptance must run all five pinned public mirrors");
 assert(matrix.repositories.every((repo: any) => repo.url.startsWith("https://") && /^[0-9a-f]{40}$/.test(repo.commit)), "acceptance repositories must use HTTPS and full immutable commits");
 assert(new Set(matrix.repositories.map((repo: any) => repo.id)).size === 5, "acceptance repository ids must be unique");
-const legacyRepositories = matrix.repositories.filter((repo: any) => repo.category === "legacy");
-assert(legacyRepositories.length === 0, "private legacy mirrors are no longer part of release acceptance");
+assert(matrix.repositories.every((repo: any) => repo.category === "oss"), "release acceptance repositories must all be category oss");
 assert(matrix.repositories.every((repo: any) => /^HY_ACCEPTANCE_[A-Z0-9_]+_MIRROR$/.test(repo.mirrorEnv)), "every pinned repository must support an explicit local acceptance mirror");
 assert(new Set(matrix.repositories.map((repo: any) => repo.mirrorEnv)).size === 5, "acceptance mirror environment inputs must be unique");
 for (const repo of matrix.repositories) {
@@ -150,8 +157,12 @@ assert(harness.includes("message.result?.isError") && harness.includes("substant
 assert(scenarios.includes("isolatedUserStateFingerprint") && scenarios.includes("failpoint left isolated HOME or client state changes"), "every transaction failpoint must restore isolated user state exactly");
 assert(scenarios.includes('"SETUP_LOCK_BUSY"') && scenarios.includes("retryableContention") && scenarios.includes("postContentionRecovery"), "32-way setup pressure must accept only structured retryable lock contention and prove post-contention convergence");
 assert(scenarios.includes("setup-failpoint-child.mjs") && !scenarios.includes("HY_WORKFLOW_TEST_FAIL_AT"), "acceptance failpoints must use a test-only child instead of a production environment bypass");
-assert(scenarios.includes("if (previewEnvelope.ciConfirmationRequired)") && scenarios.includes('...(artifactReviewArgs.length ? ["--accept-artifact-changes", ...artifactReviewArgs] : [])'), "every repository artifact update must consume an exact dry-run hash review, not only legacy repositories");
-assert(scenarios.includes('run("hy-workflow", ["config", "--print-managed-rules"]') && !scenarios.includes('join(workspace.sourceRoot, "AGENTS.md")'), "legacy acceptance migration must consume the installed package rules export, never the source checkout");
+assert(scenarios.includes('freshPreviewEnvelope.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json"'), "fresh setup preview must encode exactly the two-artifact project boundary");
+assert(scenarios.includes('"fresh-clone setup must not create AGENTS.md"'), "fresh setup must prove AGENTS.md is not created");
+assert(scenarios.includes('previewEnvelope.artifactChanges?.some((change: any) => change?.requiresAcceptance)') && scenarios.includes('...(artifactReviewArgs.length ? ["--accept-artifact-changes", ...artifactReviewArgs] : [])'), "repository setup must consume exact dry-run artifact reviews only when acceptance is required");
+for (const removedToken of ["TestOwnedMigration", "MANAGED_RULES_BLOCK", "verifyStaleManagedAgentsAutoMigration", "verifyCodexProjectShadowBoundary", "migrateCodexProjectSectionsExplicitly", "verifyLegacyShadowBoundary", "managedAgentsOriginal", "codexProjectMigration", "--ci-command", "--accept-ci-commands", "ciConfirmationRequired", "--print-managed-rules"]) {
+  assert(!scenarios.includes(removedToken), `release scenarios must not contain removed setup behavior: ${removedToken}`);
+}
 assert(failpointChild.includes("internal-setup-test-hooks") && failpointChild.includes("dist/setup-cli.js") && failpointChild.includes("runSetupCli"), "test-only failpoint child must inject the process-local hook before calling the installed tarball CLI");
 assert(scenarios.includes("runRepositoryLintPressure") && scenarios.includes("assertCompatibilityUnchanged") && scenarios.includes("lintPressure"), "every pinned repository must execute real doclint/codelint pressure scans and preserve compatibility bytes");
 assert(scenarios.includes('run("hy-workflow", ["lint", "--json"]') && !scenarios.includes("prepareLintPressurePackages"), "release pressure must call the installed built-in lint command without third-party preparation");
@@ -159,7 +170,6 @@ assert(scenarios.includes("summary.notApplicableRules") && scenarios.includes("D
 for (const forbiddenToken of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "npx --yes --package"]) {
   assert(!scenarios.includes(forbiddenToken), `release pressure must not contain ${forbiddenToken}`);
 }
-assert(scenarios.includes("verifyCodexProjectShadowBoundary") && scenarios.includes("migrateCodexProjectSectionsExplicitly") && scenarios.includes("setup or unset modified project .codex/config.toml"), "legacy acceptance must fail closed on project Codex shadows and keep migration human-owned");
 assert(harness.includes("Acceptance harness refuses remote write command") && runner.includes("remote-write-attempt"), "acceptance must reject and audit remote-write attempts");
 assert(harness.includes("const fetchAttempts = 3") && harness.includes('"http.version=HTTP/1.1"') && harness.includes('"shallow.lock"'), "pinned repository clones must use bounded HTTPS retries and clean only temporary Git locks");
 assert(harness.includes("ACCEPTANCE_WORKSPACE_LIMIT_BYTES") && scenarios.includes("assertWorkspaceDiskBudget") && runner.includes("workspaceDisk"), "acceptance must enforce and report a fixed recursive workspace disk budget");

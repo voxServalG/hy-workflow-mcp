@@ -1,8 +1,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
-import { PHASES, VALID_TRANSITIONS, isPhase, type Phase } from "./runtime/state-machine.js";
+import {
+  DEFAULT_STAGE_BY_PHASE,
+  PHASES,
+  VALID_TRANSITIONS,
+  canonicalWorkflowStage,
+  isPhase,
+  type Phase,
+  type WorkflowStage,
+} from "./runtime/state-machine.js";
 import { configuredBaseBranch, currentGitBranch, findProjectRoot, resolveGitPrivatePath } from "./runtime/project.js";
 import { createHash, randomUUID } from "node:crypto";
 import { atomicWriteJson, ensureParent, projectPaths } from "./runtime/user-paths.js";
@@ -195,15 +202,39 @@ export interface DocumentReadHealth {
 export interface Approval {
   time: string;
   note: string;
+  /** Stable identity of the human decision. Optional for historical state. */
+  decisionId?: string;
+  /** Material PlanDoc hash approved by the user. Optional for historical state. */
+  planHash?: string;
+  /** Previous decision replaced by an explicitly approved material amendment. */
+  supersedesDecisionId?: string;
+  audit?: Array<{
+    time: string;
+    kind: "non_material_scope_narrowing";
+    amendmentDecisionId: string;
+    previousPlanHash: string;
+    planHash: string;
+  }>;
+}
+
+export interface PendingPlanApproval {
+  time: string;
+  note: string;
+  decisionId: string;
+  planHash: string;
 }
 
 export interface WorkflowState {
   version: "1";
   phase: Phase;
+  /** Persisted intra-phase progress. Optional only for historical state files. */
+  stage?: WorkflowStage;
   branch: string | null;
   prNumber: number | null;
   plan: PlanDoc | null;
   approval: Approval | null;
+  /** One explicit user approval waiting only for the automatic before_approve audit. */
+  pendingApproval?: PendingPlanApproval | null;
   // deprecated — kept optional for reading historical state.json, no longer written
   verifyHash?: string | null;
   verifiedManifestHash?: string | null;
@@ -216,11 +247,6 @@ export interface WorkflowState {
 }
 
 // ── State path ───────────────────────────────────────────────
-
-const RUNTIME_STATE_FILE = path.join("hy-workflow", "workflow.json");
-const RUNTIME_SCOPE_FILE = path.join("hy-workflow", "scope.json");
-const LEGACY_STATE_FILE = path.join(".hy", "workflow.json");
-const LEGACY_SCOPE_FILE = path.join(".hy", "scope.json");
 
 export interface LegacyRuntimeDiagnostic {
   file: string;
@@ -294,74 +320,22 @@ export function acquireMergeLock(graceMs = 60_000): MergeLockResult {
 }
 
 export function scopePath(): string {
-  const root = projectRoot();
-  const target = projectPaths(root).scope;
-  migrateLegacyFile(target, [gitPrivatePath(root, RUNTIME_SCOPE_FILE), legacyScopePath(root)]);
-  return target;
-}
-
-function legacyStatePath(root: string): string {
-  return path.join(root, LEGACY_STATE_FILE);
-}
-
-function legacyScopePath(root: string): string {
-  return path.join(root, LEGACY_SCOPE_FILE);
-}
-
-function gitPrivatePath(root: string, relativePath: string): string {
-  return resolveGitPrivatePath(root, relativePath);
+  return projectPaths(projectRoot()).scope;
 }
 
 export function projectRoot(): string {
   return findProjectRoot(process.cwd());
 }
 
-function isTracked(root: string, file: string): boolean | null {
-  try {
-    execSync(`git ls-files --error-unmatch -- "${file}"`, { cwd: root, stdio: "ignore" });
-    return true;
-  } catch (e: any) {
-    if (e.status === 1) return false;
-    return null;
-  }
-}
-
 export function legacyRuntimeDiagnostics(root = projectRoot()): LegacyRuntimeDiagnostic[] {
-  const diagnostics: LegacyRuntimeDiagnostic[] = [];
-  for (const file of [LEGACY_STATE_FILE, LEGACY_SCOPE_FILE]) {
-    const fullPath = path.join(root, file);
-    if (!fs.existsSync(fullPath)) continue;
-    const tracked = isTracked(root, file);
-    if (tracked === true) {
-      diagnostics.push({
-        file,
-        tracked: true,
-        message: `${file} is legacy hy-workflow runtime metadata tracked by Git and may block branch checkout.`,
-        remediation: `Run git rm --cached ${file} and add .hy/ to .gitignore, then commit that cleanup.`,
-      });
-      continue;
-    }
-    if (tracked === null) {
-      diagnostics.push({
-        file,
-        tracked: false,
-        message: `${file} exists but Git tracking status could not be determined, so hy-workflow will not delete it automatically.`,
-      });
-    }
-  }
-  return diagnostics;
+  // Compatibility export only. Normal runtime must not inspect legacy project
+  // paths because their mere presence must be invisible after upgrade.
+  void root;
+  return [];
 }
 
 export function cleanupLegacyRuntimeFiles(root = projectRoot()): void {
   void root;
-}
-
-function migrateLegacyFile(target: string, candidates: string[]): void {
-  if (fs.existsSync(target)) return;
-  const source = candidates.find(candidate => fs.existsSync(candidate));
-  if (!source) return;
-  ensureParent(target);
-  fs.copyFileSync(source, target);
 }
 
 // ── Read / Write ─────────────────────────────────────────────
@@ -372,7 +346,7 @@ function structuredWorkflowStateError(code: string, message: string, detail?: Re
     subtype: "invalid_phase",
     code,
     message,
-    hint: "Inspect or remove the Git-private hy-workflow runtime state, then retry from hy_status.",
+    hint: "Inspect or remove the external user workflow-state file named in error.detail.file, then retry from hy_status. Project-local legacy state is not consulted.",
     detail,
     retryable: false,
   };
@@ -382,10 +356,12 @@ function initialState(): WorkflowState {
   return {
     version: "1",
     phase: "init",
+    stage: "init.ready",
     branch: null,
     prNumber: null,
     plan: null,
     approval: null,
+    pendingApproval: null,
     verifiedImplementationDigest: null,
     pendingAmendment: null,
     implementationManifest: null,
@@ -393,6 +369,10 @@ function initialState(): WorkflowState {
     syncDocs: null,
     mergeReceipt: null,
   };
+}
+
+export function createInitialWorkflowState(): WorkflowState {
+  return initialState();
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -416,6 +396,84 @@ function normalizeMergeReceipt(value: unknown, file: string): MergeReceipt | nul
   return receipt;
 }
 
+function isPlanHash(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{12}$/.test(value);
+}
+
+function hasValidApprovalAuditChain(value: unknown, decisionId: string, planHash: string): boolean {
+  const match = /^plan:([a-f0-9]{12})$/.exec(decisionId);
+  if (!match) return false;
+  const audit = value === undefined ? [] : value;
+  if (!Array.isArray(audit)) return false;
+  let current = match[1];
+  for (const item of audit) {
+    if (!isObject(item)
+        || typeof item.time !== "string" || !item.time.trim()
+        || item.kind !== "non_material_scope_narrowing"
+        || typeof item.amendmentDecisionId !== "string" || !item.amendmentDecisionId.trim()
+        || !isPlanHash(item.previousPlanHash)
+        || !isPlanHash(item.planHash)
+        || item.previousPlanHash !== current) {
+      return false;
+    }
+    current = item.planHash;
+  }
+  return current === planHash;
+}
+
+function hasValidApprovalCore(value: unknown): value is Approval {
+  if (!isObject(value) || typeof value.time !== "string" || !value.time.trim() || typeof value.note !== "string") return false;
+  const hasDecisionId = value.decisionId !== undefined;
+  const hasPlanHash = value.planHash !== undefined;
+  if (hasDecisionId !== hasPlanHash) return false;
+  if (!hasDecisionId && !hasPlanHash) {
+    return value.audit === undefined && value.supersedesDecisionId === undefined;
+  }
+  if (typeof value.decisionId !== "string" || !isPlanHash(value.planHash)) return false;
+  if (!hasValidApprovalAuditChain(value.audit, value.decisionId, value.planHash)) return false;
+  if (value.supersedesDecisionId !== undefined && (typeof value.supersedesDecisionId !== "string" || !value.supersedesDecisionId.trim())) return false;
+  return true;
+}
+
+function normalizeApproval(value: unknown, plan: PlanDoc | null, file: string): Approval | null {
+  if (value === null || value === undefined) return null;
+  if (!hasValidApprovalCore(value)) {
+    structuredWorkflowStateError(
+      "WORKFLOW_STATE_INVALID_APPROVAL",
+      `Workflow state has an invalid approval in ${file}.`,
+      { file },
+    );
+  }
+  const approval = { ...value } as Approval;
+  if (approval.planHash === undefined && plan) {
+    const planHash = computePlanHash(plan);
+    if (planHash) {
+      approval.planHash = planHash;
+      approval.decisionId = approval.decisionId ?? `plan:${planHash}`;
+    }
+  }
+  return approval;
+}
+
+function normalizePendingApproval(value: unknown, plan: PlanDoc | null, file: string): PendingPlanApproval | null {
+  if (value === null || value === undefined) return null;
+  const planHash = computePlanHash(plan);
+  if (!isObject(value)
+      || typeof value.time !== "string" || !value.time.trim()
+      || typeof value.note !== "string"
+      || !isPlanHash(value.planHash)
+      || value.decisionId !== `plan:${value.planHash}`
+      || !planHash
+      || value.planHash !== planHash) {
+    structuredWorkflowStateError(
+      "WORKFLOW_STATE_INVALID_PENDING_APPROVAL",
+      `Workflow state has an invalid pending approval in ${file}.`,
+      { file },
+    );
+  }
+  return { ...value } as unknown as PendingPlanApproval;
+}
+
 function normalizeState(raw: unknown, file: string): WorkflowState {
   if (!isObject(raw)) {
     structuredWorkflowStateError("WORKFLOW_STATE_INVALID", `Workflow state is not an object: ${file}.`, { file });
@@ -426,15 +484,19 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
     structuredWorkflowStateError("WORKFLOW_STATE_INVALID_PHASE", `Workflow state has an invalid phase in ${file}.`, { file, phase });
   }
 
+  const plan = (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null;
+
   return {
     ...initialState(),
     ...raw,
     version: "1",
     phase,
+    stage: canonicalWorkflowStage(phase, raw.stage),
     branch: normalizeNullableString(raw.branch),
     prNumber: normalizeNullablePrNumber(raw.prNumber, file),
-    plan: (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null,
-    approval: (isObject(raw.approval) ? raw.approval : null) as Approval | null,
+    plan,
+    approval: normalizeApproval(raw.approval, plan, file),
+    pendingApproval: normalizePendingApproval(raw.pendingApproval, plan, file),
     verifyHash: normalizeNullableString(raw.verifyHash),
     verifiedImplementationDigest: normalizeNullableString(raw.verifiedImplementationDigest),
     verifiedManifestHash: normalizeNullableString(raw.verifiedManifestHash),
@@ -456,23 +518,16 @@ function parseWorkflowStateFile(file: string): WorkflowState {
 }
 
 export function readState(): WorkflowState {
-  const root = projectRoot();
   const p = statePath();
-  if (!fs.existsSync(p)) {
-    const legacy = [gitPrivatePath(root, RUNTIME_STATE_FILE), legacyStatePath(root)]
-      .find(candidate => fs.existsSync(candidate));
-    if (legacy) {
-      const state = parseWorkflowStateFile(legacy);
-      writeState(state);
-      return state;
-    }
-    return initialState();
-  }
+  if (!fs.existsSync(p)) return initialState();
   return parseWorkflowStateFile(p);
 }
 
 export function writeState(state: WorkflowState): void {
-  atomicWriteJson(statePath(), state);
+  atomicWriteJson(statePath(), {
+    ...state,
+    stage: canonicalWorkflowStage(state.phase, state.stage),
+  });
 }
 
 // ── Phase transitions ────────────────────────────────────────
@@ -495,7 +550,7 @@ export function transition(state: WorkflowState, to: Phase): WorkflowState {
       `Allowed transitions from "${state.phase}": ${allowed?.join(", ") ?? "none"}.`
     );
   }
-  return { ...state, phase: to };
+  return { ...state, phase: to, stage: DEFAULT_STAGE_BY_PHASE[to] };
 }
 
 export class StateError extends Error {
@@ -543,6 +598,85 @@ export function computePlanHash(plan: PlanDoc | null): string | null {
   return hash.digest("hex").slice(0, 12);
 }
 
+export function planDecisionId(plan: PlanDoc | null): string | null {
+  const planHash = computePlanHash(plan);
+  return planHash ? `plan:${planHash}` : null;
+}
+
+export function amendmentDecisionId(plan: PlanDoc | null, amendment: PendingPlanAmendment | null | undefined): string | null {
+  const planHash = computePlanHash(plan);
+  if (!planHash || !amendment) return null;
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify({ planHash, reason: amendment.reason, scope: amendment.scope, warnings: amendment.warnings }));
+  return `amendment:${hash.digest("hex").slice(0, 12)}`;
+}
+
+export function approvalMatchesPlan(approval: Approval | null, plan: PlanDoc | null): boolean {
+  if (!approval || !plan) return false;
+  if (!hasValidApprovalCore(approval)) return false;
+  const planHash = computePlanHash(plan);
+  if (!planHash) return false;
+  // Historical approvals predate planHash. They remain valid for the already
+  // persisted PlanDoc so upgrading an active project does not interrupt it.
+  return approval.planHash === undefined || approval.planHash === planHash;
+}
+
+export function pendingApprovalMatchesPlan(pending: PendingPlanApproval | null | undefined, plan: PlanDoc | null): boolean {
+  if (!pending || !plan) return false;
+  const planHash = computePlanHash(plan);
+  return Boolean(
+    planHash
+    && typeof pending.time === "string" && pending.time.trim()
+    && typeof pending.note === "string"
+    && isPlanHash(pending.planHash)
+    && pending.planHash === planHash
+    && pending.decisionId === `plan:${planHash}`,
+  );
+}
+
+export function createPlanApproval(plan: PlanDoc, note = "", previous?: Approval | null): Approval {
+  const planHash = computePlanHash(plan)!;
+  const decisionId = `plan:${planHash}`;
+  return {
+    time: new Date().toISOString(),
+    note,
+    decisionId,
+    planHash,
+    ...(previous?.decisionId && previous.decisionId !== decisionId
+      ? { supersedesDecisionId: previous.decisionId }
+      : {}),
+  };
+}
+
+export function rebindApprovalForNonMaterialNarrowing(
+  approval: Approval | null,
+  previousPlan: PlanDoc,
+  nextPlan: PlanDoc,
+  amendmentId: string,
+): Approval {
+  if (!approvalMatchesPlan(approval, previousPlan)) {
+    throw new StateError("Cannot rebind a scope narrowing without an approval bound to the previous PlanDoc.");
+  }
+  const previousPlanHash = computePlanHash(previousPlan)!;
+  const planHash = computePlanHash(nextPlan)!;
+  const decisionId = approval?.decisionId ?? `plan:${previousPlanHash}`;
+  return {
+    ...(approval ?? { time: new Date().toISOString(), note: "" }),
+    decisionId,
+    planHash,
+    audit: [
+      ...(approval?.audit ?? []),
+      {
+        time: new Date().toISOString(),
+        kind: "non_material_scope_narrowing",
+        amendmentDecisionId: amendmentId,
+        previousPlanHash,
+        planHash,
+      },
+    ],
+  };
+}
+
 function gate(status: DocumentGateStatus, reason: string, expected?: string | null, actual?: string | null): DocumentGateHealth {
   return { status, reason, expected, actual };
 }
@@ -566,7 +700,7 @@ export function documentReadHealth(state: WorkflowState, currentImplementationDi
       : !planHash || beforeApprove.planHash !== planHash
         ? gate("stale", "before_approve plan hash does not match the current PlanDoc.", planHash, beforeApprove.planHash)
         : beforeApprove.changedSinceBaseline
-          ? gate("stale", "before_approve document audit detected document changes since before_plan; regenerate the PlanDoc before approval.", beforePlan?.digest ?? null, beforeApprove.digest)
+          ? gate("current", "before_approve detected document changes since before_plan. Review their relevance, but digest drift alone does not invalidate the approved PlanDoc.", beforePlan?.digest ?? null, beforeApprove.digest)
           : gate("current", "before_approve document audit matches the current PlanDoc."),
     afterEdit: !afterEdit
       ? gate("missing", "after_edit document audit is missing.")

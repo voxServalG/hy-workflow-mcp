@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import { defaultSuggestion, ensureConfigDefaults, withConfirmedCiCommands, type JsonObject } from "../config.js";
-import { readDeployment, readDeploymentById, readRegistry, unregisterProject, writeDeployment, type ClientName, type DeploymentManifest, type UnregisterOutcome } from "../runtime/deployment.js";
+import { isProjectRuntimeConfigSource, projectRuntimeConfigSource, resolveRuntimeConfig, withConfirmedCiCommands, type JsonObject } from "../config.js";
+import { MINIMAL_PROJECT_CONTRACT, readDeployment, readDeploymentById, readRegistry, unregisterProject, writeDeployment, type ClientName, type DeploymentManifest, type UnregisterOutcome } from "../runtime/deployment.js";
 import { atomicWriteJson, projectPaths, projectStoragePaths, userRoots } from "../runtime/user-paths.js";
 import { assertSafeRuntimeBoundary } from "../runtime/boundary.js";
 import { SETUP_VERSION } from "../bootstrap.js";
@@ -13,8 +13,6 @@ import { definitionEquals } from "./clients/index.js";
 import { createOpenCodeAdapter } from "./clients/opencode.js";
 import { inspectSetupTools, runSetupPreflight, type SetupPreflight } from "./preflight.js";
 import { SHARED_PROJECT_FILES, sharedArtifactEvidence, writeSharedArtifacts } from "./shared.js";
-import { migrateLegacyClientConfigs, scanLegacyClientConfigs } from "./legacy-migration.js";
-import { cacheReviewedArtifacts, clearReviewedArtifacts, loadReviewedArtifacts } from "./reviewed-artifacts.js";
 import { setupFailpoint, withSetupTransaction, type ClientResourceEvidence, type SetupTransaction } from "./transaction.js";
 import { internalSetupTestHooks } from "./test-hooks.js";
 import {
@@ -26,6 +24,7 @@ import {
   type McpDefinition,
   type ServerName,
   type SetupOptions,
+  type SetupContract,
   type SetupResult,
 } from "./types.js";
 
@@ -92,6 +91,16 @@ export function readOwnership(root: string): OwnershipManifest {
 
 function jsonHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value, null, 2) + "\n").digest("hex");
+}
+
+function exactProjectSourceMarker(file: string): boolean {
+  if (!fs.existsSync(file)) return false;
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf-8"));
+    return Boolean(value && typeof value === "object" && !Array.isArray(value) && isProjectRuntimeConfigSource(value));
+  } catch {
+    return false;
+  }
 }
 
 function writeOwnership(root: string, ownership: OwnershipManifest, transaction?: SetupTransaction): void {
@@ -277,13 +286,13 @@ function installClients(
               [
                 `Existing entry source: ${conflictSource}`,
                 `To overwrite the user-scope definition owned by hy-workflow, rerun with --force-client-overwrite ${adapter.name}`,
-                "Project-scope (tracked legacy) files are never modified by setup; use --migrate-legacy-clients to back them up first.",
+                "Project-scope legacy files are ignored and never inspected or modified by setup.",
               ].join("\n"),
               { client: adapter.name, server, ownedDesired: existing.desired, applied: existing.applied, current: previous, conflictSource },
             );
           }
-          // Force path: remove current user-scope entry, then reinstall desired. Project-scope
-          // files are untouched here; if they exist, --migrate-legacy-clients should be used.
+          // Force path: remove the current user-scope entry, then reinstall desired.
+          // Project-scope legacy files remain outside this adapter contract.
           adapter.remove(server, existing.desired, existing.previous, previous);
           ownership.clients[adapter.name]![server] = undefined as any;
         }
@@ -531,7 +540,6 @@ async function postcondition(
   selected: ClientAdapter[],
   preflight: SetupPreflight,
   expectedClients: ClientName[],
-  expectedArtifactHashes: Record<string, string>,
   assertReadiness: () => void,
   inspectDirectTools: boolean,
 ): Promise<void> {
@@ -557,7 +565,19 @@ async function postcondition(
   }
   const clients = [...new Set(expectedClients)].sort();
   if (committed.mode !== "shared" || committed.clients.join("\n") !== clients.join("\n")) fail("Deployment mode or client set is incomplete.", { expected: { mode: "shared", clients }, actual: { mode: committed.mode, clients: committed.clients } });
-  if (committed.projectFiles.join("\n") !== [...SHARED_PROJECT_FILES].sort().join("\n")) fail("Deployment project file ownership is incomplete.", { projectFiles: committed.projectFiles });
+  const expectedProjectFiles = preflight.managesProjectFiles ? [...SHARED_PROJECT_FILES].sort() : [];
+  if (committed.projectFiles.join("\n") !== expectedProjectFiles.join("\n")) fail("Deployment project surface marker is inconsistent.", { expectedProjectFiles, projectFiles: committed.projectFiles });
+  if (preflight.managesProjectFiles && committed.projectContract !== MINIMAL_PROJECT_CONTRACT) fail("Minimal project contract marker is missing.");
+  if (!preflight.managesProjectFiles && committed.projectContract) fail("Legacy inert deployment unexpectedly gained a project contract marker.");
+  const liveArtifacts = preflight.managesProjectFiles ? sharedArtifactEvidence(root) : {};
+  if (JSON.stringify(committed.artifacts) !== JSON.stringify(liveArtifacts)) {
+    fail("Deployment artifact evidence does not match the installed minimal project files.", { recorded: committed.artifacts, live: liveArtifacts });
+  }
+  for (const file of preflight.managesProjectFiles ? SHARED_PROJECT_FILES : []) {
+    if (liveArtifacts[file]?.sha256 !== preflight.artifactExpectedHashes[file]) {
+      fail(`Minimal project artifact changed after locked preflight: ${file}`, { expected: preflight.artifactExpectedHashes[file], live: liveArtifacts[file] ?? null });
+    }
+  }
   if (JSON.stringify(committed.tools) !== JSON.stringify(preflight.tools)) fail("Deployment tool evidence does not match this preflight.", { expected: preflight.tools, actual: committed.tools });
   const registry = readRegistry(root);
   const record = registry.projects[identity.id];
@@ -572,18 +592,24 @@ async function postcondition(
       if (!entry || !entry.applied || !definitionEquals(entry.desired, MCP_DEFINITIONS[server]) || !clientSnapshotEquals(current, entry.applied)) fail(`Ownership postcondition failed for ${adapter.name}/${server}.`, { entry, current });
     }
   }
-  const evidence = sharedArtifactEvidence(root);
-  for (const file of SHARED_PROJECT_FILES) {
-    const actual = evidence[file];
-    const recorded = committed.artifacts[file];
-    const expected = expectedArtifactHashes[file];
-    if (!actual || !recorded || !expected || actual.sha256 !== expected || recorded.sha256 !== expected || recorded.size !== actual.size) fail(`Shared artifact postcondition failed: ${file}`, { expected, actual, recorded });
-  }
   assertReadiness();
   if (inspectDirectTools) {
     const liveTools = await inspectSetupTools(root);
     if (JSON.stringify(liveTools) !== JSON.stringify(preflight.tools)) fail("Direct MCP binary evidence changed after locked setup preflight.", { recorded: preflight.tools, live: liveTools });
   }
+}
+
+function setupSuccessContract(action: "setup" | "unset"): Omit<SetupContract, "recovery"> {
+  const stage = action === "setup" ? "setup.apply" : "setup.unset";
+  return {
+    phase: "setup",
+    action,
+    stage,
+    status: "completed",
+    nextAction: { tool: null, phase: "setup", stage, automatic: false },
+    control: { automatic: false, stop: true, reason: "completed" },
+    userAction: null,
+  };
 }
 
 function setupResult(
@@ -597,22 +623,37 @@ function setupResult(
   const paths = projectPaths(root);
   const copy = options.language === "en"
     ? {
-        changed: `Shared project files changed: ${projectFilesChanged.join(", ")}`,
-        current: "Shared project files already current",
+        changed: `Minimal project integration created: ${projectFilesChanged.join(", ")}`,
+        current: preflight.managesProjectFiles
+          ? "Minimal project integration already current"
+          : preflight.projectFileDisposition === "external-only"
+            ? "Setup ready using complete external config; existing project artifacts were left untouched"
+            : "Legacy project injections left untouched and inert",
       }
     : {
-        changed: `已写入团队产物：${projectFilesChanged.join("、")}`,
-        current: "团队产物已是最新 (already current)",
+        changed: `已创建最小项目接入：${projectFilesChanged.join("、")}`,
+        current: preflight.managesProjectFiles
+          ? "最小项目接入已是最新 (already current)"
+          : preflight.projectFileDisposition === "external-only"
+            ? "配置已就绪并使用完整外置配置；现有项目文件保持原样"
+            : "旧项目注入保持原样且不再参与运行",
       };
   return {
+    ...setupSuccessContract("setup"),
     ok: true,
-    action: "setup",
     mode: "shared",
     projectId: paths.identity.id,
     projectRoot: paths.identity.root,
     clients,
     projectFilesChanged,
-    localFilesChanged: options.dryRun ? [] : [paths.deployment, paths.registry, paths.clientOwnership],
+    localFilesChanged: options.dryRun
+      ? []
+      : [
+          paths.deployment,
+          paths.registry,
+          paths.clientOwnership,
+          ...(preflight.configPersistence === "preserve" ? [] : [paths.config]),
+        ],
     dryRun: options.dryRun,
     message: projectFilesChanged.length ? copy.changed : copy.current,
     transactionId,
@@ -620,31 +661,13 @@ function setupResult(
     artifactChanges: preflight.artifactChanges,
     ciCandidates: preflight.ciCandidates,
     ciConfirmationRequired: preflight.ciConfirmationRequired,
+    projectFileDisposition: preflight.projectFileDisposition,
+    configAuthority: preflight.configPersistence === "project-source"
+      ? "project"
+      : preflight.configPersistence === "external-full"
+        ? "external"
+        : "preserved",
   };
-}
-
-function confirmedConfig(root: string, candidate: JsonObject, options: SetupOptions): { config: JsonObject; candidates: string[]; confirmationRequired: boolean } {
-  const current = (candidate.ci as any)?.commands;
-  if (Array.isArray(current) && current.length && current.every(item => typeof item === "string" && item.trim())) {
-    return { config: candidate, candidates: [...current], confirmationRequired: false };
-  }
-  const candidates = defaultSuggestion(root).ciCommands;
-  const explicit = options.ciCommands?.filter(command => command.trim()) ?? [];
-  if (explicit.length) return { config: withConfirmedCiCommands(candidate, explicit), candidates, confirmationRequired: false };
-  if (options.acceptCiCommands && candidates.length) {
-    throw new SetupFailure(
-      "preflight",
-      "SETUP_PREFLIGHT_FAILED",
-      "CI command acceptance is missing the exact reviewed command list.",
-      "Review the detected commands again; the caller must pass those exact strings as ciCommands.",
-      { candidates },
-    );
-  }
-  if (options.dryRun) return { config: candidate, candidates, confirmationRequired: true };
-  const hint = candidates.length
-    ? `Review the detected commands and rerun with --accept-ci-commands, or pass one or more --ci-command values: ${candidates.join("; ")}`
-    : "No safe native CI command was detected. Pass one or more explicit --ci-command values after verifying them.";
-  throw new SetupFailure("preflight", "SETUP_PREFLIGHT_FAILED", "Native CI commands require explicit confirmation before setup can write the workflow.", hint, { candidates });
 }
 
 async function executeInstall(
@@ -655,9 +678,14 @@ async function executeInstall(
   inspectDirectTools: boolean,
 ): Promise<SetupResult> {
   const readCandidate = (): JsonObject => {
-    const result = ensureConfigDefaults(root, { dryRun: true });
-    if (!result.ok || !result.candidate) throw new SetupFailure("preflight", "SETUP_PREFLIGHT_FAILED", result.display.body, result.hint);
-    return result.candidate;
+    const resolved = resolveRuntimeConfig(root);
+    const candidate = !readDeployment(root) && resolved.authority.kind === "legacy-detected"
+      ? {
+        ...resolved.config,
+        policy: { ...(resolved.config.policy ?? {}), profile: "standard" },
+      }
+      : resolved.config;
+    return options.ciCommands?.length ? withConfirmedCiCommands(candidate, options.ciCommands) : candidate;
   };
   const { projectReadinessIssues } = await import("../tools/init.js");
   const assertReadiness = (candidate: JsonObject): void => {
@@ -675,69 +703,73 @@ async function executeInstall(
   const initialCandidate = readCandidate();
   assertReadiness(initialCandidate);
 
-  // Migrate legacy project-level client MCP definitions before doing anything else
-  // (back up to .hy-cleanup-backup and ensure user-scope definitions exist).
-  let legacyMigrationReport: { backupDir: string; moved: string[]; installedUserScope: string[] } | null = null;
-  if (options.migrateLegacyClients && !options.dryRun) {
-    legacyMigrationReport = migrateLegacyClientConfigs(root, allAdapters);
-  }
-
-  const confirmed = confirmedConfig(root, initialCandidate, options);
-  const config = confirmed.config;
   // A mutating setup repeats every safety check after acquiring the global
   // transaction lock. Keep the unlocked preview cheap so a burst of setup
   // processes cannot launch duplicate version probes and MCP handshakes.
-  const preflight = await runSetupPreflight(root, options, selected, config, options.dryRun && inspectDirectTools);
-  preflight.ciCandidates = confirmed.candidates;
-  preflight.ciConfirmationRequired = confirmed.confirmationRequired;
+  const preflight = await runSetupPreflight(root, options, selected, initialCandidate, options.dryRun && inspectDirectTools);
   if (options.dryRun) {
     return setupResult(root, options, preflight, previewClients(selected, preflight), preflight.artifactChanges.map(item => item.file));
   }
   await internalSetupTestHooks().afterSetupPreflightBeforeLock?.(root);
   return withSetupTransaction(root, "setup", async transaction => {
     internalSetupTestHooks().beforeLockedPreflight?.(root);
-    const lockedConfirmed = confirmedConfig(root, readCandidate(), options);
-    const lockedConfig = lockedConfirmed.config;
+    const lockedConfig = readCandidate();
     assertReadiness(lockedConfig);
     const lockedPreflight = await runSetupPreflight(root, options, selected, lockedConfig, inspectDirectTools);
-    lockedPreflight.ciCandidates = lockedConfirmed.candidates;
-    lockedPreflight.ciConfirmationRequired = lockedConfirmed.confirmationRequired;
     const paths = projectPaths(root);
-    const projectFiles = SHARED_PROJECT_FILES.map(file => path.join(root, file));
+    const projectFiles = lockedPreflight.managesProjectFiles
+      ? SHARED_PROJECT_FILES.map(file => path.join(root, file))
+      : [];
+    const runtimeSourceFiles = lockedPreflight.configPersistence === "preserve" ? [] : [paths.config];
     internalSetupTestHooks().afterLockedPreflight?.(root);
-    transaction.capture([...projectFiles, paths.deployment, paths.registry, paths.clientOwnership]);
-    for (const file of SHARED_PROJECT_FILES) transaction.assertCaptured(path.join(root, file), lockedPreflight.artifactBeforeHashes[file] ?? null);
+    transaction.capture([...projectFiles, ...runtimeSourceFiles, paths.deployment, paths.registry, paths.clientOwnership]);
+    for (const file of lockedPreflight.managesProjectFiles ? SHARED_PROJECT_FILES : []) {
+      transaction.assertCaptured(path.join(root, file), lockedPreflight.artifactBeforeHashes[file] ?? null);
+    }
     const expectedArtifactHashes = lockedPreflight.artifactExpectedHashes;
     const installed = installClients(root, selected, lockedPreflight, options, transaction);
     try {
       writeOwnership(root, installed.ownership, transaction);
       transaction.markApplied([paths.clientOwnership]);
-      const projectFilesChanged = writeSharedArtifacts(
-        root,
-        lockedConfig,
-        false,
-        file => {
-          transaction.prepareExpected(path.join(root, file), expectedArtifactHashes[file]);
-          if (file === "hy-workflow.json") setupFailpoint("shared:config");
-          else if (file === ".github/workflows/hy-workflow.yml") setupFailpoint("shared:workflow");
-          else if (file === "AGENTS.md") setupFailpoint("shared:agents");
-        },
-        file => transaction.markApplied([path.join(root, file)]),
-      );
-      const artifacts = sharedArtifactEvidence(root);
+      const projectFilesChanged = lockedPreflight.managesProjectFiles
+        ? writeSharedArtifacts(
+            root,
+            lockedConfig,
+            false,
+            file => {
+              transaction.prepareExpected(path.join(root, file), expectedArtifactHashes[file]);
+              if (file === "hy-workflow.json") setupFailpoint("shared:config");
+              else if (file === ".github/workflows/hy-workflow.yml") setupFailpoint("shared:workflow");
+            },
+            file => transaction.markApplied([path.join(root, file)]),
+          )
+        : [];
+      if (lockedPreflight.configPersistence !== "preserve") {
+        const source = lockedPreflight.configPersistence === "project-source"
+          ? projectRuntimeConfigSource()
+          : lockedConfig;
+        transaction.prepareExpected(paths.config, jsonHash(source));
+        atomicWriteJson(paths.config, source);
+        transaction.markApplied([paths.config]);
+      }
       writeDeployment(
         root,
-        { setupVersion: SETUP_VERSION, mode: "shared", clients: options.clients, projectFiles: [...SHARED_PROJECT_FILES], tools: lockedPreflight.tools, artifacts },
+        {
+          setupVersion: SETUP_VERSION,
+          mode: "shared",
+          clients: options.clients,
+          projectFiles: lockedPreflight.managesProjectFiles ? [...SHARED_PROJECT_FILES] : [],
+          tools: lockedPreflight.tools,
+          artifacts: lockedPreflight.managesProjectFiles ? sharedArtifactEvidence(root) : {},
+          ...(lockedPreflight.managesProjectFiles ? { projectContract: MINIMAL_PROJECT_CONTRACT } : {}),
+        },
         (resource, value) => {
           transaction.prepareExpected(resource === "deployment" ? paths.deployment : paths.registry, jsonHash(value));
           setupFailpoint(resource);
         },
         resource => transaction.markApplied([resource === "deployment" ? paths.deployment : paths.registry]),
       );
-      await postcondition(root, selected, lockedPreflight, options.clients, expectedArtifactHashes, () => {
-        const finalConfirmed = confirmedConfig(root, readCandidate(), options);
-        assertReadiness(finalConfirmed.config);
-      }, inspectDirectTools);
+      await postcondition(root, selected, lockedPreflight, options.clients, () => assertReadiness(readCandidate()), inspectDirectTools);
       return setupResult(root, options, lockedPreflight, installed.clients, projectFilesChanged, transaction.id);
     } catch (error) {
       rollbackInstalled(installed.mutations, transaction);
@@ -770,8 +802,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
   const preview = observe();
   if (!preview.exists && !preview.hasExplicitOwnershipTarget) {
     return {
+      ...setupSuccessContract("unset"),
       ok: true,
-      action: "unset",
       mode: "shared",
       projectId: id,
       projectRoot: paths.identity.root,
@@ -787,8 +819,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
   }
   if (options.dryRun) {
     return {
+      ...setupSuccessContract("unset"),
       ok: true,
-      action: "unset",
       mode: preview.deployment?.mode ?? "shared",
       projectId: id,
       projectRoot: paths.identity.root,
@@ -810,8 +842,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
     if (!locked.exists && !locked.hasExplicitOwnershipTarget) {
       return {
         result: {
+          ...setupSuccessContract("unset"),
           ok: true,
-          action: "unset",
           mode: "shared",
           projectId: id,
           projectRoot: paths.identity.root,
@@ -828,7 +860,10 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
         incomplete: { cleanup: [], unresolvedClients: [], remainingOwnedClients: [] },
       };
     }
-    const legacyConfig = fs.existsSync(targetPaths.config) ? fs.readFileSync(targetPaths.config, "utf-8") : null;
+    const configExists = fs.existsSync(targetPaths.config);
+    const setupOwnedMarker = locked.deployment?.schemaVersion === "3"
+      && locked.deployment.projectContract === MINIMAL_PROJECT_CONTRACT
+      && exactProjectSourceMarker(targetPaths.config);
     transaction.capture([paths.registry, paths.clientOwnership]);
     const removedClients = options.removeGlobal && locked.remainingAfter === 0
       ? removeClients(root, selected, transaction)
@@ -851,7 +886,7 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
           prepare: (target, tombstone) => transaction.prepareDirectoryRemoval(target, tombstone),
           staged: (target, tombstone) => transaction.markDirectoryStaged(target, tombstone),
         },
-        { preserveConfig: legacyConfig !== null },
+        { preserveConfig: configExists && !setupOwnedMarker },
       );
       internalSetupTestHooks().afterUnsetRegistryWrite?.();
       // Keep staged state intact until every fallible unset check has passed.
@@ -865,8 +900,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
         ...(options.removeGlobal && locked.remainingAfter === 0 && remainingOwnedClients.length ? ["Run hy-workflow doctor --offline --json to reconcile remaining owned client entries."] : []),
       ];
       const result: SetupResult = {
+        ...setupSuccessContract("unset"),
         ok: true,
-        action: "unset",
         mode: locked.deployment?.mode ?? "shared",
         projectId: id,
         projectRoot: paths.identity.root,
@@ -879,7 +914,9 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
         removed: outcome.removed,
         transactionId: transaction.id,
         message: outcome.removed ? "Local deployment removed; shared project files kept" : "No local deployment found; shared project files kept",
-        recovery: recovery.length ? recovery : undefined,
+        recovery: recovery.length
+          ? { strategy: "external_action", tool: "hy-workflow doctor", instruction: recovery.join("\n") }
+          : undefined,
       };
       const unresolvedClients = removedClients.clients.filter(client => client.status === "recovery_required");
       return {

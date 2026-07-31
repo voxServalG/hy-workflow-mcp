@@ -6,6 +6,7 @@ import {
   computePlanHash,
   projectRoot,
   readState,
+  transition,
   writeState,
   type ImplementationManifest,
   type PlanDoc,
@@ -13,13 +14,14 @@ import {
 import { buildImplementationManifest } from "../checks.js";
 import { ensureGraph, incrementalUpdate, detectBrokenLinks } from "../docs_graph.js";
 import { isDocumentPath, pathInsideDocs, resolveDocsDir } from "../docs_paths.js";
-import { toolResult, type ToolResult } from "./_base.js";
+import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
 import { requireRuntimeConfig } from "../config.js";
+import { shouldIgnoreDocumentPath } from "../policy/docs.js";
+import { isRuntimeIgnoredArtifact } from "../policy/artifacts.js";
 
 export function isSyncDocumentPath(file: string): boolean {
+  if (shouldIgnoreDocumentPath(file)) return false;
   return file === "README.md"
-    || file === "AGENTS.md"
-    || file === ".github/workflows/hy-workflow.yml"
     || file.startsWith("templates/")
     || file.startsWith("docs/")
     || isDocumentPath(file);
@@ -59,18 +61,27 @@ function readDocsDir(root: string): string {
 export async function handleSyncDocs(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "edit", "verify");
+  const currentStage = state.stage ?? (state.phase === "verify" ? "verify.run" : "edit.implementation");
 
-  if (!state.plan) return toolResult("edit", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
+  if (!state.plan) {
+    return invalidWorkflowStateResult(
+      state,
+      "SYNC_DOCS_PLAN_MISSING",
+      "Workflow state reached document synchronization without an active PlanDoc.",
+      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+    );
+  }
 
   const planHash = computePlanHash(state.plan);
   const afterEdit = state.documentReads?.afterEdit;
   if (!planHash || afterEdit?.planHash !== planHash) {
     return toolResult("edit", {
       phase: state.phase,
+      stage: currentStage,
       error: "after_edit document audit is required before hy_sync_docs.",
       hint: "Call hy_read_docs with { stage: \"after_edit\" } after implementation edits, then call hy_sync_docs before hy_verify.",
       allowedTools: ["hy_read_docs", "hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
 
@@ -81,12 +92,13 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   } catch (error) {
     return toolResult("edit", {
       phase: state.phase,
+      stage: currentStage,
       error,
       hint: "Run hy-workflow setup in the project root, then retry hy_sync_docs.",
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
 
@@ -95,21 +107,33 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   if (afterEdit.implementationDigest !== currentImplementationDigest) {
     return toolResult("edit", {
       phase: state.phase,
+      stage: currentStage,
       error: "Implementation diff changed after hy_read_docs(after_edit).",
       hint: "Rerun hy_read_docs with { stage: \"after_edit\" } so the document sync audit matches the current implementation diff.",
       allowedTools: ["hy_read_docs", "hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
 
+  if (isRuntimeIgnoredArtifact(root, configuredDocsDir)) {
+    return toolResult("edit", {
+      phase: state.phase,
+      stage: currentStage,
+      error: "Configured project.docsDir points to an ignored legacy or runtime path.",
+      hint: "Choose a maintained documentation directory outside legacy injection and runtime paths.",
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
+    });
+  }
   const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
   if (!resolvedDocsDir.ok) {
     return toolResult("edit", {
       phase: state.phase,
+      stage: currentStage,
       error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
-      hint: "Update hy-workflow.json project.docsDir to a project-relative directory inside the repository.",
+      hint: "Update project.docsDir in the authoritative project configuration to a project-relative directory inside the repository.",
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
   const { docsDir } = resolvedDocsDir;
@@ -136,7 +160,8 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   }
 
   // ── Write syncDocs record ─────────────────────────────────
-  const next = { ...state };
+  const next = state.phase === "edit" ? { ...state } : transition(state, "edit");
+  next.stage = "edit.sync_docs";
   next.syncDocs = {
     time: new Date().toISOString(),
     planHash,
@@ -147,7 +172,7 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   writeState(next);
 
   const displayBody: string[] = [
-    "after_edit audit is current. Synchronize only the declared documentation or shared template files, then run hy_verify.",
+    "after_edit audit is current and declared documentation edits are recorded. Run hy_verify next.",
     allowedDocs.length ? `Allowed sync files: ${allowedDocs.join(", ")}` : "No documentation sync files were declared in plan.scope.",
   ];
   if (graphInfo.updated) {
@@ -160,16 +185,21 @@ export async function handleSyncDocs(): Promise<ToolResult> {
 
   return toolResult("verify", {
     phase: "edit",
+    stage: "edit.sync_docs",
+    status: graphInfo.brokenLinks > 0 ? "warning" : "passed",
     synced: true,
     allowedDocs,
     graphInfo,
     display: {
-      title: "Document sync gate ready",
+      title: "Document sync gate recorded",
       body: displayBody.join("\n"),
       files: allowedDocs,
     },
-    hint: "Use standard file editing tools only within plan.scope for documentation sync. When done, call hy_verify.",
+    hint: "Documentation synchronization is recorded for the current implementation digest. Call hy_verify without further edits.",
     allowedTools: ["hy_verify", "hy_edit", "hy_status"],
-    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_commit", "hy_merge"],
+    nextAction: { tool: "hy_verify", phase: "verify", stage: "verify.run", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
   });
 }

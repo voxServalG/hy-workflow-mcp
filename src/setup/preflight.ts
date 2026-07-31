@@ -5,11 +5,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { COMMAND_NAMES } from "../commands/catalog.js";
 import { PACKAGE_VERSION } from "../package-meta.js";
-import { readDeployment } from "../runtime/deployment.js";
+import { MINIMAL_PROJECT_CONTRACT, readDeployment } from "../runtime/deployment.js";
 import { executableInvocation, resolveExecutable, runExecutable } from "./clients/index.js";
 import { assertSafeEffectiveConfig } from "./clients/effective.js";
-import { contentEvidence, renderWorkflowTemplate, SHARED_PROJECT_FILES, sharedArtifactPlan } from "./shared.js";
-import { planAgentsFile } from "./agents-rules.js";
+import { assertSharedArtifactTarget, contentEvidence, renderWorkflowTemplate, SHARED_PROJECT_FILES, sharedArtifactPlan } from "./shared.js";
 import {
   MCP_DEFINITIONS,
   SetupFailure,
@@ -30,6 +29,9 @@ export type SetupPreflight = {
   artifactExpectedHashes: Record<string, string>;
   ciCandidates?: string[];
   ciConfirmationRequired?: boolean;
+  managesProjectFiles: boolean;
+  configPersistence: "project-source" | "external-full" | "preserve";
+  projectFileDisposition: "fresh" | "managed" | "explicit-sync" | "external-only" | "legacy-inert";
 };
 
 function digest(value: Buffer | string): string {
@@ -52,33 +54,69 @@ function boundedDiff(file: string, before: string, after: string): string {
 }
 
 export function previewArtifactChanges(root: string, config: any): ArtifactChange[] {
-  const deployment = readDeployment(root);
   return sharedArtifactPlan(root, config).map(item => {
     const target = path.join(root, item.file);
     const existed = fs.existsSync(target);
     const before = existed ? fs.readFileSync(target) : null;
     const beforeHash = before ? digest(before) : null;
     const afterHash = contentEvidence(item.content).sha256;
-    const isAgentsManagedBlock = item.file === "AGENTS.md";
-    const recorded = !isAgentsManagedBlock && deployment?.schemaVersion === "3" ? deployment.artifacts[item.file]?.sha256 : null;
     const changeKind: ArtifactChange["changeKind"] = !existed
       ? "create"
-      : isAgentsManagedBlock
-        ? "managed_update"
-        : recorded && recorded === beforeHash
-          ? "managed_update"
-          : recorded
-            ? "drift"
-            : "unmanaged_existing";
+      : "unmanaged_existing";
     return {
       file: item.file,
       changeKind,
       beforeHash,
       afterHash,
       diff: boundedDiff(item.file, before?.toString("utf-8") ?? "", item.content),
-      requiresAcceptance: !isAgentsManagedBlock && existed && beforeHash !== afterHash,
+      requiresAcceptance: existed && beforeHash !== afterHash,
     };
   });
+}
+
+/**
+ * Detect only whether one of the two new integration targets is occupied.
+ * This deliberately uses metadata only: an orphan project artifact is never
+ * opened, parsed, diffed, or hashed merely because setup was invoked.
+ */
+export function existingSharedProjectFiles(root: string): string[] {
+  return SHARED_PROJECT_FILES.filter(file => {
+    try {
+      fs.lstatSync(path.join(root, file));
+      return true;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  });
+}
+
+function completeExplicitReview(options: SetupOptions, existingFiles: string[]): boolean {
+  if (!options.syncProjectArtifacts || !options.acceptArtifactChanges || !options.reviewedArtifactChanges?.length) return false;
+  const expected = [...existingFiles].sort();
+  const reviewed = options.reviewedArtifactChanges;
+  const files = reviewed.map(item => item.file).sort();
+  return JSON.stringify(files) === JSON.stringify(expected)
+    && reviewed.every(item =>
+      typeof item.beforeHash === "string"
+      && /^[a-f0-9]{64}$/.test(item.beforeHash)
+      && /^[a-f0-9]{64}$/.test(item.afterHash)
+    );
+}
+
+function freshArtifactChanges(config: any): ArtifactChange[] {
+  const values = [
+    { file: "hy-workflow.json", content: JSON.stringify(config, null, 2) + "\n" },
+    { file: ".github/workflows/hy-workflow.yml", content: renderWorkflowTemplate() },
+  ];
+  return values.map(({ file, content }) => ({
+    file,
+    changeKind: "create",
+    beforeHash: null,
+    afterHash: contentEvidence(content).sha256,
+    diff: boundedDiff(file, "", content),
+    requiresAcceptance: false,
+  }));
 }
 
 function environment(): Record<string, string> {
@@ -198,18 +236,64 @@ export async function runSetupPreflight(
       if (options.action === "setup") assertSafeEffectiveConfig(adapter.name, server, value, MCP_DEFINITIONS[server]);
     }
   }
-  const changes = options.action === "setup" ? previewArtifactChanges(root, config) : [];
-  const artifactExpectedHashes: Record<string, string> = options.action === "setup" ? {
+  const deployment = readDeployment(root);
+  const existingFiles = options.action === "setup" && !deployment
+    ? existingSharedProjectFiles(root)
+    : [];
+  const explicitReviewRequested = options.syncProjectArtifacts === true;
+  const explicitSync = options.action === "setup"
+    && !deployment
+    && existingFiles.length > 0
+    && completeExplicitReview(options, existingFiles);
+  if (options.action === "setup" && !deployment && existingFiles.length > 0 && explicitReviewRequested && !explicitSync) {
+    throw new SetupFailure(
+      "artifact_drift",
+      "SETUP_ARTIFACT_REVIEW_INCOMPLETE",
+      "Explicit project artifact sync requires its intent flag, acceptance, and one exact reviewed hash tuple for every occupied integration target.",
+      "Supply --sync-project-artifacts, --accept-artifact-changes, and one --review-artifact tuple for each listed file. Ordinary setup leaves these files untouched and uses external configuration.",
+      { files: [...existingFiles].sort(), reviewedFiles: (options.reviewedArtifactChanges ?? []).map(item => item.file).sort() },
+    );
+  }
+  const minimalDeployment = Boolean(
+    deployment?.schemaVersion === "3"
+    && deployment.projectContract === MINIMAL_PROJECT_CONTRACT
+  );
+  const fresh = options.action === "setup" && !deployment && existingFiles.length === 0;
+  if (fresh) for (const file of SHARED_PROJECT_FILES) assertSharedArtifactTarget(root, file);
+  const managesProjectFiles = options.action === "setup" && (minimalDeployment || fresh || explicitSync);
+  const projectFileDisposition: SetupPreflight["projectFileDisposition"] = options.action !== "setup"
+    ? "legacy-inert"
+    : minimalDeployment
+      ? "managed"
+      : explicitSync
+        ? "explicit-sync"
+        : fresh
+          ? "fresh"
+          : deployment
+            ? "legacy-inert"
+            : "external-only";
+  const configPersistence: SetupPreflight["configPersistence"] = managesProjectFiles
+    ? "project-source"
+    : projectFileDisposition === "external-only"
+      ? "external-full"
+      : "preserve";
+  const changes = managesProjectFiles
+    ? fresh
+      ? freshArtifactChanges(config)
+      : previewArtifactChanges(root, config)
+    : [];
+  const artifactExpectedHashes: Record<string, string> = managesProjectFiles ? {
     "hy-workflow.json": digest(JSON.stringify(config, null, 2) + "\n"),
     ".github/workflows/hy-workflow.yml": digest(renderWorkflowTemplate()),
-    "AGENTS.md": digest(planAgentsFile(root).nextContent),
   } : {};
-  const artifactBeforeHashes = Object.fromEntries(SHARED_PROJECT_FILES.map(file => {
-    const target = path.join(root, file);
-    return [file, fs.existsSync(target) ? digest(fs.readFileSync(target)) : null];
-  }));
+  const artifactBeforeHashes = fresh
+    ? Object.fromEntries(SHARED_PROJECT_FILES.map(file => [file, null]))
+    : Object.fromEntries((managesProjectFiles ? SHARED_PROJECT_FILES : []).map(file => {
+        const target = path.join(root, file);
+        return [file, fs.existsSync(target) ? digest(fs.readFileSync(target)) : null];
+      }));
   for (const file of SHARED_PROJECT_FILES) {
-    if (options.action !== "setup") break;
+    if (!managesProjectFiles) break;
     const baseline = artifactBeforeHashes[file];
     const expected = artifactExpectedHashes[file];
     const planned = changes.find(item => item.file === file);
@@ -219,9 +303,16 @@ export async function runSetupPreflight(
     }
   }
   const blocked = changes.filter(item => item.requiresAcceptance);
-  if (!options.dryRun) {
+  if (managesProjectFiles && (!options.dryRun || explicitSync)) {
     const reviewed = [...(options.reviewedArtifactChanges ?? [])].sort((left, right) => left.file.localeCompare(right.file));
-    const requiredReview = blocked.map(({ file, beforeHash, afterHash }) => ({ file, beforeHash, afterHash })).sort((left, right) => left.file.localeCompare(right.file));
+    const requiredReview = (explicitSync
+      ? existingFiles.map(file => ({
+          file,
+          beforeHash: artifactBeforeHashes[file],
+          afterHash: artifactExpectedHashes[file],
+        }))
+      : blocked.map(({ file, beforeHash, afterHash }) => ({ file, beforeHash, afterHash })))
+      .sort((left, right) => left.file.localeCompare(right.file));
     const reviewMatches = JSON.stringify(reviewed) === JSON.stringify(requiredReview);
     if ((blocked.length || reviewed.length) && (!options.acceptArtifactChanges || !reviewMatches)) {
       throw new SetupFailure(
@@ -235,5 +326,14 @@ export async function runSetupPreflight(
       );
     }
   }
-  return { tools: inspectDirectTools && options.action === "setup" ? await inspectSetupTools(root) : {}, snapshots, artifactChanges: changes, artifactBeforeHashes, artifactExpectedHashes };
+  return {
+    tools: inspectDirectTools && options.action === "setup" ? await inspectSetupTools(root) : {},
+    snapshots,
+    artifactChanges: changes,
+    artifactBeforeHashes,
+    artifactExpectedHashes,
+    managesProjectFiles,
+    configPersistence,
+    projectFileDisposition,
+  };
 }

@@ -1,13 +1,21 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { handleBranch } from "../../src/tools/branch.js";
-import { writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
+}
+
+function branches(root: string): string[] {
+  return execFileSync("git", ["branch", "--format=%(refname:short)"], { cwd: root, encoding: "utf-8" })
+    .split(/\r?\n/)
+    .map(value => value.trim())
+    .filter(Boolean)
+    .sort();
 }
 
 function basePlan(): PlanDoc {
@@ -46,6 +54,7 @@ function branchState(plan: PlanDoc): WorkflowState {
 
 const originalCwd = cwd();
 const root = mkdtempSync(join(tmpdir(), "hy-branch-recovery-"));
+const bare = mkdtempSync(join(tmpdir(), "hy-branch-recovery-origin-"));
 
 try {
   run("git init -b dev", root);
@@ -56,9 +65,64 @@ try {
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "dev" } }, null, 2) + "\n", "utf-8");
   run("git add .", root);
   run("git commit -m init", root);
+  run("git init --bare", bare);
+  run(`git remote add origin ${bare}`, root);
+  run("git push -u origin dev", root);
 
   chdir(root);
-  writeState(branchState(basePlan()));
+  const plan = basePlan();
+  const beforeBranches = branches(root);
+
+  writeState({ ...branchState(plan), approval: null });
+  const unapproved = await handleBranch({ category: "fix", topic: "unapproved" });
+  if (unapproved.ok !== false || unapproved.error?.code !== "APPROVAL_PLAN_MISMATCH") {
+    throw new Error(`hy_branch must reject a missing approval before Git execution: ${JSON.stringify(unapproved)}`);
+  }
+  if (unapproved.stage !== "branch.create"
+      || unapproved.nextAction?.tool !== "hy_reset"
+      || unapproved.recovery?.strategy !== "reset") {
+    throw new Error(`an approval failure must remain stopped at branch.create: ${JSON.stringify(unapproved)}`);
+  }
+  if (JSON.stringify(branches(root)) !== JSON.stringify(beforeBranches) || readState().phase !== "branch") {
+    throw new Error("a missing approval must not create or switch a Git branch or advance workflow state");
+  }
+
+  writeState({
+    ...branchState(plan),
+    approval: { time: new Date().toISOString(), note: "stale", decisionId: "plan:000000000000", planHash: "000000000000" },
+  });
+  const staleApproval = await handleBranch({ category: "fix", topic: "stale-approval" });
+  if (staleApproval.ok !== false || staleApproval.error?.code !== "APPROVAL_PLAN_MISMATCH") {
+    throw new Error(`hy_branch must reject approval bound to another PlanDoc: ${JSON.stringify(staleApproval)}`);
+  }
+  if (JSON.stringify(branches(root)) !== JSON.stringify(beforeBranches)) {
+    throw new Error("a stale approval must not create or switch a Git branch");
+  }
+
+  writeState({ ...branchState(plan), plan: null });
+  const missingPlan = await handleBranch({ category: "fix", topic: "missing-plan" });
+  if (missingPlan.ok !== false || missingPlan.error?.code !== "PLAN_MISSING") {
+    throw new Error(`hy_branch must reject missing PlanDoc state: ${JSON.stringify(missingPlan)}`);
+  }
+  if (JSON.stringify(branches(root)) !== JSON.stringify(beforeBranches)) {
+    throw new Error("a missing PlanDoc must not create or switch a Git branch");
+  }
+
+  writeState({ ...branchState(plan), phase: "approve", stage: "approve.decision" });
+  const resumedApproval = await handleBranch({ category: "fix", topic: "upgraded-approved" });
+  const resumedState = readState();
+  if (resumedApproval.phase !== "edit"
+      || resumedApproval.stage !== "edit.scope"
+      || resumedState.phase !== "edit"
+      || resumedState.stage !== "edit.scope"
+      || resumedState.branch !== "fix/upgraded-approved"
+      || !branches(root).includes("fix/upgraded-approved")) {
+    throw new Error(`a valid historical approve state must persist approve to branch to edit around the Git side effect: ${JSON.stringify({ resumedApproval, resumedState })}`);
+  }
+  run("git checkout dev", root);
+
+  run("git remote remove origin", root);
+  writeState(branchState(plan));
 
   const sentinel = join(root, "branch-injection-sentinel");
   const dangerous = await handleBranch({ category: "fix", topic: `bad;touch${"${IFS}"}${sentinel}` });

@@ -35,92 +35,32 @@ import { PACKAGE_VERSION } from "./package-meta.js";
 import { runSetupCli } from "./setup-cli.js";
 import { runDoctorCli } from "./setup/doctor.js";
 import { runLintCli } from "./lint.js";
+import { readState } from "./state.js";
+import { DEFAULT_STAGE_BY_PHASE, type Phase, type WorkflowStage } from "./runtime/state-machine.js";
 
 // ― System prompt injected via MCP
 const SYSTEM_PROMPT = `
-你正在操作一个启用了 hy-workflow MCP 的项目。所有工具输入输出均为 JSON 格式。
+hy-workflow MCP 负责一个严格但低打扰的开发闭环。所有工具输入输出均为 JSON。
 
-## 硬性流程（必须严格按顺序，禁止跳过）
+控制契约：
+- phase 是持久化工作流状态。
+- stage 是 phase 内部的当前步骤，例如 commit.ci 和 merge.sync。
+- next 是兼容旧客户端的阶段字符串，不是主要控制面。
+- nextAction、control 和 userAction 是 agent 的权威续行动作。
+- 只有 userAction.kind=approval 才能要求用户批准。wait、review_failure、fix_configuration、authenticate 和 external_action 都不得被改写成 approve 请求。
 
-  首次使用: hy_init → hy_read_docs(before_plan) → hy_plan → ...
-  后续使用: hy_status → hy_read_docs(before_plan) → hy_plan → hy_read_docs(before_approve) → hy_approve → hy_branch → hy_edit → hy_read_docs(after_edit) → hy_sync_docs → hy_verify → hy_commit → hy_merge
+正常路径：
+hy_status → hy_read_docs(before_plan) → hy_plan → [用户决定] hy_approve → hy_read_docs(before_approve) → hy_approve(自动续跑) → hy_branch → hy_edit → [外置代码编辑] → hy_read_docs(after_edit) → [外置文档编辑] → hy_sync_docs → hy_verify → hy_commit → hy_merge → hy_reset。
 
-### 流程规则
+hy_plan 必须完整展示 display.body 后等待一次计划决定。收到用户决定后立即调用一次 hy_approve；它只接受 approve、reject 或 revise，未知文本不改变状态。如果 approve 时缺少 before_approve 审计，hy_approve 会把该 PlanDoc 的原决定原样持久化并自动路由到 hy_read_docs(before_approve)。没有文档漂移时按 nextAction 自动重放 hy_approve，不得再次询问用户；有漂移时工具停在 agent 审查，agent 必须用 auditDecision=continue 或 replan 明确结论。changedSinceBaseline 不会自动使批准失效。只有事实变化导致任务意图、scope、验证或风险发生实质变化时才用 replan 自动刷新 before_plan、生成新 PlanDoc，并只为新 PlanDoc 请求新的 userAction.kind=approval。否则用 continue 让批准继续绑定原 decisionId 和 PlanDoc hash，覆盖建分支、编辑、after_edit、修复、重试、验证、commit.ci、merge、merge.sync 和 reset。
 
-**0. hy_init — 项目首次使用时调用。** 验证 OS 用户目录中的 deployment、根目录 hy-workflow.json 与外置运行时状态；hy_init 本身默认不写项目或 .git，随后自动进 plan。hy_init 不会在 MCP 内启动 setup TUI；若返回 requires_user/stop_here，必须等待用户按 recovery 处理。
+hy_commit 内部创建提交、push、PR 并执行 commit.ci。CI pending 表示等待后重试，不需要批准。hy_merge 在既有计划批准下自动执行，并在 merge.sync 同步下游；不得在合并前索要第二次确认。CI 和下游同步没有单独的公共工具，分别属于 commit.ci 和 merge.sync。
 
-1. hy_read_docs(before_plan) — 在 hy_plan 前由 agent 自动调用，不需要人类审核。读取 hy-workflow.json project.docsDir 指向的文档系统，形成规划事实基线，用于发现约束、术语、相关文件、未知点和验证期望。
-2. hy_plan — 调用时传入 {task, plan}。你需要先基于 before_plan 的文档事实基线构造 PlanDoc JSON（通过 Read/Glob/Grep 了解项目结构、文件路径、可用命令）。服务端会通过 gate 校验 PlanDoc 质量，通过后方可进入 approve。
-   **重要**: hy_plan 返回后，必须逐段完整输出 display.body 给用户，对照 display.requiredSections 确保每段都不遗漏。禁止压缩、改写、只输出标题。全部展示完毕后才等用户 approve。
-3. hy_read_docs(before_approve) — 在用户表达 approve 后、调用 hy_approve 前由 agent 自动调用，不需要人类审核。读取文档系统并对当前 PlanDoc 做事实对齐审计；若发现事实偏移、scope 漏项、验证不足或风险缺失，必须驳回并重新 hy_plan，不得调用 hy_approve。
-4. hy_approve — 用户审视 plan。传 approved="approve" 放行，其他内容=驳回。
-   **重要**: 严禁在用户未明确回复批准前调用 hy_approve({approved:'approve'})。收到用户批准后，先自动调用 hy_read_docs({stage:'before_approve'}) 完成 agent 侧审计，再调用 hy_approve。before_approve 不是新增人类审核 gate。犹豫时反问用户确认。用户明确拒绝时，将拒绝理由填入 approved 参数传回。
-5. hy_branch — 创建分支，category ∈ {refactor, feat, chore, docs, ci, fix, test}。
-6. hy_edit — 锁定 scope，用 Read/Edit/Write 编辑，禁止编辑 plan.scope 未声明的文件。
-7. hy_read_docs(after_edit) — 实现编辑后由 agent 自动调用，读取文档并审计当前实现 diff 与文档是否需要同步；不新增人类审核。
-8. hy_sync_docs — 根据 after_edit 审计确认文档同步 gate，只允许在 plan.scope 声明的文档或团队 workflow/template 文件内同步，完成后再 hy_verify。
-9. hy_verify — 本地任务 gate: compile → scope → boundary → platform → smoke → tests。setup 生成的 GitHub Actions workflow 必须执行第一方内建 D001–D005 与 C001–C005 lint；hy_verify 失败回 hy_edit，通过进 hy_commit。
-10. hy_commit — git add + commit + push + gh pr create + 自动轮询 CI 直到全绿或失败。PR 正文嵌入 plan 摘要；CI 全绿直接进 hy_merge，失败回 hy_edit，pending 可重试 hy_commit。
-11. hy_merge — 合并 PR + 删除远程分支 + 自动 rebase 下游 Agent 分支。任务完成后下一个 hy_plan 自动复位。
-12. hy_reset — 恢复工具。当 state 卡死在 commit/merge 等非 plan 阶段、或用户命令放弃当前任务时，从任意 phase 重置到 plan。正常流程不需要调它（hy_plan 从 commit/merge/done 进入时自动复位）。
+before_plan、before_approve 和 after_edit 都不是新增的人类审核。hy_edit 只锁定 scope 并停止，agent 用标准文件工具完成代码编辑后再调用 hy_read_docs(after_edit)；该审计再次停止，让 agent 完成 PlanDoc 已声明的文档修改。文档编辑完成后调用 hy_sync_docs 记录证据，它会自动路由到 hy_verify。verify 失败进入同一批准范围内的 edit 修复循环。普通 API 重试、证据刷新和 CI 等待不清除批准。
 
-### 禁止操作
+运行时只使用当前项目配置、外置状态和新版明确接口。不得读取、校验、哈希、迁移、删除或依赖旧 AGENTS 注入块、旧大型 workflow、旧 lint JSON 或旧项目内运行时文件；它们存在或被修改都不得阻断新版流程。
 
-- 直接使用 git checkout / git commit / git push / gh pr create
-- 跳过 hy_verify 直接调 hy_commit
-- hy_approve 驳回后自行推进
-- 编辑 plan.scope 声明外的文件
-
-### Setup 与 CI 产物契约
-
-- setup 不提供部署模式选择，固定维护 hy-workflow.json、.github/workflows/hy-workflow.yml 与 AGENTS.md 托管块
-- deployment、registry、workflow state、scope、DocsGraph 和客户端配置均外置；旧 compatibility JSON 只作只读迁移输入，不生成也不得提交
-- unset 只解除本机部署，不删除三个团队产物
-- 旧用户 config 与含 mode 的 deployment manifest 仅只读兼容，不恢复第二套模式
-- GitHub workflow 必须离线运行第一方内建 D001–D005 与 C001–C005；仓库管理员需把 Verify check 配为 required，setup 不修改 ruleset
-
----
-
-## hy_plan 使用
-
-调用 hy_plan({task: "描述你要做的任务", plan: { ... PlanDoc JSON ... }})。构造 PlanDoc 时：
-- 先调用 hy_read_docs({stage:"before_plan", task}) 建立文档事实基线，再用 Read/Glob/Grep 了解项目结构，确认每个文件路径存在
-- task 格式：现状 → 期望（从什么现状到什么期望，≤80字）。一句话说清楚改变，动机和理由放在 body/notes
-- dependency_dag：说明哪些模块受影响、哪些不受影响、依赖链方向
-- entry_points、smoke.command、tests.command 必须是纯 shell 命令，命令后不得加括号说明、冒号说明或自然语言说明
-- risks 格式：场景：… → 影响：… → 缓解：…（三项用 → 分隔，每个风险 ≤200 字）
-- discussion：含至少一个备选方案及否定理由
-
-PlanDoc 通过 6 道 gate 校验后写入状态，进入 approve。
-
-## hy_plan 触发
-
-**仅在当前 phase 为 plan 且用户明确在发起开发任务时**才调用 hy_plan。日常讨论、询问问题不算触发条件。
-触发词包括 "计划一下"、"plan it"、"做个计划"、"做计划"、"plan this"、或用户描述开发任务意图时。
-hy_status 返回的 action.triggerWords 也会告诉你触发词。
-
-## approve 后自动推进
-
-hy_approve 被输入 "approve" 通过后，返回结果包含 pipeline 数组和 stopAfter。
-按 pipeline 顺序逐条执行到 stopAfter 为止，不可跳步或调序。hy_edit 后必须先调用 hy_read_docs({stage:"after_edit"})，再调用 hy_sync_docs，最后才调用 hy_verify。
-**每完成一步，用简短语句向用户汇报当前进度**（如"已创建分支 feat/xxx""已锁定 scope，开始编辑""验证通过，正在 commit"）。
-
-任务完成标准是 PR 合并到 baseBranch 后 hy_merge 自动 rebase 下游分支并返回 done。下一个 hy_plan 会自动复位状态。
-hy_commit → hy_merge 中间除非工具返回 error、requires_user 或 stop_here，否则不要停下。
-
-## 失败处理
-
-hy_verify 失败: 编辑修复后重新 hy_verify。
-hy_commit CI 轮询有红: 停下并展示结构化失败信息；编辑修复后重新 hy_verify → hy_commit。
-hy_commit CI pending/超时: 停下并展示状态；等待后重试 hy_commit（不重复 commit/push）。
-
-hy_status 随时可查看当前阶段。
-
-## 提示
-
-- 所有工具返回均为 JSON，含 next 字段指示下一阶段
-- 工具返回会保留 legacy 字段，同时尽量提供 agent-facing envelope: ok、phase、display、hint、requires_user、stop_here、allowedTools、blockedTools、recovery
-- display 是用户需要看到的内容；hint 是 agent 的下一步义务；requires_user 或 stop_here 为 true 时必须停下来等待用户明确输入
+禁止绕过 hy-workflow 直接 commit、push、创建 PR 或合并，也禁止编辑 PlanDoc scope 外文件。
 `;
 
 // ― Server setup
@@ -132,16 +72,16 @@ const server = new Server(
 const TOOLS = [
   {
     name: "hy_init",
-    description: "初始化工作流：验证 OS 用户目录中的 deployment 与根 hy-workflow.json 并初始化外置状态；不写项目或 .git，也不会在 MCP 内启动 setup TUI。成功后必须先调用 hy_read_docs(before_plan)，再调用 hy_plan。",
+    description: "初始化工作流：验证当前配置和外置状态，不读取、迁移或校验任何旧项目注入物，也不写项目或 .git。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_read_docs",
-    description: "自动读取项目文档系统。before_plan 建立有预算的规划事实基线；before_approve 对当前 PlanDoc 做 agent 侧文档审计；after_edit 审计实现 diff 与文档同步需求。若返回 pagination.hasMore，可用 cursor 读取下一页补充事实；成功后不需要人类审核。",
+    description: "读取配置的项目文档系统，不读取根 AGENTS.md。before_plan 建立事实基线；before_approve 在首个 hy_approve 保存决定后自动执行并续跑；after_edit 审计后停止等待已声明文档编辑。两者都不是人类批准 gate。",
     inputSchema: {
       type: "object",
       properties: {
-        stage: { type: "string", enum: ["before_plan", "before_approve", "after_edit"], description: "文档读取阶段。before_plan 在 hy_plan 前调用；before_approve 在用户 approve 后、hy_approve 前调用；after_edit 在实现编辑后、hy_sync_docs 前调用。" },
+        stage: { type: "string", enum: ["before_plan", "before_approve", "after_edit"], description: "文档读取阶段。before_plan 在 hy_plan 前调用；before_approve 只在首个 hy_approve 已记录用户决定后自动调用，完成后自动续跑同一决定；after_edit 在实现编辑后调用，并在任何已声明文档编辑完成前停止。" },
         task: { type: "string", description: "before_plan 必填，用于把文档事实基线绑定到用户任务。" },
         cursor: { type: "string", description: "可选的有界分页游标；仅用于读取同一阶段和任务的后续相关文档页。" },
       },
@@ -238,14 +178,15 @@ const TOOLS = [
   },
   {
     name: "hy_approve",
-    description: "用户审视 plan。传 approved=\"approve\" 放行到 branch，传其他任何字符串=驳回理由回到 plan。返回 pipeline 和 allowedTools；approved 必须是字符串，不可传 boolean。",
+    description: "提交用户对当前 PlanDoc 的单次决定。只接受 approve、reject 或 revise；未知文本无效且不改变状态。若缺少 before_approve 审计，先持久化原决定并自动完成审计。无文档漂移时自动续跑；有漂移时由 agent 用 auditDecision=continue 或 replan 明确事实审计结论，不得再次询问用户批准同一 PlanDoc。",
     inputSchema: {
       type: "object",
       properties: {
-        approved: { type: "string", description: "必须传字符串 'approve' 才放行（如 approved='approve'）。传其他任何字符串均为驳回，内容作为驳回理由。不可传 boolean true/false。" },
+        approved: { type: "string", enum: ["approve", "reject", "revise"], description: "对当前 decisionId 的明确决定。" },
         note: { type: "string", description: "备注" },
+        auditDecision: { type: "string", enum: ["continue", "replan"], description: "仅在 before_approve 报告文档漂移后使用。continue 表示 PlanDoc 的意图、scope、验证和风险仍无实质变化；replan 表示退回刷新事实并生成新 PlanDoc。不是新的用户批准。" },
       },
-      required: ["approved", "note"],
+      required: ["approved"],
       additionalProperties: false,
     },
   },
@@ -264,12 +205,12 @@ const TOOLS = [
   },
   {
     name: "hy_edit",
-    description: "锁定 scope，LLM 使用标准 Read/Edit/Write 编辑文件。返回 display/hint/allowedTools；完成编辑后必须先调 hy_read_docs(after_edit)，再调 hy_sync_docs，最后才调 hy_verify。",
+    description: "锁定 scope 后停止，等待 LLM 使用标准 Read/Edit/Write 完成代码编辑；不会假装已经编辑，也不会自动进入 after_edit。代码编辑完成后调用 hy_read_docs(after_edit)，按审计完成所有已声明文档编辑，再调用 hy_sync_docs。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "hy_sync_docs",
-    description: "实现编辑后、hy_verify 前的文档同步 gate。要求已运行 hy_read_docs(after_edit)，确认只在 plan.scope 声明的文档或团队 workflow/template 文件内同步。",
+    description: "代码编辑和 hy_read_docs(after_edit) 已完成后，等待 agent 先完成 plan.scope 内已声明的文档或团队 workflow/template 编辑；随后记录文档同步证据并自动路由 hy_verify。工具本身不改写文档。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -284,7 +225,7 @@ const TOOLS = [
   },
   {
     name: "hy_exam_submit",
-    description: "异步 verify 第 2 步（阅卷）：提交 hy_exam_plan 颁发的 examId + 每条命令的 result（id/command/nonce/exitCode/stdoutTail）。校验 nonce、命令字串、exitCode、mustContain 正则，以及 scopeFingerprint（git write-tree）与出题时一致。全部通过才写 verifyHash 放行 commit，否则返回 failedChecks 供修后补交。",
+    description: "异步 verify 第 2 步（阅卷）：提交 hy_exam_plan 颁发的 examId 与完整结果集（id/command/nonce/exitCode/stdoutTail）。校验精确 planHash、包含未跟踪内容的完整实现指纹、nonce、命令、退出码与输出约束，同时复核当前审批、文档证据、本地 scope 和 no_new_external 边界。全部通过后持久化 implementationManifest 与 verifiedImplementationDigest；兼容输出或 PR 标签中的 verifyHash 仅为该 digest 的别名。任一失败都回到 edit，修复并刷新 after_edit/sync_docs 后必须重新出题，不接受原试卷局部补交。",
     inputSchema: {
       type: "object",
       properties: {
@@ -313,11 +254,11 @@ const TOOLS = [
   },
   {
     name: "hy_amend_plan",
-    description: "在 hy_verify 返回 amend_required 后，经用户明确 approve，应用 pending plan scope 修订并回到 edit/verify 流程，不完整 reset 到 plan。",
+    description: "处理一个有稳定 decisionId 的实质 scope 修订。approve 绑定修订后的 PlanDoc，并自动重跑 after_edit、sync_docs、verify；reject/revise 保留原批准并回到 edit。",
     inputSchema: {
       type: "object",
       properties: {
-        approved: { type: "string", description: "必须为字符串 'approve' 才会应用 pending amendment。" },
+        approved: { type: "string", enum: ["approve", "reject", "revise"], description: "对 pending amendment 的明确决定。" },
         note: { type: "string", description: "用户批准修订的备注。" },
       },
       required: ["approved"],
@@ -326,7 +267,7 @@ const TOOLS = [
   },
   {
     name: "hy_commit",
-    description: "git add + commit + push + gh pr create + 自动轮询 CI 直到全绿或失败。PR 正文嵌入 plan 摘要；CI 全绿直接返回 next=merge，失败返回 edit，pending 可重试。",
+    description: "在原批准范围内 commit、push、创建或复用 PR，并运行 commit.ci。CI pending 只需等待重试，不需要新批准。",
     inputSchema: {
       type: "object",
       properties: {
@@ -339,7 +280,7 @@ const TOOLS = [
   },
   {
     name: "hy_merge",
-    description: "全绿并经用户确认后合并 PR + 删除分支 + 自动 rebase 下游 Agent 分支。",
+    description: "CI 全绿后在原计划批准下自动合并，不索要第二次确认；随后执行 merge.sync 同步下游分支。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -349,7 +290,7 @@ const TOOLS = [
   },
   {
     name: "hy_status",
-    description: "查看当前工作流阶段。返回 phase、allowedTools 和下一步提示。",
+    description: "查看持久 phase、内部 stage，以及权威 nextAction/control/userAction。只有 userAction.kind=approval 才请求批准。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ];
@@ -359,6 +300,41 @@ let setupGate: ReturnType<typeof createSetupGate> | null = null;
 function currentSetupGate(): ReturnType<typeof createSetupGate> {
   setupGate ??= createSetupGate();
   return setupGate;
+}
+
+function inferredPhaseForTool(name: string, args: Record<string, any>): Phase {
+  if (name === "hy_read_docs") {
+    if (args.stage === "before_approve") return "approve";
+    if (args.stage === "after_edit") return "edit";
+    return "plan";
+  }
+  const phases: Record<string, Phase> = {
+    hy_init: "init",
+    hy_plan: "plan",
+    hy_approve: "approve",
+    hy_branch: "branch",
+    hy_edit: "edit",
+    hy_sync_docs: "edit",
+    hy_verify: "verify",
+    hy_amend_plan: "verify",
+    hy_exam_plan: "verify",
+    hy_exam_submit: "verify",
+    hy_commit: "commit",
+    hy_merge: "merge",
+    hy_reset: "plan",
+    hy_status: "init",
+  };
+  return phases[name] ?? "init";
+}
+
+function recoveryPosition(name: string, args: Record<string, any>): { phase: Phase; stage: WorkflowStage; stateReadable: boolean } {
+  try {
+    const state = readState();
+    return { phase: state.phase, stage: state.stage ?? DEFAULT_STAGE_BY_PHASE[state.phase], stateReadable: true };
+  } catch {
+    const phase = inferredPhaseForTool(name, args);
+    return { phase, stage: DEFAULT_STAGE_BY_PHASE[phase], stateReadable: false };
+  }
 }
 
 // ― System prompt capability
@@ -386,13 +362,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const error = e instanceof SyntaxError
       ? structuredError({ type: "validation", subtype: "invalid_plan", message: "PlanDoc JSON parse failed: " + e.message })
       : structuredError(e);
-    const result = toolResult("plan", {
+    const position = recoveryPosition(name, a);
+    const recoveryTool = position.stateReadable ? "hy_status" : "hy_reset";
+    const recoveryInstruction = position.stateReadable
+      ? "Inspect persisted workflow state before retrying the failed tool."
+      : "Reset the unreadable external workflow state. Project files and Git data are not changed.";
+    const result = toolResult(position.phase, {
+      phase: position.phase,
+      stage: position.stage,
       error,
       display: { title: "hy-workflow tool error", body: error.message },
-      hint: "Inspect the structured error and call hy_status before retrying the workflow step.",
+      hint: position.stateReadable
+        ? "Inspect the structured error and call hy_status before retrying the workflow step."
+        : "The external workflow state is unreadable. Call hy_reset to replace only that state and return to plan.",
       requires_user: true,
       stop_here: true,
-      allowedTools: ["hy_status"],
+      allowedTools: [recoveryTool],
+      recovery: position.stateReadable
+        ? { strategy: "retry", tool: "hy_status", instruction: recoveryInstruction }
+        : { strategy: "reset", tool: "hy_reset", instruction: recoveryInstruction },
+      nextAction: { tool: recoveryTool, phase: position.phase, stage: position.stage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure", instruction: "Inspect the error and persisted workflow state; no new approval is implied." },
     });
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

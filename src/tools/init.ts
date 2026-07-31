@@ -1,60 +1,42 @@
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { checkConfig, requireRuntimeConfig, UNIFIED_CONFIG_FILE, type JsonObject } from "../config.js";
+import { requireRuntimeConfig, resolveRuntimeConfig, type JsonObject } from "../config.js";
 import { checkSetupStamp, SETUP_COMMAND, setupStampPath, setupUpdateRequiredResult } from "../bootstrap.js";
-import { isLocalArtifact, LOCAL_RUNTIME_ARTIFACTS } from "../policy/artifacts.js";
+import { isRuntimeIgnoredArtifact } from "../policy/artifacts.js";
 import { projectPaths } from "../runtime/user-paths.js";
 import { assertSafeRuntimeBoundary } from "../runtime/boundary.js";
-import { assertPhase, legacyRuntimeDiagnostics, projectRoot, readState, transition, writeState } from "../state.js";
+import { assertPhase, projectRoot, readState, transition, writeState } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { DEFAULT_STAGE_BY_PHASE } from "../runtime/state-machine.js";
 import { validateBaseBranch } from "../project-profile.js";
 import { isDocumentPath, resolveDocsDir } from "../docs_paths.js";
 import { inspectDocumentation, shouldIgnoreDocumentPath } from "../policy/docs.js";
 
 export const INIT_COMMIT_ARTIFACTS: string[] = [];
-export const INIT_LOCAL_ARTIFACTS = [...LOCAL_RUNTIME_ARTIFACTS];
-export const REQUIRED_SETUP_ARTIFACTS = ["external deployment manifest", "root hy-workflow.json", ".github/workflows/hy-workflow.yml"];
-export const TEAM_WORKFLOW_FILE = ".github/workflows/hy-workflow.yml";
+export const INIT_LOCAL_ARTIFACTS: string[] = [];
+export const REQUIRED_SETUP_ARTIFACTS = ["external deployment manifest"];
 
 export function ensureLocalArtifactIgnores(_root: string): boolean {
   return false;
 }
 
-export function trackedLocalArtifactDiagnostics(root: string): string[] {
-  try {
-    const tracked = execFileSync("git", ["ls-files"], {
-      cwd: root,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).split(/\r?\n/).filter(Boolean);
-    return tracked.filter(isLocalArtifact).sort();
-  } catch {
-    return [];
-  }
-}
-
-export function initArtifactGuidance(
-  trackedLocalArtifacts: string[] = [],
-): { commitArtifacts: string[]; localArtifacts: string[]; trackedLocalArtifacts: string[]; body: string } {
+export function initArtifactGuidance(): { commitArtifacts: string[]; localArtifacts: string[]; trackedLocalArtifacts: string[]; body: string } {
   const body = [
-    "Setup intentionally maintains three team-owned repository surfaces: hy-workflow.json, .github/workflows/hy-workflow.yml, and the managed block between <!-- hy-workflow-rules --> markers in AGENTS.md (content outside the markers is team-owned and never touched); hy_init itself changes no project files.",
-    "Deployment metadata, registry, workflow state, scope locks, DocsGraph cache, and client configuration live in OS user directories.",
-    ...(trackedLocalArtifacts.length
-      ? ["", "Legacy local/runtime files are tracked and should be removed in a separate cleanup change:", ...trackedLocalArtifacts.map(file => `- ${file}`)]
-      : []),
+    "hy_init changes no project files. Runtime authority, workflow state, scope locks, and DocsGraph cache live in OS user directories.",
+    "Historical repository injections are inert: runtime does not read, hash, migrate, delete, or validate them.",
     "",
-    "hy-workflow unset removes the external project deployment but never deletes the three team-owned repository files.",
+    "hy-workflow unset removes only external state and owned user-scope client configuration; it never deletes project files.",
   ].join("\n");
   return {
     commitArtifacts: [],
     localArtifacts: [...INIT_LOCAL_ARTIFACTS],
-    trackedLocalArtifacts: [...trackedLocalArtifacts],
+    trackedLocalArtifacts: [],
     body,
   };
 }
 
 function documentationFiles(root: string, docsDir: string): string[] {
+  if (isRuntimeIgnoredArtifact(root, docsDir)) return [];
   const resolved = resolveDocsDir(root, docsDir);
   if (!resolved.ok || !fs.existsSync(resolved.docsRoot)) return [];
   const files: string[] = [];
@@ -84,15 +66,6 @@ export function projectReadinessIssues(root: string, candidate?: JsonObject, opt
   for (const issue of inspectDocumentation(root, docs, { includeAgents: false }).issues) {
     issues.push({ code: issue.code, message: issue.message, recovery: issue.recovery });
   }
-  if (!options.forSetup && fs.existsSync(path.join(root, "AGENTS.md"))) {
-    for (const issue of inspectDocumentation(root, ["AGENTS.md"]).issues.filter(item => item.code === "STALE_MANAGED_AGENTS")) {
-      issues.push({
-        code: issue.code,
-        message: issue.message,
-        recovery: "Run hy-workflow setup in the project root; setup automatically migrates the managed AGENTS.md block while preserving content outside the markers.",
-      });
-    }
-  }
   return issues;
 }
 
@@ -101,16 +74,10 @@ export function setupArtifactStatus(root: string): { requiredArtifacts: string[]
   const invalidArtifacts: string[] = [];
   const stamp = checkSetupStamp(root);
   if (stamp.status !== "current") missingArtifacts.push(setupStampPath(root));
-  const configPath = path.join(root, UNIFIED_CONFIG_FILE);
-  if (!fs.existsSync(configPath) || !checkConfig(root).ok) missingArtifacts.push(configPath);
-  const workflowPath = path.join(root, TEAM_WORKFLOW_FILE);
-  if (!fs.existsSync(workflowPath) || !fs.statSync(workflowPath).isFile()) missingArtifacts.push(workflowPath);
-  if (!missingArtifacts.includes(configPath)) {
-    try { invalidArtifacts.push(...projectReadinessIssues(root).map(issue => `${issue.code}: ${issue.message}`)); }
-    catch (error: any) { invalidArtifacts.push(error?.message ?? String(error)); }
-  }
+  try { invalidArtifacts.push(...projectReadinessIssues(root).map(issue => `${issue.code}: ${issue.message}`)); }
+  catch (error: any) { invalidArtifacts.push(error?.message ?? String(error)); }
   return {
-    requiredArtifacts: [setupStampPath(root), configPath, workflowPath],
+    requiredArtifacts: [setupStampPath(root)],
     missingArtifacts,
     invalidArtifacts,
     ready: missingArtifacts.length === 0 && invalidArtifacts.length === 0,
@@ -126,7 +93,7 @@ function setupMissingResult(missingArtifacts: string[]): ToolResult {
     error: {
       type: "setup_artifacts_missing",
       legacyType: "harness_missing",
-      message: "The external project deployment or root hy-workflow.json is missing. hy_init never launches the interactive setup TUI.",
+      message: "The external project deployment is missing or unsafe. hy_init never launches the interactive setup TUI.",
       missingArtifacts,
     },
     display: {
@@ -137,8 +104,8 @@ function setupMissingResult(missingArtifacts: string[]): ToolResult {
     requires_user: true,
     stop_here: true,
     allowedTools: ["hy_init", "hy_status"],
-    blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_ci", "hy_merge", "hy_chain", "hy_reset"],
-    recovery: { tool: "terminal", instruction: SETUP_COMMAND },
+    blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_merge", "hy_reset"],
+    recovery: { strategy: "external_action", tool: "terminal", instruction: SETUP_COMMAND },
     missingArtifacts,
   });
 }
@@ -148,19 +115,18 @@ export async function handleInit(): Promise<ToolResult> {
   assertSafeRuntimeBoundary(root);
   const state = readState();
 
-  // Auto-reset stuck terminal state before the phase check.
-  if (state.phase === "commit" || state.phase === "merge" || state.phase === "done") {
-    state.phase = "plan";
-    state.branch = null;
-    state.prNumber = null;
-    state.plan = null;
-    state.approval = null;
-    state.verifiedImplementationDigest = null;
-    state.pendingAmendment = null;
-    state.implementationManifest = null;
-    state.documentReads = null;
-    state.syncDocs = null;
-    writeState(state);
+  if (state.phase !== "init" && state.phase !== "plan") {
+    const stage = state.stage ?? DEFAULT_STAGE_BY_PHASE[state.phase];
+    return toolResult(state.phase, {
+      stage,
+      status: "ready",
+      message: `Workflow is already active in ${state.phase}; hy_init left it unchanged.`,
+      hint: "Call hy_status and resume the persisted pipeline. Do not initialize or approve again.",
+      allowedTools: ["hy_status"],
+      nextAction: { tool: "hy_status", phase: state.phase, stage, automatic: true },
+      control: { automatic: true, stop: false, reason: "automatic" },
+      userAction: null,
+    });
   }
 
   assertPhase(state, "init", "plan");
@@ -170,36 +136,32 @@ export async function handleInit(): Promise<ToolResult> {
     return setupUpdateRequiredResult(setupCheck);
   }
 
-  const configPath = path.join(root, UNIFIED_CONFIG_FILE);
-  if (!fs.existsSync(configPath)) return setupMissingResult([configPath]);
-  const configStatus = checkConfig(root);
-  if (!configStatus.ok) {
+  let config: JsonObject;
+  let configAuthority: ReturnType<typeof resolveRuntimeConfig>["authority"];
+  try {
+    config = requireRuntimeConfig(root);
+    configAuthority = resolveRuntimeConfig(root).authority;
+  } catch (error: any) {
     return toolResult(state.phase, {
       error: {
         type: "config",
         subtype: "config_invalid",
-        code: "CONFIG_CONFIRMATION_REQUIRED",
-        message: "Project configuration needs explicit confirmation before hy_init can continue.",
-        hint: configStatus.hint,
-        issues: configStatus.issues,
-        project: configStatus.project,
+        code: error?.code ?? "ROOT_CONFIG_INVALID",
+        message: error?.message ?? String(error),
+        hint: error?.hint,
+        issues: error?.detail?.issues,
         retryable: false,
       },
-      display: configStatus.display,
-      hint: "Stop and show the suggested config command. Run it only after user approval, then rerun hy_init.",
+      display: { title: "Project configuration needs attention", body: error?.message ?? String(error) },
+      hint: error?.hint ?? "Repair the authoritative configuration, then rerun hy_init.",
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_init", "hy_status"],
-      blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_ci", "hy_merge", "hy_chain", "hy_reset"],
-      recovery: configStatus.recovery,
-      suggestedCommand: configStatus.suggestedCommand,
-      configCheck: configStatus,
+      blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_merge", "hy_reset"],
     });
   }
 
-  const workflowPath = path.join(root, TEAM_WORKFLOW_FILE);
-  if (!fs.existsSync(workflowPath) || !fs.statSync(workflowPath).isFile()) return setupMissingResult([workflowPath]);
-  const readinessIssues = projectReadinessIssues(root);
+  const readinessIssues = projectReadinessIssues(root, config);
   if (readinessIssues.length) {
     const first = readinessIssues[0];
     return toolResult(state.phase, {
@@ -209,30 +171,41 @@ export async function handleInit(): Promise<ToolResult> {
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_init", "hy_status"],
-      blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain", "hy_reset"],
+      blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_commit", "hy_merge", "hy_reset"],
     });
   }
 
   const next = state.phase === "init" ? transition(state, "plan") : state;
+  next.stage = "plan.before_plan";
   writeState(next);
   const paths = projectPaths(root);
-  const trackedLocalArtifacts = trackedLocalArtifactDiagnostics(root);
-  const artifactGuidance = initArtifactGuidance(trackedLocalArtifacts);
-  const legacyDiagnostics = legacyRuntimeDiagnostics(root);
+  const artifactGuidance = initArtifactGuidance();
   return toolResult("plan", {
+    stage: "plan.before_plan",
+    status: "ready",
     display: {
       title: "Setup ready",
-      body: `External deployment and root hy-workflow.json verified. hy_init changed no project files.\n\n${artifactGuidance.body}`,
+      body: `External deployment and authoritative runtime configuration verified. hy_init changed no project files.\n\n${artifactGuidance.body}`,
     },
     hint: "For a concrete repository change task, call hy_read_docs({ stage: 'before_plan', task }) before hy_plan.",
     allowedTools: ["hy_read_docs", "hy_status"],
+    nextAction: {
+      tool: null,
+      phase: "plan",
+      stage: "plan.before_plan",
+      automatic: false,
+    },
+    control: { automatic: false, stop: true, reason: "information_required" },
+    userAction: {
+      kind: "provide_information",
+      instruction: "Use the current user development request as hy_read_docs(before_plan).task; ask only when no concrete task exists.",
+    },
     commitArtifacts: [],
     localArtifacts: [paths.configDir, paths.stateDir, paths.cacheDir],
     projectFilesChanged: [],
-    trackedLocalArtifacts: trackedLocalArtifacts.length ? trackedLocalArtifacts : undefined,
-    requiredSetupArtifacts: [paths.deployment, configPath, workflowPath],
+    requiredSetupArtifacts: [paths.deployment],
+    configAuthority,
     gitignoreChanged: false,
-    legacyDiagnostics: legacyDiagnostics.length ? legacyDiagnostics : undefined,
-    message: "External deployment and shared project config verified. hy_init changed no project files.",
+    message: "External deployment and runtime config authority verified. hy_init changed no project files.",
   });
 }

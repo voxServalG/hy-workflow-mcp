@@ -50,9 +50,9 @@ fs.mkdirSync(path.dirname(legacyConfigPath), { recursive: true });
 fs.writeFileSync(legacyConfigPath, legacyConfigText, "utf-8");
 const before = gitStatus(root);
 const setup = await executeSetup(root, options, [adapter]);
-assert(setup.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "setup should write the shared config, workflow, and AGENTS.md managed block");
+assert(setup.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "fresh setup should write only the shared config and thin workflow");
 const setupStatus = gitStatus(root);
-assert(setupStatus.includes("hy-workflow.json") && setupStatus.includes(".github/workflows/hy-workflow.yml") && setupStatus.includes("AGENTS.md"), "setup should expose the three managed artifacts to git");
+assert(setupStatus.includes("hy-workflow.json") && setupStatus.includes(".github/workflows/hy-workflow.yml") && !setupStatus.includes("AGENTS.md"), "setup should expose only the two managed artifacts to git");
 assert(adapter.definitions.size === 2, "setup should configure both owned MCP servers");
 const setupOwnership = readOwnership(root);
 assert(
@@ -61,7 +61,7 @@ assert(
   "ownership must preserve both locked preflight baselines instead of a sibling-created transaction snapshot",
 );
 assert(readDeployment(root)?.clients[0] === "codex" && readDeployment(root)?.mode === "shared", "setup should register a shared project deployment");
-assert(readDeployment(root)?.projectFiles.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "deployment should own the shared artifacts and AGENTS.md");
+assert(readDeployment(root)?.projectFiles.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "deployment should own only the shared config and thin workflow");
 assert(projectPaths(root).config.includes(projectPaths(root).identity.id), "project config should be identity-scoped");
 
 adapter.failRemove = "docs-gardener";
@@ -82,7 +82,7 @@ assert(unset.remainingProjects === 0 && adapter.definitions.size === 0, "last-pr
 assert(adapter.sharedFileExists === false, "last-project unset should restore an initially absent shared client config file");
 assert(!readDeployment(root), "unset should remove the project deployment");
 assert(gitStatus(root) === setupStatus && gitStatus(root) !== before, "unset must keep both team project files unchanged");
-assert(fs.readFileSync(legacyConfigPath, "utf-8") === legacyConfigText, "unset must preserve the migrated legacy user config byte-for-byte");
+assert(!fs.existsSync(legacyConfigPath), "fresh minimal-v1 unset must remove the exact setup-owned project-authority marker");
 
 const unknownRoot = makeGitProject("hy-setup-unknown-deployment-");
 const unknownDeployment = projectPaths(unknownRoot).deployment;

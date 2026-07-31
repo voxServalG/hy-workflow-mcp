@@ -2,24 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import type { JsonObject } from "../config.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "../package-meta.js";
 import { atomicWriteText } from "../runtime/user-paths.js";
 import { SetupFailure, type ArtifactEvidence } from "./types.js";
-import { planAgentsFile } from "./agents-rules.js";
 
 const WORKFLOW_FILE = ".github/workflows/hy-workflow.yml";
 const CONFIG_FILE = "hy-workflow.json";
-const WORKFLOW_BUNDLE_PLACEHOLDER = "__HY_WORKFLOW_LINT_BUNDLE_BASE64__";
-const LINT_TEMPLATE_FILES = [
-  "code.mjs",
-  "docs.mjs",
-  "fs.mjs",
-  "index.mjs",
-  "markdown.mjs",
-  "python.mjs",
-  "rust.mjs",
-] as const;
-export const AGENTS_FILE = "AGENTS.md";
-export const SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE, AGENTS_FILE] as const;
+const PACKAGE_SPEC_PLACEHOLDER = "__HY_WORKFLOW_PACKAGE_SPEC__";
+export const SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE] as const;
 
 function inside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
@@ -57,16 +47,11 @@ function workflowTemplateSource(): string {
 
 export function renderWorkflowTemplate(): string {
   const source = workflowTemplateSource();
-  const occurrences = source.split(WORKFLOW_BUNDLE_PLACEHOLDER).length - 1;
+  const occurrences = source.split(PACKAGE_SPEC_PLACEHOLDER).length - 1;
   if (occurrences !== 1) {
-    throw new Error(`Workflow template must contain exactly one ${WORKFLOW_BUNDLE_PLACEHOLDER} placeholder; found ${occurrences}.`);
+    throw new Error(`Workflow template must contain exactly one ${PACKAGE_SPEC_PLACEHOLDER} placeholder; found ${occurrences}.`);
   }
-  const modules = Object.fromEntries(LINT_TEMPLATE_FILES.map(file => {
-    const sourceUrl = new URL(`../../templates/lint/${file}`, import.meta.url);
-    return [file, fs.readFileSync(sourceUrl, "utf-8")];
-  }));
-  const bundle = Buffer.from(JSON.stringify(modules), "utf-8").toString("base64");
-  return source.replace(WORKFLOW_BUNDLE_PLACEHOLDER, bundle);
+  return source.replace(PACKAGE_SPEC_PLACEHOLDER, `${PACKAGE_NAME}@${PACKAGE_VERSION}`);
 }
 
 function changed(root: string, relative: string, next: string): boolean {
@@ -84,8 +69,6 @@ export function sharedArtifactPlan(root: string, config: JsonObject): Array<{ fi
     { file: CONFIG_FILE, content: JSON.stringify(config, null, 2) + "\n" },
     { file: WORKFLOW_FILE, content: renderWorkflowTemplate() },
   ];
-  const agents = planAgentsFile(root);
-  if (agents.changed) values.push({ file: AGENTS_FILE, content: agents.nextContent });
   return values.filter(item => changed(root, item.file, item.content));
 }
 
