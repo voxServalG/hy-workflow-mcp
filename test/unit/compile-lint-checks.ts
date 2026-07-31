@@ -3,7 +3,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkCommandTimeoutMs, runBoundaryCheck, runCheckCommand, runCompile } from "../../src/checks.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import type { PlanDoc } from "../../src/state.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);

@@ -21,6 +21,7 @@ import { toolResult, type ToolResult } from "./_base.js";
 import { resolveDocsDir } from "../docs_paths.js";
 import { requireRuntimeConfig } from "../config.js";
 import { inspectDocumentation, selectDocumentPage } from "../policy/docs.js";
+import { isRuntimeIgnoredArtifact } from "../policy/artifacts.js";
 
 function readDocsDir(root: string): string {
   return requireRuntimeConfig(root).project.docsDir as string;
@@ -90,11 +91,18 @@ function buildSnapshot(
       allowedTools: ["hy_status"],
     });
   }
+  if (isRuntimeIgnoredArtifact(root, configuredDocsDir)) {
+    return toolResult(nextPhase, {
+      error: "Configured project.docsDir points to an ignored legacy or runtime path.",
+      hint: "Choose a maintained documentation directory outside legacy injection and runtime paths.",
+      allowedTools: ["hy_status"],
+    });
+  }
   const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
   if (!resolvedDocsDir.ok) {
     return toolResult(nextPhase, {
       error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
-      hint: "Update hy-workflow.json project.docsDir to a project-relative directory inside the repository.",
+      hint: "Update project.docsDir in the authoritative project configuration to a project-relative directory inside the repository.",
       allowedTools: ["hy_status"],
     });
   }
@@ -103,7 +111,7 @@ function buildSnapshot(
   if (!fs.existsSync(docsRoot) || !fs.statSync(docsRoot).isDirectory()) {
     return toolResult(nextPhase, {
       error: `Configured docsDir does not exist or is not a directory: ${docsDir}`,
-      hint: "Create the configured docs directory or update hy-workflow.json project.docsDir before continuing.",
+      hint: "Create the configured docs directory or update project.docsDir in the authoritative project configuration before continuing.",
       allowedTools: ["hy_status"],
     });
   }
@@ -113,21 +121,17 @@ function buildSnapshot(
   const docsGraphDigest = graph.digest;
 
   const graphFiles = Object.keys(graph.entries);
-  const configuredFacts = graphFiles.filter(file => file.toLowerCase() !== "agents.md");
-  const docsInspection = inspectDocumentation(root, configuredFacts, { includeAgents: false });
-  const agentsFile = path.join(root, "AGENTS.md");
-  const agentsPath = (() => {
-    try { return fs.lstatSync(agentsFile).isFile() && !fs.lstatSync(agentsFile).isSymbolicLink() ? "AGENTS.md" : null; }
-    catch { return null; }
-  })();
-  const agentsInspection = agentsPath ? inspectDocumentation(root, [agentsPath]) : { substantiveFiles: [], issues: [] };
-  const blockingIssue = [...docsInspection.issues, ...agentsInspection.issues]
-    .find(issue => issue.code === "DOCS_EMPTY" || issue.code === "DOCS_NO_FACTS" || issue.code === "STALE_MANAGED_AGENTS");
+  const docsInspection = inspectDocumentation(root, graphFiles, { includeAgents: false });
+  // Root AGENTS.md may be a tracked legacy injection. The upgraded runtime
+  // deliberately ignores it rather than reading, hashing, validating, or
+  // migrating it. Project facts come only from the configured docs graph.
+  const blockingIssue = docsInspection.issues
+    .find(issue => issue.code === "DOCS_EMPTY" || issue.code === "DOCS_NO_FACTS");
   if (blockingIssue) {
     return toolResult(nextPhase, {
       error: {
         type: "docs",
-        subtype: blockingIssue.code === "STALE_MANAGED_AGENTS" ? "docs_stale" : "docs_missing",
+        subtype: "docs_missing",
         code: blockingIssue.code,
         message: blockingIssue.message,
         detail: { docsDir, file: blockingIssue.file ?? null },
@@ -143,12 +147,11 @@ function buildSnapshot(
 
   // Run task-driven traversal
   const extraEntryPoints: string[] = [];
-  // Include root README/index variants and managed AGENTS as supplemental entry points.
+  // Include configured root README/index variants as supplemental entry points.
   for (const entry of fs.readdirSync(docsRoot, { withFileTypes: true })) {
     if (!entry.isFile() || !/^(readme|index)\.(md|mdx|rst|txt)$/i.test(entry.name)) continue;
     extraEntryPoints.push(path.relative(root, path.join(docsRoot, entry.name)).split(path.sep).join("/"));
   }
-  if (agentsPath) extraEntryPoints.push(agentsPath);
 
   const traversal = traverseByTask(root, graph, task, extraEntryPoints);
   const candidates = [...new Set([...traversal.read, ...graph.entryPoints, ...graphFiles, ...extraEntryPoints])];
@@ -239,6 +242,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     if ("next" in snapshot) return snapshot;
     const next = {
       ...state,
+      stage,
       documentReads: {
         ...(state.documentReads ?? {}),
         beforePlan: withoutDocumentContents(snapshot),
@@ -248,6 +252,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     writeState(next);
     return toolResult("plan", {
       stage,
+      status: "passed",
       snapshot,
       display: {
         title: "Document baseline ready",
@@ -256,6 +261,9 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       },
       hint: "Use the document baseline to construct PlanDoc, then call hy_plan. This is not a user review gate.",
       allowedTools: ["hy_plan", "hy_status"],
+      nextAction: { tool: "hy_plan", phase: "plan", stage: "plan.compose", automatic: true },
+      control: { automatic: true, stop: false, reason: "automatic" },
+      userAction: null,
     });
   }
 
@@ -280,6 +288,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     };
     writeState({
       ...state,
+      stage,
       documentReads: {
         ...(state.documentReads ?? {}),
         afterEdit: withoutDocumentContents(auditedSnapshot),
@@ -289,6 +298,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     return toolResult("edit", {
       phase: state.phase,
       stage,
+      status: "passed",
       snapshot: auditedSnapshot,
       display: {
         title: "Implementation document audit ready",
@@ -297,7 +307,10 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       },
       hint: "Use this after_edit audit to identify documentation or shared template updates, then call hy_sync_docs before hy_verify.",
       allowedTools: ["hy_sync_docs", "hy_edit", "hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
+      nextAction: { tool: "hy_sync_docs", phase: "edit", stage: "edit.sync_docs", automatic: true },
+      control: { automatic: true, stop: false, reason: "automatic" },
+      userAction: null,
     });
   }
 
@@ -321,6 +334,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
   const auditedSnapshot: DocumentReadSnapshot = { ...snapshot, changedSinceBaseline, findings };
   writeState({
     ...state,
+    stage,
     documentReads: {
       ...(state.documentReads ?? {}),
       beforeApprove: withoutDocumentContents(auditedSnapshot),
@@ -329,6 +343,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
 
   return toolResult("approve", {
     stage,
+    status: changedSinceBaseline ? "warning" : "passed",
     snapshot: auditedSnapshot,
     changedSinceBaseline,
     display: {
@@ -338,5 +353,8 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     },
     hint: "Use this audit to decide whether the PlanDoc is still valid. If valid, call hy_approve with the user's existing approval. This is not a separate user review gate.",
     allowedTools: ["hy_approve", "hy_status"],
+    nextAction: { tool: "hy_approve", phase: "approve", stage: "approve.decision", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
   });
 }

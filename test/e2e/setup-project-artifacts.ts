@@ -30,21 +30,21 @@ class MemoryClient implements ClientAdapter {
 
 useRuntimeHome("hy-project-artifacts-runtime-");
 const options: SetupOptions = { action: "setup", mode: "shared", clients: ["claude"], language: "zh", yes: true, dryRun: false, json: true, removeGlobal: false, acceptCiCommands: true, ciCommands: ["npm ci", "npm run build", "npm run test"] };
-const expectedFiles = ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json";
+const expectedFiles = ".github/workflows/hy-workflow.yml,hy-workflow.json";
 
 const dryRoot = makeGitProject("hy-project-artifacts-dry-");
 const dryBefore = gitStatus(dryRoot);
 const dryClient = new MemoryClient();
 const dry = await executeSetup(dryRoot, { ...options, dryRun: true }, [dryClient]);
-assert(dry.projectFilesChanged.sort().join(",") === expectedFiles, "dry-run should report the three planned managed artifacts");
+assert(dry.projectFilesChanged.sort().join(",") === expectedFiles, "dry-run should report only the two minimal project files");
 assert(gitStatus(dryRoot) === dryBefore && dryClient.values.size === 0, "dry-run must not write project files or MCP client definitions");
 
 const root = makeGitProject("hy-project-artifacts-fresh-");
 const client = new MemoryClient();
 const setup = await executeSetup(root, options, [client]);
-assert(setup.projectFilesChanged.sort().join(",") === expectedFiles, "fresh setup should write config, workflow, and AGENTS.md");
-assert(fs.existsSync(path.join(root, "hy-workflow.json")) && fs.existsSync(path.join(root, ".github", "workflows", "hy-workflow.yml")) && fs.existsSync(path.join(root, "AGENTS.md")), "fresh setup should materialize all three managed artifacts");
-assert(readDeployment(root)?.mode === "shared" && readDeployment(root)?.projectFiles.sort().join(",") === expectedFiles, "fresh setup should register all three artifacts as shared deployment files");
+assert(setup.projectFilesChanged.sort().join(",") === expectedFiles, "fresh setup should write only config and the thin workflow");
+assert(fs.existsSync(path.join(root, "hy-workflow.json")) && fs.existsSync(path.join(root, ".github", "workflows", "hy-workflow.yml")) && !fs.existsSync(path.join(root, "AGENTS.md")), "fresh setup must not inject AGENTS.md");
+assert(readDeployment(root)?.mode === "shared" && readDeployment(root)?.projectFiles.sort().join(",") === expectedFiles, "fresh setup should register only the minimal project surface");
 
 const firstStatus = gitStatus(root);
 const repeated = await executeSetup(root, options, [client]);
@@ -67,10 +67,9 @@ const cloneClient = new MemoryClient();
 const clonePreview = await executeSetup(cloneRoot, { ...options, dryRun: true }, [cloneClient]);
 const cloneReview = clonePreview.artifactChanges?.filter(item => item.requiresAcceptance).map(({ file, beforeHash, afterHash }) => ({ file, beforeHash, afterHash }));
 const upgraded = await executeSetup(cloneRoot, { ...options, acceptArtifactChanges: true, reviewedArtifactChanges: cloneReview }, [cloneClient]);
-assert(upgraded.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md", "a new clone without local deployment state should upgrade the committed workflow and seed AGENTS.md");
-assert(JSON.parse(fs.readFileSync(path.join(cloneRoot, "hy-workflow.json"), "utf-8")).teamMetadata.owner === "docs", "setup should preserve unknown team config fields");
+assert(upgraded.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "a project without external authority must review both new minimal files");
 assert(fs.readFileSync(path.join(cloneRoot, ".github", "workflows", "hy-workflow.yml"), "utf-8") === renderWorkflowTemplate(), "setup should refresh the shared workflow from the deterministic packaged template render");
-assert(fs.existsSync(path.join(cloneRoot, "AGENTS.md")), "setup should create AGENTS.md on the new clone");
+assert(!fs.existsSync(path.join(cloneRoot, "AGENTS.md")), "setup must never create AGENTS.md on a new clone");
 
 if (process.platform !== "win32") {
   const symlinkRoot = makeGitProject("hy-project-artifacts-link-");

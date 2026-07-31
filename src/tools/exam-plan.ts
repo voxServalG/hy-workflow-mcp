@@ -1,5 +1,5 @@
 import { readState, writeState, assertPhase } from "./_base.js";
-import { projectRoot } from "../state.js";
+import { projectRoot, transition } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { issueExam } from "../verify-exam.js";
 
@@ -18,11 +18,16 @@ export async function handleExamPlan(): Promise<ToolResult> {
   }
 
   const root = projectRoot();
+  const next = transition(state, "verify");
+  next.stage = "verify.run";
+  writeState(next);
   const manifest = issueExam(root, state.plan);
 
   return toolResult("verify", {
     phase: "verify",
     next: "verify",
+    stage: "verify.run",
+    status: "running",
     examId: manifest.examId,
     issuedAt: manifest.issuedAt,
     expiresAt: manifest.expiresAt,
@@ -48,7 +53,10 @@ export async function handleExamPlan(): Promise<ToolResult> {
       ].join("\n"),
     },
     allowedTools: ["hy_exam_submit", "hy_status"],
-    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_commit", "hy_merge"],
     requires_user: false,
+    nextAction: { tool: "hy_exam_submit", phase: "verify", stage: "verify.run", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
   });
 }

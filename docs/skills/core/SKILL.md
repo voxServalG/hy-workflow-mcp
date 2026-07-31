@@ -7,13 +7,13 @@ description: Operate the hy-workflow MCP safely in this repository.
 
 ## Workflow Order
 
-Use this workflow order for ordinary development: hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_ci -> hy_merge -> hy_chain -> hy_reset.
+Use this workflow order for ordinary development: hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_merge -> hy_reset.
 
 For long-running verify suites (any command estimated >60s, large test layers, or when hy_verify returns a timeout hint), use the async exam path instead of synchronous hy_verify: hy_exam_plan to get the check manifest and nonces, run each listed command via Bash collecting exitCode + last 4KB stdout, then hy_exam_submit with the examId and results. Both paths produce a verifyHash that unblocks hy_commit.
 
-For first setup, run the TUI and inspect its Git-tracked/manifests/base-ref project evidence, multi-extension directories, native `ci.commands`, client effective scopes, and artifact diff. Unknown/material-mixed/low-confidence profiles, empty docs, missing refs, unsafe CI inference, or drift require explicit recovery/confirmation. Commit `hy-workflow.json`, `.github/workflows/hy-workflow.yml`, and any migrated managed `AGENTS.md` block, restart the client, then run hy_init; deployment/state/cache/client config remain external and unset never deletes team files.
+For first setup, review and commit exactly `hy-workflow.json` and the small exact-version `.github/workflows/hy-workflow.yml`, restart the client, then run hy_init. Setup never injects or migrates `AGENTS.md` or project client files; deployment/state/cache/client ownership remains external.
 
-Documentation gates are mandatory and indivisible. Reads are task-ranked and budgeted; follow `pagination.nextCursor` when `hasMore`, while workflow state stores metadata/digests rather than excerpts. Empty/no-fact docs or stale managed rules fail closed. Generated Verify runs on pull requests or manual dispatch, executes confirmed `ci.commands`, then runs the embedded first-party doclint/codelint bundle offline. Missing commands, zero documentation scans, parser/report errors, no checks, or non-success checks block merge. It never downloads lint code or mutates legacy compatibility JSON. An administrator, not setup, makes Verify required.
+Documentation gates are mandatory and indivisible. Reads are task-ranked and budgeted; follow `pagination.nextCursor` when `hasMore`, while workflow state stores metadata/digests rather than excerpts. Generated Verify uses pinned checkout, read-only contents, and the exact package version for centralized lint/policy. It does not infer ecosystems, install toolchains, run native CI, or embed the former large bundle. Zero scans, parser/report errors, no checks, or non-success checks block merge. An administrator, not setup, makes Verify required.
 
 ## Tools
 
@@ -29,9 +29,7 @@ Documentation gates are mandatory and indivisible. Reads are task-ranked and bud
 - `hy_exam_submit`
 - `hy_amend_plan`
 - `hy_commit`
-- `hy_ci`
 - `hy_merge`
-- `hy_chain`
 - `hy_reset`
 - `hy_status`
 
@@ -41,7 +39,7 @@ Every tool returns an output envelope with `ok`, `phase`, `next`, `status`, `dat
 
 ## Recovery
 
-If hy_plan returns `requires_user`, show the full `summary` and wait for approve. If hy_verify fails, use `recovery.byLayer` and return to hy_edit. If hy_ci is pending or has an API problem, stop and retry hy_ci later. If a permission or auth error includes `permission_violations`, `missing_scopes`, or `console_url`, report those fields clearly before asking the user or operator to act. If hy_merge, hy_chain, hy_reset, or another destructive step fails, stop and report the structured recovery instructions before doing anything else.
+Only `userAction.kind=approval` means ask the human to approve; show the full plan summary and bind the decision to its `decisionId` and exact PlanDoc hash. If verify fails, use recovery and return to edit. If `hy_commit` stage `commit.ci` is pending or has an API problem, wait and retry `hy_commit`; this is not approval. If a permission or auth error includes `permission_violations`, `missing_scopes`, or `console_url`, report those fields clearly before asking the user or operator to act. If `hy_merge`, `hy_reset`, or another destructive step fails, stop and report the structured recovery instructions before doing anything else.
 
 ## Long suites
 

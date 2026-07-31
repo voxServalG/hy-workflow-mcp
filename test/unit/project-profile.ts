@@ -3,6 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { inferBaseBranch, inspectProject, validateBaseBranch } from "../../src/project-profile.js";
+import { MINIMAL_PROJECT_CONTRACT, writeDeployment } from "../../src/runtime/deployment.js";
+import { useRuntimeHome } from "../helpers/runtime-home.js";
+
+useRuntimeHome("hy-project-profile-runtime-");
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
@@ -36,6 +40,48 @@ const packageOnly = repository("main", {
 const packageOnlyProfile = inspectProject(packageOnly);
 assert(packageOnlyProfile.kind === "unknown", "package.json alone must not masquerade as TypeScript");
 assert(packageOnlyProfile.ambiguous && packageOnlyProfile.confidence === "low", "source-free package projects must require confirmation");
+
+const legacyNoise = repository("main", {
+  "pyproject.toml": "[project]\nname='legacy-noise'\n",
+  "src/app.py": "print('ok')\n",
+  "docs/index.md": "# Maintained facts\n\nOnly configured project facts count.\n",
+  "AGENTS.md": "legacy rules\n",
+  "hy-workflow.json": "{ invalid legacy config\n",
+  ".github/workflows/hy-workflow.yml": "legacy workflow\n",
+  ".codex/poison.ts": "export {}\n",
+  ".opencode/poison.go": "package poison\n",
+  ".hy/runtime.rs": "fn poison() {}\n",
+  "codelint.json": "{}\n",
+  "doclint.json": "{}\n",
+  "docs-gardener.json": "{}\n",
+});
+const unreadableLegacyNoise = ["AGENTS.md", "hy-workflow.json", ".github/workflows/hy-workflow.yml", ".codex/poison.ts", ".opencode/poison.go", ".hy/runtime.rs", "codelint.json", "doclint.json", "docs-gardener.json"];
+for (const ignored of unreadableLegacyNoise) fs.chmodSync(path.join(legacyNoise, ignored), 0o000);
+const legacyNoiseProfile = inspectProject(legacyNoise);
+assert(legacyNoiseProfile.kind === "python", `legacy injection source files must not affect ecosystem detection: ${JSON.stringify(legacyNoiseProfile)}`);
+for (const ignored of unreadableLegacyNoise) {
+  assert(!legacyNoiseProfile.trackedFiles.includes(ignored), `project profile must ignore legacy injection ${ignored}`);
+  fs.chmodSync(path.join(legacyNoise, ignored), 0o644);
+}
+
+const minimal = repository("main", {
+  "package.json": "{}\n",
+  "src/index.ts": "export {}\n",
+  "docs/index.md": "# Minimal project\n\nProject facts.\n",
+  "hy-workflow.json": "{}\n",
+  ".github/workflows/hy-workflow.yml": "name: hy-workflow\n",
+});
+writeDeployment(minimal, {
+  setupVersion: "test",
+  mode: "shared",
+  clients: [],
+  projectFiles: ["hy-workflow.json", ".github/workflows/hy-workflow.yml"],
+  tools: {},
+  artifacts: {},
+  projectContract: MINIMAL_PROJECT_CONTRACT,
+});
+const minimalProfile = inspectProject(minimal);
+assert(minimalProfile.trackedFiles.includes("hy-workflow.json") && minimalProfile.trackedFiles.includes(".github/workflows/hy-workflow.yml"), "minimal-v1 project artifacts must remain strict authoritative inputs");
 
 const typescript = repository("main", {
   "package.json": "{}\n",

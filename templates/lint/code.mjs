@@ -16,6 +16,16 @@ function finding(rule, severity, filePath, message, line) {
   };
 }
 
+function addFinding(findings, resolvePolicyRule, rule, severity, filePath, message, line) {
+  const policy = typeof resolvePolicyRule === "function" ? resolvePolicyRule(rule, filePath) : null;
+  const configured = policy?.severity;
+  const effective = configured === "off" ? null
+    : configured === "advisory" ? "advisory"
+      : configured === "warning" ? "warning"
+        : severity;
+  if (effective) findings.push(finding(rule, effective, filePath, message, line));
+}
+
 function positiveInteger(value) {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
@@ -429,26 +439,26 @@ function stronglyConnected(graph) {
   return components;
 }
 
-export function lintCode({ root, config, pythonCommand }) {
+export function lintCode({ root, config, pythonCommand, resolvePolicyRule }) {
   const findings = [];
   const codeExtensions = extensions(config);
   const roots = lintDirectories(config);
-  if (codeExtensions.length === 0) findings.push(finding("C001", "error", "hy-workflow.json", "project.codeExt must configure at least one extension"));
-  if (roots.length === 0) findings.push(finding("C001", "error", "hy-workflow.json", "codelint.lintDirs must configure at least one directory"));
+  if (codeExtensions.length === 0) addFinding(findings, resolvePolicyRule, "C001", "error", "hy-workflow.json", "project.codeExt must configure at least one extension");
+  if (roots.length === 0) addFinding(findings, resolvePolicyRule, "C001", "error", "hy-workflow.json", "codelint.lintDirs must configure at least one directory");
 
   const listed = listFiles(root, roots, { extensions: codeExtensions });
-  for (const issue of listed.issues) findings.push(finding("C001", "error", issue.path, issue.message));
-  if (listed.files.length === 0) findings.push(finding("C001", "error", roots[0] ?? ".", "configured code scan contains no files"));
+  for (const issue of listed.issues) addFinding(findings, resolvePolicyRule, "C001", "error", issue.path, issue.message);
+  if (listed.files.length === 0) addFinding(findings, resolvePolicyRule, "C001", "error", roots[0] ?? ".", "configured code scan contains no files");
   for (const extension of codeExtensions) {
     if (!listed.files.some(file => path.extname(file).toLowerCase() === extension)) {
-      findings.push(finding("C001", "error", roots[0] ?? ".", `configured extension has no scanned files: ${extension}`));
+      addFinding(findings, resolvePolicyRule, "C001", "error", roots[0] ?? ".", `configured extension has no scanned files: ${extension}`);
     }
   }
 
   const sources = new Map();
   for (const file of listed.files) {
     const read = readTextFile(root, file);
-    if (!read.ok) findings.push(finding("C005", "error", file, read.error));
+    if (!read.ok) addFinding(findings, resolvePolicyRule, "C005", "error", file, read.error);
     else sources.set(file, read.text);
   }
 
@@ -459,9 +469,9 @@ export function lintCode({ root, config, pythonCommand }) {
   if (pythonFiles.length > 0) {
     const python = scanPython(pythonFiles, { pythonCommand });
     for (const result of python.results) scans.set(result.path, { language: "python", ...result });
-    for (const issue of python.errors) findings.push(finding("C005", "error", issue.path, issue.message, issue.line));
+    for (const issue of python.errors) addFinding(findings, resolvePolicyRule, "C005", "error", issue.path, issue.message, issue.line);
     for (const file of pythonFiles) {
-      if (!scans.has(file.path)) findings.push(finding("C005", "error", file.path, "Python scanner omitted a configured file"));
+      if (!scans.has(file.path)) addFinding(findings, resolvePolicyRule, "C005", "error", file.path, "Python scanner omitted a configured file");
     }
   }
   for (const [file, source] of sources) {
@@ -470,11 +480,11 @@ export function lintCode({ root, config, pythonCommand }) {
     if (extension === ".rs") {
       const result = scanRustFile(file, source);
       scans.set(file, { language: "rust", ...result });
-      for (const issue of result.errors) findings.push(finding("C005", "error", issue.path, issue.message, issue.line));
+      for (const issue of result.errors) addFinding(findings, resolvePolicyRule, "C005", "error", issue.path, issue.message, issue.line);
     } else if (JAVASCRIPT_EXTENSIONS.has(extension)) {
       const result = scanJavaScript(file, source);
       scans.set(file, { language: "javascript", ...result });
-      for (const issue of result.errors) findings.push(finding("C005", "error", issue.path, issue.message, issue.line));
+      for (const issue of result.errors) addFinding(findings, resolvePolicyRule, "C005", "error", issue.path, issue.message, issue.line);
     } else {
       scans.set(file, { language: "generic", path: file, effectiveLines: countGenericEffectiveLines(source), imports: [], errors: [] });
     }
@@ -483,10 +493,13 @@ export function lintCode({ root, config, pythonCommand }) {
   const limits = thresholds(config);
   for (const issue of limits.issues) findings.push(finding("C002", "error", "hy-workflow.json", issue));
   for (const [file, scan] of scans) {
-    if (scan.effectiveLines > limits.error) {
-      findings.push(finding("C002", "error", file, `code file has ${scan.effectiveLines} effective lines; error threshold is ${limits.error}`));
-    } else if (scan.effectiveLines > limits.warning) {
-      findings.push(finding("C002", "warning", file, `code file has ${scan.effectiveLines} effective lines; warning threshold is ${limits.warning}`));
+    const policy = typeof resolvePolicyRule === "function" ? resolvePolicyRule("C002", file) : null;
+    const error = policy?.error ?? limits.error;
+    const warning = policy?.warning ?? limits.warning;
+    if (scan.effectiveLines > error) {
+      addFinding(findings, resolvePolicyRule, "C002", "error", file, `code file has ${scan.effectiveLines} effective lines; error threshold is ${error}`);
+    } else if (scan.effectiveLines > warning) {
+      addFinding(findings, resolvePolicyRule, "C002", "warning", file, `code file has ${scan.effectiveLines} effective lines; warning threshold is ${warning}`);
     }
   }
 
@@ -526,7 +539,7 @@ export function lintCode({ root, config, pythonCommand }) {
       for (const target of targets) {
         const targetTier = tierFor(target, tierConfig.tiers);
         if (targetTier && targetTier.index < sourceTier.index) {
-          findings.push(finding("C003", "error", source, `tier ${sourceTier.name} must not depend on higher tier ${targetTier.name}: ${target}`));
+          addFinding(findings, resolvePolicyRule, "C003", "error", source, `tier ${sourceTier.name} must not depend on higher tier ${targetTier.name}: ${target}`);
         }
       }
     }
@@ -536,7 +549,7 @@ export function lintCode({ root, config, pythonCommand }) {
   if (supportsDependencies) {
     for (const component of stronglyConnected(graph)) {
       if (component.length > 1) {
-        findings.push(finding("C004", "error", component[0], `dependency cycle component: ${component.join(", ")}`));
+        addFinding(findings, resolvePolicyRule, "C004", "error", component[0], `dependency cycle component: ${component.join(", ")}`);
       }
     }
   }

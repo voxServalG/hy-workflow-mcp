@@ -4,9 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
-import { buildSuggestedCommand, checkConfig } from "../../src/config.js";
+import {
+  buildSuggestedCommand,
+  checkConfig,
+  RUNTIME_CONFIG_SOURCE_ENV,
+  RUNTIME_CONFIG_SOURCE_SCHEMA,
+} from "../../src/config.js";
 import { checkCi, checkout, createBranch, createPr, isSafeGitRefName, mergePr, push } from "../../src/git.js";
 import { readState, statePath, writeState, type WorkflowState } from "../../src/state.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
 }

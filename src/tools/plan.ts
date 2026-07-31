@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
+import { planDecisionId, readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
 import { normalizePlanDoc, validatePlanScopePaths } from "../plan_validation.js";
@@ -157,24 +157,6 @@ function buildSummary(p: PlanDoc): string {
 export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown }): Promise<ToolResult> {
   const state = readState();
 
-  // Auto-reset from terminal phases: clear derived state so the new task starts fresh.
-  if (state.phase === "done" || state.phase === "merge" || state.phase === "commit") {
-    state.phase = "plan";
-    state.branch = null;
-    state.prNumber = null;
-    state.plan = null;
-    state.approval = null;
-    state.verifyHash = null;
-    state.verifiedImplementationDigest = null;
-    state.verifiedManifestHash = null;
-    state.pendingAmendment = null;
-    state.implementationManifest = null;
-    state.documentReads = null;
-    state.syncDocs = null;
-    state.mergeReceipt = null;
-    writeState(state);
-  }
-
   assertPhase(state, "plan");
 
   const task = (args.task ?? "").trim();
@@ -192,7 +174,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
       error: "before_plan document baseline is required before hy_plan.",
       hint: `Call hy_read_docs with { stage: "before_plan", task } first. This is an automatic agent context step, not a user review gate.`,
       allowedTools: ["hy_read_docs", "hy_status"],
-      blockedTools: ["hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
     });
   }
   const beforePlanTaskMismatch = beforePlan.task !== task;
@@ -413,6 +395,9 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
 
   const next = transition(state, "approve");
   next.plan = p;
+  // A new PlanDoc is a new material intent. Historical approval must never
+  // leak into the new decision even if state was recovered unusually.
+  next.approval = null;
   next.documentReads = {
     ...(state.documentReads ?? {}),
     beforeApprove: null,
@@ -423,6 +408,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   writeState(next);
 
   const summary = buildSummary(p);
+  const decisionId = planDecisionId(p)!;
   return toolResult("approve", {
     plan: p,
     summary,
@@ -434,12 +420,23 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     },
     requires_user: true,
     stop_here: true,
+    stage: "approve.decision",
+    status: "pending",
+    decisionId,
     hint: "You MUST display the ENTIRE display.body to the user, matching ALL requiredSections anchors in order. Do not skip any section. Wait for explicit approval before calling hy_approve.",
     allowedTools: ["hy_read_docs", "hy_approve", "hy_status"],
-    blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
     recovery: {
       tool: "hy_plan",
       instruction: "If the user rejects the plan, revise the PlanDoc and call hy_plan again.",
+    },
+    nextAction: { tool: "hy_approve", phase: "approve", stage: "approve.decision", automatic: false },
+    control: { automatic: false, stop: true, reason: "approval_required" },
+    userAction: {
+      kind: "approval",
+      decisionId,
+      prompt: "Review the complete PlanDoc and approve, reject, or request revision.",
+      options: ["approve", "reject", "revise"],
     },
     message: "PlanDoc validated. Review the plan, then call hy_approve to proceed or provide feedback to revise.",
   });

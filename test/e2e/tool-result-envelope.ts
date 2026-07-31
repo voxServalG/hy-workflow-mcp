@@ -9,11 +9,14 @@ import { handleCommit } from "../../src/tools/commit.js";
 import { handleMerge } from "../../src/tools/merge.js";
 import { handleStatus } from "../../src/tools/status.js";
 import { handleApprove } from "../../src/tools/approve.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import { OUTPUT_CONTROL_FIELDS } from "../../src/output/contract.js";
 import { computePlanHash, writeState } from "../../src/state.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
 import { createGitGhHarness, type GitGhHarness } from "../helpers/git-gh-harness.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function baseState(phase: WorkflowState["phase"]): WorkflowState {
   return {
@@ -106,8 +109,22 @@ async function withEnvelopeMergeHarness(name: string, runHarness: (harness: GitG
 
 function assertEnvelope(name: string, result: any): void {
   if (typeof result.ok !== "boolean") throw new Error(`${name} missing ok`);
-  if (!result.phase) throw new Error(`${name} missing phase`);
-  if (!result.next) throw new Error(`${name} missing next`);
+  if (typeof result.phase !== "string" || !result.phase) throw new Error(`${name} missing typed phase`);
+  if (typeof result.stage !== "string" || !result.stage) throw new Error(`${name} missing typed stage`);
+  if (typeof result.status !== "string" || !result.status) throw new Error(`${name} missing typed status`);
+  if (typeof result.next !== "string" || !result.next) throw new Error(`${name} missing next`);
+  if (!result.nextAction || (result.nextAction.tool !== null && typeof result.nextAction.tool !== "string")
+      || typeof result.nextAction.phase !== "string" || typeof result.nextAction.stage !== "string"
+      || typeof result.nextAction.automatic !== "boolean") {
+    throw new Error(`${name} missing typed nextAction`);
+  }
+  if (!result.control || typeof result.control.automatic !== "boolean"
+      || typeof result.control.stop !== "boolean" || typeof result.control.reason !== "string") {
+    throw new Error(`${name} missing typed control`);
+  }
+  if (result.userAction !== null && (typeof result.userAction !== "object" || typeof result.userAction.kind !== "string")) {
+    throw new Error(`${name} missing typed userAction`);
+  }
 }
 
 function assertGitExecutor(name: string, executor: any): void {
@@ -180,6 +197,9 @@ try {
   if (!planResult.requires_user || !planResult.stop_here) {
     throw new Error("hy_plan should require user and stop");
   }
+  if (planResult.userAction?.kind !== "approval") {
+    throw new Error(`hy_plan should request approval: ${JSON.stringify(planResult.userAction)}`);
+  }
 
   const planForApprove = basePlan();
   writeState({
@@ -201,12 +221,26 @@ try {
   });
   const approveResult = await handleApprove({ approved: "approve", note: "test" });
   assertEnvelope("hy_approve", approveResult);
+  if (approveResult.userAction !== null) {
+    throw new Error(`hy_approve should not request another user action: ${JSON.stringify(approveResult.userAction)}`);
+  }
   if (approveResult.stopAfter !== "hy_reset") {
     throw new Error("hy_approve should continue the approved pipeline through hy_reset");
   }
   const pipelineSteps = approveResult.pipeline?.map((item: any) => item.step) ?? [];
-  for (const step of ["hy_commit", "hy_ci", "hy_merge", "hy_chain", "hy_reset"]) {
-    if (!pipelineSteps.includes(step)) throw new Error(`hy_approve pipeline missing ${step}`);
+  const expectedPipelineSteps = [
+    "hy_branch",
+    "hy_edit",
+    "edit files",
+    "hy_read_docs",
+    "hy_sync_docs",
+    "hy_verify",
+    "hy_commit",
+    "hy_merge",
+    "hy_reset",
+  ];
+  if (JSON.stringify(pipelineSteps) !== JSON.stringify(expectedPipelineSteps)) {
+    throw new Error(`hy_approve pipeline mismatch: ${JSON.stringify(pipelineSteps)}`);
   }
   if (!approveResult.resumeAfter?.includes("baseBranch")) {
     throw new Error("hy_approve should describe merge-to-baseBranch completion");

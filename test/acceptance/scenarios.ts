@@ -5,7 +5,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -30,28 +29,12 @@ export type ScenarioResult = {
   detail: Record<string, unknown>;
 };
 
-type TestOwnedMigration = {
-  file: string;
-  original: string;
-  migrated: string;
-  injected?: boolean;
-};
-
-const MANAGED_RULES_BLOCK = /<!-- hy-workflow-rules -->[\s\S]*?<!-- \/hy-workflow-rules -->/;
 const COMPAT_FILES = ["codelint.json", "doclint.json", "docs-gardener.json"] as const;
 const LINT_PRESSURE_TIMEOUT_MS = 120_000;
 const DEPENDENCY_SCANNER_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs"]);
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
-}
-
-function exactCiArgs(envelope: any, context: string): string[] {
-  const candidates = envelope?.ciCandidates;
-  assert(Array.isArray(candidates) && candidates.length > 0, context + " reported no CI candidates to review");
-  assert(candidates.every((command: unknown) => typeof command === "string" && command.trim() === command && command.length > 0), context + " reported an invalid CI command");
-  assert(new Set(candidates).size === candidates.length, context + " reported duplicate CI commands");
-  return candidates.flatMap((command: string) => ["--ci-command", command]);
 }
 
 function exactArtifactReviewArgs(envelope: any, context: string): string[] {
@@ -224,120 +207,6 @@ async function ensureProjectConfig(workspace: AcceptanceWorkspace, root: string,
   }
 }
 
-async function verifyStaleManagedAgentsAutoMigration(workspace: AcceptanceWorkspace, root: string, repo: AcceptanceRepo): Promise<{ original: string; file: string }> {
-  const file = join(root, "AGENTS.md");
-  assert(existsSync(file), repo.id + " legacy fixture has no AGENTS.md to auto-migrate");
-  const beforeProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
-  const beforeUserState = isolatedUserStateFingerprint(workspace);
-  const original = readFileSync(file, "utf8");
-  assert(MANAGED_RULES_BLOCK.test(original), repo.id + " legacy AGENTS.md has no managed rules block to migrate");
-  const dryRun = await run("hy-workflow", ["setup", "--yes", "--clients", "codex", "--dry-run", "--json", "--language", "en"], {
-    cwd: root,
-    env: workspace.env,
-    timeoutMs: 30_000,
-    allowFailure: true,
-  });
-  const output = dryRun.stdout + dryRun.stderr;
-  assert(dryRun.status === 0, repo.id + " dry-run with stale AGENTS must not block setup: " + output);
-  const envelope = parseJsonOutput(dryRun.stdout);
-  assert(envelope.ok === true, repo.id + " dry-run envelope must be ok for stale AGENTS auto-migration");
-  assert(Array.isArray(envelope.artifactChanges), repo.id + " dry-run must expose artifact changes");
-  assert(envelope.artifactChanges.some((item: any) => item.file === "AGENTS.md"), repo.id + " dry-run must report AGENTS.md managed_update");
-  assert((await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout === beforeProject, repo.id + " dry-run must not modify project files");
-  assert(isolatedUserStateFingerprint(workspace) === beforeUserState, repo.id + " dry-run must not modify isolated user state");
-  return { original, file };
-}
-
-function isTargetCodexTable(header: string): boolean {
-  return ["hy-workflow", "docs-gardener"].some(server => {
-    const escaped = server.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`^mcp_servers\\.(?:${escaped}|"${escaped}"|'${escaped}')(?:\\.|$)`).test(header.trim());
-  });
-}
-
-function ensureLegacyCodexFixture(root: string): boolean {
-  const file = join(root, ".codex", "config.toml");
-  if (existsSync(file)) return false;
-  mkdirSync(join(root, ".codex"), { recursive: true });
-  writeFileSync(file, [
-    "# acceptance-owned local legacy MCP fixture",
-    "[mcp_servers.hy-workflow]",
-    'command = "npx"',
-    'args = ["-y", "git+https://github.com/voxServalG/hy-workflow-mcp.git#main"]',
-    "startup_timeout_sec = 60",
-    "tool_timeout_sec = 300",
-    "",
-    "[mcp_servers.docs-gardener]",
-    'command = "npx"',
-    'args = ["-y", "git+https://github.com/voxServalG/docs-gardener.git", "mcp"]',
-    "startup_timeout_sec = 60",
-    "tool_timeout_sec = 300",
-    "",
-    "[unrelated]",
-    'preserve = "yes"',
-    "",
-  ].join("\n"));
-  return true;
-}
-
-async function verifyCodexProjectShadowBoundary(workspace: AcceptanceWorkspace, root: string, repo: AcceptanceRepo): Promise<void> {
-  const beforeProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
-  const beforeUserState = isolatedUserStateFingerprint(workspace);
-  const result = await run("hy-workflow", ["setup", "--yes", "--clients", "codex", "--dry-run", "--json", "--language", "en"], {
-    cwd: root,
-    env: workspace.env,
-    timeoutMs: 30_000,
-    allowFailure: true,
-  });
-  const output = result.stdout + result.stderr;
-  assert(result.status !== 0, repo.id + " project-level Codex MCP definition must block setup");
-  assert(/client_shadowed|shadowed|\.codex\/config\.toml/i.test(output), repo.id + " Codex shadow result did not name the project config boundary");
-  const afterProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
-  assert(afterProject === beforeProject, repo.id + " blocked Codex shadow preflight changed project files");
-  assert(isolatedUserStateFingerprint(workspace) === beforeUserState, repo.id + " blocked Codex shadow preflight changed isolated user state");
-}
-
-function migrateCodexProjectSectionsExplicitly(root: string, repo: AcceptanceRepo): TestOwnedMigration {
-  const file = join(root, ".codex", "config.toml");
-  assert(existsSync(file), repo.id + " legacy fixture has no .codex/config.toml to migrate");
-  const original = readFileSync(file, "utf8");
-  const lines = original.match(/.*(?:\r?\n|$)/g)?.filter(line => line.length > 0) ?? [];
-  let skip = false;
-  let removed = 0;
-  const kept: string[] = [];
-  const unrelatedHeaders: string[] = [];
-  for (const line of lines) {
-    const header = /^\s*\[([^\]]+)\]\s*(?:#.*)?(?:\r?\n)?$/.exec(line)?.[1];
-    if (header !== undefined) {
-      skip = isTargetCodexTable(header);
-      if (skip) removed += 1;
-      else unrelatedHeaders.push(line.trim());
-    }
-    if (!skip) kept.push(line);
-  }
-  assert(removed > 0, repo.id + " legacy Codex config contains no target MCP section");
-  const migrated = kept.join("");
-  for (const header of unrelatedHeaders) assert(migrated.includes(header), repo.id + " Codex migration dropped unrelated table " + header);
-  writeFileSync(file, migrated);
-  return { file, original, migrated };
-}
-
-async function verifyLegacyShadowBoundary(workspace: AcceptanceWorkspace, root: string): Promise<void> {
-  const beforeProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
-  const beforeUserState = isolatedUserStateFingerprint(workspace);
-  const result = await run("hy-workflow", ["setup", "--yes", "--clients", "all", "--dry-run", "--json", "--language", "en"], {
-    cwd: root,
-    env: workspace.env,
-    timeoutMs: 30_000,
-    allowFailure: true,
-  });
-  const afterProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
-  assert(result.status !== 0, "legacy project-level OpenCode shadow must block setup");
-  assert(/shadow|migration_required|\.opencode\/opencode\.json/i.test(result.stdout + result.stderr), "shadow result must name the migration boundary");
-  assert(beforeProject === afterProject, "blocked legacy migration changed the project");
-  assert(beforeUserState === isolatedUserStateFingerprint(workspace), "dry-run/blocked migration changed isolated user state");
-}
-
 async function verifyArtifactDrift(workspace: AcceptanceWorkspace, root: string): Promise<void> {
   const workflow = join(root, ".github", "workflows", "hy-workflow.yml");
   appendFileSync(workflow, "\n# acceptance-owned-drift\n");
@@ -430,7 +299,8 @@ function assertUnsetExternalCleanup(
     const targetTables = readFileSync(codexConfig, "utf8")
       .split(/\r?\n/)
       .map(line => /^\s*\[([^\]]+)\]\s*$/.exec(line)?.[1])
-      .filter((header): header is string => header !== undefined && isTargetCodexTable(header));
+      .filter((header): header is string => header !== undefined)
+      .filter(header => /^mcp_servers\.(?:hy-workflow|docs-gardener|"hy-workflow"|"docs-gardener"|'hy-workflow'|'docs-gardener')(?:\.|$)/.test(header.trim()));
     assert(targetTables.length === 0, repo.id + " unset left global Codex MCP tables: " + targetTables.join(", "));
   }
 
@@ -470,31 +340,26 @@ export async function runRepositoryScenario(
       "setup", "--yes", "--clients", selectedClients, "--dry-run", "--json", "--language", "en",
     ], { cwd: root, env: workspace.env, timeoutMs: 45_000 });
     const freshPreviewEnvelope = parseJsonOutput(freshPreview.stdout);
-    assert(freshPreviewEnvelope.ok === true && freshPreviewEnvelope.ciConfirmationRequired === true, "fresh-clone setup preview did not infer a confirmable install");
-    assert(Array.isArray(freshPreviewEnvelope.projectFilesChanged) && freshPreviewEnvelope.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "fresh-clone preview did not report exactly three project artifacts");
+    assert(freshPreviewEnvelope.ok === true, "fresh-clone setup preview failed");
+    assert(Array.isArray(freshPreviewEnvelope.projectFilesChanged) && freshPreviewEnvelope.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "fresh-clone preview did not report exactly two project artifacts");
     assert((await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout === beforeFreshProject, "fresh-clone dry-run changed project files");
     assert(isolatedUserStateFingerprint(workspace) === beforeFreshUserState, "fresh-clone dry-run changed isolated user state");
-    const freshCiArgs = exactCiArgs(freshPreviewEnvelope, "fresh-clone setup preview");
+    const freshArtifactReviewArgs = freshPreviewEnvelope.artifactChanges?.some((change: any) => change?.requiresAcceptance)
+      ? exactArtifactReviewArgs(freshPreviewEnvelope, "fresh-clone setup preview")
+      : [];
     const freshSetup = await run("hy-workflow", [
-      "setup", "--yes", "--clients", selectedClients, "--accept-ci-commands", ...freshCiArgs, "--json", "--language", "en",
+      "setup", "--yes", "--clients", selectedClients,
+      ...(freshArtifactReviewArgs.length ? ["--accept-artifact-changes", ...freshArtifactReviewArgs] : []),
+      "--json", "--language", "en",
     ], { cwd: root, env: workspace.env, timeoutMs: 60_000 });
     const freshEnvelope = parseJsonOutput(freshSetup.stdout);
     assert(freshEnvelope.ok === true, "fresh-clone setup did not return ok=true");
     const freshChanged = await assertProjectBoundary(root, workspace.env);
-    assert(freshChanged.includes("hy-workflow.json") && freshChanged.includes(".github/workflows/hy-workflow.yml") && freshChanged.includes("AGENTS.md"), "fresh-clone setup must write the three managed artifacts");
+    assert(freshChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "fresh-clone setup must write exactly the two managed artifacts");
+    assert(!existsSync(join(root, "AGENTS.md")), "fresh-clone setup must not create AGENTS.md");
   }
 
   await ensureProjectConfig(workspace, root, repo);
-  let managedAgentsOriginal: { original: string; file: string } | null = null;
-  let codexProjectMigration: TestOwnedMigration | null = null;
-  if (repo.category === "legacy") {
-    managedAgentsOriginal = await verifyStaleManagedAgentsAutoMigration(workspace, root, repo);
-    const injectedCodexFixture = ensureLegacyCodexFixture(root);
-    await verifyCodexProjectShadowBoundary(workspace, root, repo);
-    codexProjectMigration = migrateCodexProjectSectionsExplicitly(root, repo);
-    codexProjectMigration.injected = injectedCodexFixture;
-  }
-  if (repo.id === "magnet") await verifyLegacyShadowBoundary(workspace, root);
 
   const beforeDryProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
   const beforeDryUserState = isolatedUserStateFingerprint(workspace);
@@ -503,56 +368,23 @@ export async function runRepositoryScenario(
   ], { cwd: root, env: workspace.env, timeoutMs: 30_000 });
   const previewEnvelope = parseJsonOutput(preview.stdout);
   assert(previewEnvelope.ok === true, repo.id + " setup preview failed");
-  assert(previewEnvelope.ciConfirmationRequired === (repo.id !== "flask"), repo.id + " setup preview reported the wrong CI confirmation state");
-  assert(Array.isArray(previewEnvelope.ciCandidates) && previewEnvelope.ciCandidates.length > 0, repo.id + " setup detected no native CI command candidates");
   const afterDryProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
   assert(beforeDryProject === afterDryProject, repo.id + " dry-run changed project files");
   assert(beforeDryUserState === isolatedUserStateFingerprint(workspace), repo.id + " dry-run changed isolated user state");
-  const ciArgs = exactCiArgs(previewEnvelope, repo.id + " setup preview");
-  let artifactReviewArgs: string[] = [];
-  if (previewEnvelope.ciConfirmationRequired) {
-    const exactPreview = await run("hy-workflow", [
-      "setup", "--yes", "--clients", selectedClients, "--accept-ci-commands", ...ciArgs,
-      "--dry-run", "--json", "--language", "en",
-    ], { cwd: root, env: workspace.env, timeoutMs: 30_000 });
-    const exactPreviewEnvelope = parseJsonOutput(exactPreview.stdout);
-    assert(exactPreviewEnvelope.ok === true && exactPreviewEnvelope.ciConfirmationRequired === false, repo.id + " exact-command preview failed");
-    artifactReviewArgs = exactArtifactReviewArgs(exactPreviewEnvelope, repo.id + " exact-command preview");
-    assert(beforeDryProject === (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout, repo.id + " exact-command preview changed project files");
-    assert(beforeDryUserState === isolatedUserStateFingerprint(workspace), repo.id + " exact-command preview changed isolated user state");
-  }
-
-  if (repo.category === "legacy") {
-    const blocked = await run("hy-workflow", [
-      "setup", "--yes", "--clients", selectedClients, "--accept-ci-commands", ...ciArgs, "--json", "--language", "en",
-    ], { cwd: root, env: workspace.env, timeoutMs: 30_000, allowFailure: true });
-    assert(blocked.status !== 0, repo.id + " --yes silently accepted an existing team artifact overwrite");
-    assert(/artifact|accept-artifact-changes|drift/i.test(blocked.stdout + blocked.stderr), repo.id + " blocked overwrite did not explain explicit artifact acceptance");
-    assert(beforeDryProject === (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout, repo.id + " blocked overwrite changed project files");
-    assert(beforeDryUserState === isolatedUserStateFingerprint(workspace), repo.id + " blocked overwrite changed isolated user state");
-  }
+  const artifactReviewArgs = previewEnvelope.artifactChanges?.some((change: any) => change?.requiresAcceptance)
+    ? exactArtifactReviewArgs(previewEnvelope, repo.id + " setup preview")
+    : [];
 
   const setup = await run("hy-workflow", [
-    "setup", "--yes", "--clients", selectedClients, "--accept-ci-commands", ...ciArgs,
+    "setup", "--yes", "--clients", selectedClients,
     ...(artifactReviewArgs.length ? ["--accept-artifact-changes", ...artifactReviewArgs] : []),
     "--json", "--language", "en",
   ], { cwd: root, env: workspace.env, timeoutMs: 45_000 });
   const setupEnvelope = parseJsonOutput(setup.stdout);
   assert(setupEnvelope.ok === true, repo.id + " setup did not return ok=true");
-  const testOwnedFiles = [codexProjectMigration ? ".codex/config.toml" : null]
-    .filter((file): file is string => file !== null);
-  const changed = await assertProjectBoundary(root, workspace.env, ["AGENTS.md", ...testOwnedFiles]);
+  const changed = await assertProjectBoundary(root, workspace.env);
   assert(changed.includes("hy-workflow.json") || existsSync(join(root, "hy-workflow.json")), repo.id + " setup did not maintain hy-workflow.json");
   assert(existsSync(join(root, ".github", "workflows", "hy-workflow.yml")), repo.id + " setup did not maintain workflow");
-  if (repo.category === "legacy") {
-    assert(changed.includes("AGENTS.md"), repo.id + " setup must auto-migrate stale AGENTS.md");
-    const migrated = readFileSync(join(root, "AGENTS.md"), "utf8");
-    assert(MANAGED_RULES_BLOCK.test(migrated), repo.id + " auto-migrated AGENTS.md must contain a canonical managed block");
-    const block = migrated.match(MANAGED_RULES_BLOCK)?.[0] ?? "";
-    assert(block.includes("hy-workflow-rules-version:"), repo.id + " auto-migrated block must carry a version marker");
-  const exported = await run("hy-workflow", ["config", "--print-managed-rules"], { cwd: root, env: workspace.env, timeoutMs: 20_000 });
-  assert(exported.status === 0 && /<!--\s*hy-workflow-rules-version:/.test(exported.stdout), repo.id + " installed package must still export canonical managed rules for offline reference");
-  }
 
   const beforeRepeatProject = (await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env: workspace.env })).stdout;
   const beforeRepeatClients = existsSync(workspace.env.HY_ACCEPTANCE_CLIENT_STATE!)
@@ -598,15 +430,6 @@ export async function runRepositoryScenario(
   assert(existsSync(join(root, ".github", "workflows", "hy-workflow.yml")), "unset removed shared workflow");
   assertUnsetExternalCleanup(workspace, repo, setupEnvelope.projectId, unsetEnvelope);
 
-  if (managedAgentsOriginal) {
-    writeFileSync(managedAgentsOriginal.file, managedAgentsOriginal.original);
-  }
-  if (codexProjectMigration) {
-    assert(readFileSync(codexProjectMigration.file, "utf8") === codexProjectMigration.migrated, repo.id + " setup or unset modified project .codex/config.toml after explicit human migration");
-    if (codexProjectMigration.injected) rmSync(join(root, ".codex"), { recursive: true, force: true });
-    else writeFileSync(codexProjectMigration.file, codexProjectMigration.original);
-  }
-
   for (const name of [".hy", ".codex", ".opencode", ".mcp.json", "codelint.json", "doclint.json", "docs-gardener.json"]) {
     if (!initialRuntime.has(name)) assert(!existsSync(join(root, name)), repo.id + " created forbidden project-local artifact " + name);
   }
@@ -627,8 +450,6 @@ export async function runRepositoryScenario(
       changed,
       docsChars: docs.chars,
       lintPressure,
-      managedAgentsAutoMigration: Boolean(managedAgentsOriginal),
-      codexProjectMigration: Boolean(codexProjectMigration),
       workspaceBytes,
     },
   };
@@ -667,7 +488,7 @@ export async function createFixture(workspace: AcceptanceWorkspace, name: string
 
 export async function runConcurrencyScenario(workspace: AcceptanceWorkspace): Promise<ScenarioResult> {
   const started = Date.now();
-  const root = await createFixture(workspace, "concurrency");
+  const root = await createFixture(workspace, "concurrency", false);
   const commands = Array.from({ length: 32 }, () => run("hy-workflow", [
     "setup", "--yes", "--clients", "codex", "--json", "--language", "en",
   ], { cwd: root, env: workspace.env, timeoutMs: 90_000, allowFailure: true }));
@@ -728,7 +549,7 @@ export async function runFaultScenario(workspace: AcceptanceWorkspace): Promise<
     const result = await run(process.execPath, [
       join(workspace.sourceRoot, "test", "acceptance", "setup-failpoint-child.mjs"),
       failpoint,
-      "--yes", "--clients", "codex", "--json", "--language", "en", "--ci-command", "npm test",
+      "--yes", "--clients", "codex", "--json", "--language", "en",
     ], {
       cwd: root,
       env: workspace.env,

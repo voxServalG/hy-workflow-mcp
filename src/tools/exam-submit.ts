@@ -35,17 +35,24 @@ interface Args {
 }
 
 export async function handleExamSubmit(args: Args): Promise<ToolResult> {
-  const state = readState();
+  let state = readState();
   assertPhase(state, "edit", "verify");
 
   if (!state.plan) return toolResult("verify", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
 
   const root = projectRoot();
+  state = transition(state, "verify");
+  state.stage = "verify.run";
+  writeState(state);
   const outcome = submitExam(root, state, args.examId, args.results);
 
   if (!outcome.passed) {
+    const failedState = transition(state, "edit");
+    writeState(failedState);
     return toolResult("edit", {
       passed: false,
+      stage: "edit.implementation",
+      status: "failed",
       failedChecks: outcome.failedChecks,
       recovery: {
         nextAction: "fix_then_resubmit",
@@ -57,7 +64,10 @@ export async function handleExamSubmit(args: Args): Promise<ToolResult> {
         body: (outcome.failedChecks ?? []).map(f => `- ${f.id}: ${f.reason} — ${f.message}`).join("\n"),
       },
       allowedTools: ["hy_exam_submit", "hy_status"],
-      blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_commit", "hy_merge"],
+      nextAction: { tool: "hy_exam_submit", phase: "edit", stage: "verify.run", automatic: true },
+      control: { automatic: true, stop: false, reason: "repair_required" },
+      userAction: null,
     });
   }
 
@@ -70,6 +80,8 @@ export async function handleExamSubmit(args: Args): Promise<ToolResult> {
   return toolResult("commit", {
     passed: true,
     next: "commit",
+    stage: "commit.prepare",
+    status: "passed",
     examId: args.examId,
     submitted: args.results.length,
     display: {
@@ -77,5 +89,8 @@ export async function handleExamSubmit(args: Args): Promise<ToolResult> {
       body: `All ${args.results.length} submitted checks passed. Ready to hy_commit.`,
     },
     allowedTools: ["hy_commit", "hy_status"],
+    nextAction: { tool: "hy_commit", phase: "commit", stage: "commit.prepare", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
   });
 }

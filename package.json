@@ -15,7 +15,7 @@
     "dev": "npx tsx src/server.ts",
     "lint:contract": "npm run build && npm run lint:contract:built",
     "lint:contract:built": "node dist/contralint/index.js",
-    "test:run": "node -e \"const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),tsx=require.resolve('tsx/cli');const dir=process.argv[1];for(const name of fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).sort()){const child=cp.spawnSync(process.execPath,[tsx,path.join(dir,name)],{stdio:'inherit'});if(child.error){console.error(child.error.message);process.exit(1)}if(child.status!==0)process.exit(child.status??1)}\"",
+    "test:run": "node -e \"const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),tsx=require.resolve('tsx/cli'),env={...process.env};delete env.HY_WORKFLOW_RUNTIME_CONFIG_SOURCE;const dir=process.argv[1];for(const name of fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).sort()){const child=cp.spawnSync(process.execPath,[tsx,path.join(dir,name)],{stdio:'inherit',env});if(child.error){console.error(child.error.message);process.exit(1)}if(child.status!==0)process.exit(child.status??1)}\"",
     "test:unit": "npm run test:run -- test/unit",
     "test:e2e": "npm run test:run -- test/e2e",
     "test:contract": "npm run test:run -- test/contract",
@@ -63,8 +63,8 @@
   "files": [
     "dist",
     "docs",
+    "schemas",
     "templates",
-    "AGENTS.md",
     "README.md"
   ]
 }

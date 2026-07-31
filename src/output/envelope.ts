@@ -1,5 +1,11 @@
-import type { Phase } from "../runtime/state-machine.js";
+import type { Phase, WorkflowStage, WorkflowStatus } from "../runtime/state-machine.js";
 import { structuredError, type StructuredError } from "../errs/structured.js";
+import {
+  normalizeContract,
+  type ToolControl,
+  type ToolNextAction,
+  type ToolUserAction,
+} from "./control.js";
 
 export type ToolDisplay = {
   title?: string;
@@ -45,9 +51,13 @@ export type ToolNotice = {
 
 export type ToolResult = {
   next: Phase;
-  ok?: boolean;
-  phase?: Phase;
-  status?: string;
+  ok: boolean;
+  phase: Phase;
+  stage: WorkflowStage;
+  status: WorkflowStatus;
+  nextAction: ToolNextAction;
+  control: ToolControl;
+  userAction: ToolUserAction | null;
   data?: unknown;
   error?: StructuredError;
   display?: ToolDisplay;
@@ -66,18 +76,40 @@ export type ToolResult = {
   [key: string]: any;
 };
 
-export type ToolResultFields = Omit<ToolResult, "next" | "error"> & {
+type ContractInputFields = "phase" | "stage" | "status" | "nextAction" | "control" | "userAction";
+
+export type ToolResultFields = Omit<ToolResult, "next" | "error" | "ok" | ContractInputFields> & {
+  ok?: boolean;
+  phase?: Phase;
+  stage?: WorkflowStage;
+  status?: WorkflowStatus | string;
+  nextAction?: ToolNextAction;
+  control?: ToolControl;
+  userAction?: ToolUserAction | null;
   error?: unknown;
 };
 
 export function toolResult(next: Phase, fields: ToolResultFields = {}): ToolResult {
   const { error: rawError, ...rest } = fields;
   const error = rawError === undefined ? undefined : structuredError(rawError);
+  const contract = normalizeContract({
+    next,
+    phase: rest.phase,
+    stage: rest.stage,
+    status: rest.status,
+    error,
+    allowedTools: rest.allowedTools,
+    requires_user: rest.requires_user,
+    stop_here: rest.stop_here,
+    nextAction: rest.nextAction,
+    control: rest.control,
+    userAction: rest.userAction,
+  });
   return {
     ok: rest.ok ?? error === undefined,
-    phase: rest.phase ?? next,
     next,
     ...rest,
+    ...contract,
     ...(error ? { error } : {}),
   };
 }

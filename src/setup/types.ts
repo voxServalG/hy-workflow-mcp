@@ -72,10 +72,8 @@ export type SetupOptions = {
    */
   forceClientOverwrite?: ClientName[];
   /**
-   * When true, setup scans the project root for legacy client-local MCP definitions
-   * (.mcp.json, .opencode/, .codex/, .claude/), backs them up under
-   * .hy-cleanup-backup/<timestamp>/, ensures user-scope definitions for hy-workflow/docs-gardener,
-   * and moves the project-level legacy files out of the way.
+   * Deprecated compatibility input. Historical project injections are inert;
+   * setup never scans, copies, moves, deletes, or interprets them.
    */
   migrateLegacyClients?: boolean;
 };

@@ -18,7 +18,7 @@ Verification has two layers of meaning:
 - npm test
 - npm run verify
 
-Ordinary CI runs build, contract lint, tests, confirmed native project checks, then the package's built-in offline doclint and codelint rules. The generated generic workflow is pull-request/manual only and treats lint errors, invalid reports, and zero documentation scans as failures. The package repository also runs an independent Windows Smoke job that builds and tests the installed tarball through lint, setup, repeated setup, and unset. npm release additionally runs the full acceptance pressure matrix before publish; no skipped mandatory case is success.
+Repository-owned native CI runs build and tests. The generated hy-workflow check is pull-request/manual only, uses pinned checkout with read-only contents and an exact package version, and runs centralized lint/policy. It does not infer ecosystems, install project toolchains, run native CI, or embed the former large bundle; lint errors, invalid reports, and zero documentation scans fail closed. The package repository also runs an independent Windows Smoke job. npm release runs the full acceptance pressure matrix; no skipped mandatory case is success.
 
 ## Project acceptance
 

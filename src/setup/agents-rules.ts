@@ -1,14 +1,9 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { MANAGED_RULES_VERSION } from "../policy/docs.js";
 
 export const AGENTS_OPEN = "<!-- hy-workflow-rules -->";
 export const AGENTS_CLOSE = "<!-- /hy-workflow-rules -->";
 export const AGENTS_FILE = "AGENTS.md";
 export const ASYNC_VERIFY_GUIDANCE = "Use hy_verify for checks expected under 60 seconds; use hy_exam_plan and hy_exam_submit for long-running acceptance or verification suites. Both paths produce the same verifyHash gate.";
-
-const CANONICAL_SOURCE = new URL("../../AGENTS.md", import.meta.url);
 
 export interface ManagedBlockExtraction {
   found: boolean;
@@ -63,17 +58,14 @@ export function extractManagedBlock(content: string): ManagedBlockExtraction {
     postOutside,
     outsideSha256: outside.length ? sha256(outside) : null,
     version: versionMatch ? versionMatch[1] : null,
-    current: versionMatch ? versionMatch[1] === MANAGED_RULES_VERSION : false,
+    current: false,
   };
 }
 
 export function canonicalManagedBlock(): string {
-  const content = fs.readFileSync(CANONICAL_SOURCE, "utf-8");
-  const extraction = extractManagedBlock(content);
-  if (!extraction.wellFormed || !extraction.current) {
-    throw new Error(`Packaged AGENTS.md managed block is missing or does not match version ${MANAGED_RULES_VERSION}`);
-  }
-  return `${AGENTS_OPEN}${extraction.managed}${AGENTS_CLOSE}`;
+  // Compatibility export only. There is no packaged policy block and setup
+  // must never source a new project injection from this module.
+  return "";
 }
 
 export interface AgentsMigrationResult {
@@ -88,63 +80,20 @@ export interface AgentsMigrationResult {
   outsidePreserved: boolean;
 }
 
-function outsideOf(content: string): string {
-  const extraction = extractManagedBlock(content);
-  if (!extraction.wellFormed) return content;
-  return extraction.preOutside + extraction.postOutside.replace(/^\n+/, "");
-}
-
-export function planAgentsFile(root: string): AgentsMigrationResult {
-  const target = path.join(root, "AGENTS.md");
-  const canonical = canonicalManagedBlock();
-  const existed = fs.existsSync(target);
-  const previousContent = existed ? fs.readFileSync(target, "utf-8") : null;
-  if (!existed) {
-    return {
-      file: "AGENTS.md",
-      existed: false,
-      previousContent: null,
-      nextContent: canonical + "\n",
-      changed: true,
-      changeKind: "create",
-      preOutsideSha256: null,
-      postOutsideSha256: null,
-      outsidePreserved: true,
-    };
-  }
-  const previous = previousContent!;
-  const extraction = extractManagedBlock(previous);
-  let nextContent: string;
-  let changeKind: AgentsMigrationResult["changeKind"];
-  let preHash: string | null;
-  if (!extraction.wellFormed) {
-    nextContent = canonical + "\n" + previous;
-    changeKind = "managed_insert";
-    preHash = sha256(previous);
-  } else {
-    nextContent = extraction.preOutside + canonical + extraction.postOutside;
-    changeKind = "managed_update";
-    preHash = sha256(outsideOf(previous));
-  }
-  if (!nextContent.endsWith("\n")) nextContent += "\n";
-  const postHash = sha256(outsideOf(nextContent));
-  const changed = nextContent !== previous;
+export function planAgentsFile(_root: string): AgentsMigrationResult {
   return {
     file: "AGENTS.md",
-    existed,
-    previousContent: previous,
-    nextContent,
-    changed,
-    changeKind: changed ? changeKind : "none",
-    preOutsideSha256: preHash,
-    postOutsideSha256: postHash,
-    outsidePreserved: !existed || !changed || preHash === null || preHash === postHash,
+    existed: false,
+    previousContent: null,
+    nextContent: "",
+    changed: false,
+    changeKind: "none",
+    preOutsideSha256: null,
+    postOutsideSha256: null,
+    outsidePreserved: true,
   };
 }
 
-export function outsidePreserved(root: string, expectedSha256: string | null): boolean {
-  const target = path.join(root, "AGENTS.md");
-  if (!fs.existsSync(target)) return expectedSha256 === null;
-  const extraction = extractManagedBlock(fs.readFileSync(target, "utf-8"));
-  return extraction.outsideSha256 === expectedSha256;
+export function outsidePreserved(_root: string, _expectedSha256: string | null): boolean {
+  return true;
 }

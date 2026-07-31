@@ -35,7 +35,7 @@ Short commands run through a synchronous cross-platform supervisor; commands exp
 
 ## CI evidence gate
 
-GitHub workflow 从根 `hy-workflow.json` 读取已确认的 `ci.commands` 并按顺序执行完整原生项目检查，再把 setup 确定性嵌入的第一方模块解到 runner 临时目录，离线运行 D001–D005 与 C001–C005。通用 workflow 只响应 pull request 和手动触发。缺少/空命令、未知且无法安全推断的生态、命令超时/失败、零文档扫描、lint 错误、解析器失败或报告不符合 `hy-workflow.lint.v1` 均 fail closed。旧 compatibility JSON 不生成、不改写，也无需恢复。`hy_ci` 只有至少一个有效 check 且全部成功才进入 merge，没有 checks 或只有 skipped/neutral 时返回 `CI_CHECKS_REQUIRED`。
+GitHub thin workflow 只响应 pull request 和手动触发，使用 pinned checkout、`contents: read` 与 exact package version 执行集中式 D001–D005/C001–C005 lint/policy。它不推断生态、不安装项目 toolchain、不运行 repository-native CI，也不嵌入旧的大型 bundle。零文档扫描、lint 错误、解析器失败或报告不符合 `hy-workflow.lint.v1` 均 fail closed。旧 compatibility JSON 不生成、不改写。`hy_commit` 的 `commit.ci` 只有至少一个有效 check 且全部成功才进入 merge；pending 等待后重试，没有 checks 或只有 skipped/neutral 时返回 `CI_CHECKS_REQUIRED`。
 
 setup 负责生成 workflow，但不修改 GitHub 管理配置。仓库管理员必须在 ruleset 或 branch protection 中把 workflow 的 Verify check 设为 required，才能在平台层阻止绕过。
 

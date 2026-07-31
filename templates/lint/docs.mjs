@@ -15,6 +15,16 @@ function finding(rule, severity, filePath, message, line) {
   };
 }
 
+function addFinding(findings, resolvePolicyRule, rule, severity, filePath, message, line) {
+  const policy = typeof resolvePolicyRule === "function" ? resolvePolicyRule(rule, filePath) : null;
+  const configured = policy?.severity;
+  const effective = configured === "off" ? null
+    : configured === "advisory" ? "advisory"
+      : configured === "warning" ? "warning"
+        : severity;
+  if (effective) findings.push(finding(rule, effective, filePath, message, line));
+}
+
 function positiveInteger(value) {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
@@ -114,19 +124,19 @@ function fragmentExists(fragment, parsed) {
     || parsed.anchors.has(githubSlug(decoded));
 }
 
-export function lintDocs({ root, config }) {
+export function lintDocs({ root, config, resolvePolicyRule }) {
   const findings = [];
   const docsDir = config?.project?.docsDir;
   if (typeof docsDir !== "string" || !docsDir) {
-    findings.push(finding("D001", "error", "hy-workflow.json", "project.docsDir must be configured"));
+    addFinding(findings, resolvePolicyRule, "D001", "error", "hy-workflow.json", "project.docsDir must be configured");
     return { files: [], findings, parsed: new Map(), entries: [] };
   }
 
   const listed = listFiles(root, [docsDir], { extensions: DOC_EXTENSIONS });
   listed.files = listed.files.filter(file => !["agents.md", "claude.md"].includes(path.basename(file).toLowerCase()));
-  for (const issue of listed.issues) findings.push(finding("D001", "error", issue.path, issue.message));
+  for (const issue of listed.issues) addFinding(findings, resolvePolicyRule, "D001", "error", issue.path, issue.message);
   if (listed.files.length === 0) {
-    findings.push(finding("D001", "error", docsDir, "documentation directory must contain at least one Markdown file"));
+    addFinding(findings, resolvePolicyRule, "D001", "error", docsDir, "documentation directory must contain at least one Markdown file");
     return { files: [], findings, parsed: new Map(), entries: [] };
   }
 
@@ -134,18 +144,18 @@ export function lintDocs({ root, config }) {
   for (const file of listed.files) {
     const read = readTextFile(root, file);
     if (!read.ok) {
-      findings.push(finding("D001", "error", file, read.error));
+      addFinding(findings, resolvePolicyRule, "D001", "error", file, read.error);
       continue;
     }
     const document = parseMarkdown(read.text);
     parsed.set(file, document);
-    if (document.unterminatedFence) findings.push(finding("D004", "error", file, "unterminated fenced code block"));
-    for (const issue of document.structure) findings.push(finding("D004", "error", file, issue.message, issue.line));
+    if (document.unterminatedFence) addFinding(findings, resolvePolicyRule, "D004", "error", file, "unterminated fenced code block");
+    for (const issue of document.structure) addFinding(findings, resolvePolicyRule, "D004", "error", file, issue.message, issue.line);
   }
 
   const entries = entryFiles(listed.files, docsDir);
   if (entries.length === 0) {
-    findings.push(finding("D002", "error", docsDir, "documentation system requires index.md or README.md as an entry point"));
+    addFinding(findings, resolvePolicyRule, "D002", "error", docsDir, "documentation system requires index.md or README.md as an entry point");
   } else {
     const reachable = new Set(entries);
     const queue = [...entries];
@@ -161,7 +171,7 @@ export function lintDocs({ root, config }) {
       }
     }
     for (const file of listed.files) {
-      if (!reachable.has(file)) findings.push(finding("D002", "error", file, "document is not reachable from a documentation entry point"));
+      if (!reachable.has(file)) addFinding(findings, resolvePolicyRule, "D002", "error", file, "document is not reachable from a documentation entry point");
     }
   }
 
@@ -171,27 +181,27 @@ export function lintDocs({ root, config }) {
       const target = resolveLinkTarget(root, file, link.target);
       if (target.external) continue;
       if (!target.ok) {
-        findings.push(finding("D003", "error", file, `${target.error}: ${link.target}`, link.line));
+        addFinding(findings, resolvePolicyRule, "D003", "error", file, `${target.error}: ${link.target}`, link.line);
         continue;
       }
       if (!target.fragment) continue;
       const extension = path.extname(target.target).toLowerCase();
       if (!DOC_EXTENSIONS.includes(extension)) {
-        findings.push(finding("D003", "error", file, `anchor target is not Markdown: ${link.target}`, link.line));
+        addFinding(findings, resolvePolicyRule, "D003", "error", file, `anchor target is not Markdown: ${link.target}`, link.line);
         continue;
       }
       let targetDocument = targetCache.get(target.target);
       if (!targetDocument) {
         const read = readTextFile(root, target.target);
         if (!read.ok) {
-          findings.push(finding("D003", "error", file, `${read.error}: ${link.target}`, link.line));
+          addFinding(findings, resolvePolicyRule, "D003", "error", file, `${read.error}: ${link.target}`, link.line);
           continue;
         }
         targetDocument = parseMarkdown(read.text);
         targetCache.set(target.target, targetDocument);
       }
       if (!fragmentExists(target.fragment, targetDocument)) {
-        findings.push(finding("D003", "error", file, `anchor does not exist: ${link.target}`, link.line));
+        addFinding(findings, resolvePolicyRule, "D003", "error", file, `anchor does not exist: ${link.target}`, link.line);
       }
     }
   }
@@ -199,10 +209,13 @@ export function lintDocs({ root, config }) {
   const limits = thresholds(config);
   for (const issue of limits.issues) findings.push(finding("D005", "error", "hy-workflow.json", issue));
   for (const [file, document] of parsed) {
-    if (document.effectiveLines > limits.error) {
-      findings.push(finding("D005", "error", file, `document has ${document.effectiveLines} effective lines; error threshold is ${limits.error}`));
-    } else if (document.effectiveLines > limits.warning) {
-      findings.push(finding("D005", "warning", file, `document has ${document.effectiveLines} effective lines; warning threshold is ${limits.warning}`));
+    const policy = typeof resolvePolicyRule === "function" ? resolvePolicyRule("D005", file) : null;
+    const error = policy?.error ?? limits.error;
+    const warning = policy?.warning ?? limits.warning;
+    if (document.effectiveLines > error) {
+      addFinding(findings, resolvePolicyRule, "D005", "error", file, `document has ${document.effectiveLines} effective lines; error threshold is ${error}`);
+    } else if (document.effectiveLines > warning) {
+      addFinding(findings, resolvePolicyRule, "D005", "warning", file, `document has ${document.effectiveLines} effective lines; warning threshold is ${warning}`);
     }
   }
   return { files: listed.files, findings, parsed, entries };

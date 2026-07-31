@@ -4,11 +4,15 @@ Every user-facing tool response is a single JSON envelope. `src/output/contract.
 
 ## Output Envelope Fields
 
-Top-level output fields are `ok`, `phase`, `next`, `status`, `data`, `error`, `display`, `summary`, `hint`, `requires_user`, `stop_here`, `allowedTools`, `blockedTools`, `recovery`, `checks`, `findings`, `pagination`, `meta`, and `_notice`.
+Every result has typed additive `phase`, `stage`, `status`, `nextAction`, `control`, and `userAction`, and preserves legacy `next`. Existing `ok`, `data`, `error`, `display`, `summary`, `hint`, `requires_user`, `stop_here`, `allowedTools`, `blockedTools`, `recovery`, `checks`, `findings`, `pagination`, `meta`, and `_notice` remain additive.
 
 - `ok`: boolean success flag. Failures return `ok: false` and an `error` object.
 - `phase`: current workflow phase after the tool returns.
-- `next`: suggested next phase or tool state. `phase` and `next` may differ when the workflow is still in the current phase but the next call is known.
+- `stage`: current intra-phase step; `phase` remains persisted coarse state.
+- `nextAction`: nested `tool`, `arguments`, `phase`, `stage`, and `automatic`.
+- `control`: nested `automatic`, `stop`, and `reason`.
+- `userAction`: nested `kind`, `decisionId`, `prompt`, `instruction`, and `options`.
+- `next`: legacy suggested next phase or tool state.
 - `status`: stable machine-readable status such as `passed`, `pending`, `failed`, `blocked`, or `amend_required`.
 - `data`: primary machine-readable payload when a tool has a domain result that should not be mixed into control fields.
 - `error`: structured error envelope on failure.
@@ -32,4 +36,4 @@ Failures return `ok: false`, preserve the current `phase` and suggested `next`, 
 
 ## Result Behavior
 
-Successful tools return `ok: true`, `phase`, `next`, and any tool-specific data. Tools that need a human decision set `requires_user` and `stop_here`. Tools that can continue automatically omit `stop_here` unless an API, CI, merge, permission, or recovery condition blocks the workflow. Agents should render `display` and `summary`, use `hint` and `recovery` to decide next actions, respect `allowedTools` and `blockedTools`, and carry `request_id` or `trace_id` into troubleshooting output.
+Only `userAction.kind: "approval"` means ask the human to approve. Recovery, `requires_user`, `stop_here`, CI wait, `review_failure`, configuration, authentication, permissions, and external action retain distinct meanings and must not be rewritten as approval. Agents obey `control`, route by `nextAction`, render `display`/`summary`, preserve recovery and diagnostic details, and use legacy `next` only for compatibility.

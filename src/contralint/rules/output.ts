@@ -1,11 +1,14 @@
 import {
+  CONTROL_FIELDS,
   DISPLAY_FIELDS,
   META_FIELDS,
+  NEXT_ACTION_FIELDS,
   NOTICE_FIELDS,
   NOTICE_UPDATE_FIELDS,
   OUTPUT_CONTROL_FIELDS,
   PAGINATION_FIELDS,
   RECOVERY_FIELDS,
+  USER_ACTION_FIELDS,
 } from "../../output/contract.js";
 import { exists, readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
@@ -25,6 +28,7 @@ const CI_FAIL_CLOSED_SOURCE_TOKENS = [
   "requires_user: true",
   "stop_here: true",
   'blockedTools: ["hy_merge"]',
+  'stage: "commit.ci"',
 ];
 
 const CI_FAIL_CLOSED_DOC_TOKENS = [
@@ -58,6 +62,7 @@ export function checkOutputContracts(context: ContractRuleContext): ContractFind
   }
   const contract = readText(context.root, "src/output/contract.ts");
   const source = readText(context.root, "src/output/envelope.ts");
+  const controlSource = readText(context.root, "src/output/control.ts");
   const base = readText(context.root, "src/tools/_base.ts");
   const docs = OUTPUT_DOCS.map(file => readText(context.root, file)).join("\n");
   const ciSource = readText(context.root, "src/tools/commit.ts");
@@ -71,6 +76,23 @@ export function checkOutputContracts(context: ContractRuleContext): ContractFind
   addMissingTokenFindings(findings, "output", "hard_fail", OUTPUT_CONTROL_FIELDS, contract, "src/output/contract.ts", "Output contract source");
   addMissingTokenFindings(findings, "output", "hard_fail", OUTPUT_CONTROL_FIELDS, source, "src/output/envelope.ts", "Envelope source");
   addMissingTokenFindings(findings, "output", "amend_required", OUTPUT_CONTROL_FIELDS, docs, "docs/output.md", "Envelope docs");
+  for (const field of ["phase", "stage", "status", "nextAction", "control", "userAction"]) {
+    if (!source.includes(field)) findings.push({ rule: "output", severity: "hard_fail", message: `Typed envelope source omits additive field ${field}.`, file: "src/output/envelope.ts" });
+  }
+  addMissingTokenFindings(findings, "output", "hard_fail", NEXT_ACTION_FIELDS, contract, "src/output/contract.ts", "Next-action field contract");
+  addMissingTokenFindings(findings, "output", "hard_fail", NEXT_ACTION_FIELDS, controlSource, "src/output/control.ts", "Typed next-action source");
+  addMissingTokenFindings(findings, "output", "amend_required", NEXT_ACTION_FIELDS, docs, "docs/output.md", "Next-action docs");
+  addMissingTokenFindings(findings, "output", "hard_fail", CONTROL_FIELDS, contract, "src/output/contract.ts", "Control field contract");
+  addMissingTokenFindings(findings, "output", "hard_fail", CONTROL_FIELDS, controlSource, "src/output/control.ts", "Typed control source");
+  addMissingTokenFindings(findings, "output", "amend_required", CONTROL_FIELDS, docs, "docs/output.md", "Control docs");
+  addMissingTokenFindings(findings, "output", "hard_fail", USER_ACTION_FIELDS, contract, "src/output/contract.ts", "User-action field contract");
+  addMissingTokenFindings(findings, "output", "hard_fail", USER_ACTION_FIELDS, controlSource, "src/output/control.ts", "Typed user-action source");
+  addMissingTokenFindings(findings, "output", "amend_required", USER_ACTION_FIELDS, docs, "docs/output.md", "User-action docs");
+  for (const token of ['| "approval"', 'kind: "review_failure"', 'approval: "approval_required"']) {
+    if (!controlSource.includes(token)) {
+      findings.push({ rule: "output", severity: "hard_fail", message: `Recovery must not imply approval and only userAction.kind=approval may request it; missing ${token}.`, file: "src/output/control.ts" });
+    }
+  }
   addMissingTokenFindings(findings, "output", "hard_fail", DISPLAY_FIELDS, source, "src/output/envelope.ts", "Display source");
   addMissingTokenFindings(findings, "output", "amend_required", DISPLAY_FIELDS, docs, "docs/output.md", "Display docs");
   addMissingTokenFindings(findings, "output", "hard_fail", RECOVERY_FIELDS, source, "src/output/envelope.ts", "Recovery source");

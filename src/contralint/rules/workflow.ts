@@ -15,10 +15,10 @@ const DOCUMENT_GATE_SEQUENCE = [
   "hy_verify",
   "hy_commit",
   "hy_merge",
+  "hy_reset",
 ];
 
 const DOCUMENT_GATE_CONTRACT_FILES = [
-  "AGENTS.md",
   "src/server.ts",
   "docs/state-machine.md",
   "docs/skills/core/SKILL.md",
@@ -87,10 +87,29 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
       findings.push({
         rule: "workflow",
         severity: "hard_fail",
-        message: "Agent contract must preserve the complete hy_status -> docs/plan/approve -> branch/edit/docs/verify -> commit/merge order.",
+        message: "Public workflow must preserve hy_status -> docs/plan/approve -> branch/edit/docs/verify -> hy_commit -> hy_merge -> hy_reset.",
         file,
         detail: { expected: DOCUMENT_GATE_SEQUENCE },
       });
+    }
+  }
+  for (const file of DOCUMENT_GATE_CONTRACT_FILES) {
+    const text = readText(context.root, file);
+    for (const removed of ["hy_ci", "hy_chain"]) {
+      if (text.includes(removed)) {
+        findings.push({
+          rule: "workflow",
+          severity: "hard_fail",
+          message: `${removed} is a removed public tool; CI and downstream synchronization belong to internal commit.ci and merge.sync stages.`,
+          file,
+        });
+      }
+    }
+  }
+  const publicContract = DOCUMENT_GATE_CONTRACT_FILES.map(file => readText(context.root, file)).join("\n");
+  for (const stage of ["commit.ci", "merge.sync"]) {
+    if (!publicContract.includes(stage)) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `Public workflow documentation must identify ${stage} as an internal stage.`, file: "docs/state-machine.md" });
     }
   }
   const mergeSource = [
@@ -134,16 +153,23 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
   }
   const ci = readText(context.root, "templates/hy-workflow.yml");
   for (const token of [
-    "No supported project ecosystem detected",
-    "No native verification command detected",
-    "ci.commands must be a non-empty string array",
-    "hy-workflow.lint.v1",
-    "report.counts.docs <= 0",
-    "report.ok !== true",
-    "report.counts.errors > 0",
+    "__HY_WORKFLOW_PACKAGE_SPEC__",
+    "HY_WORKFLOW_RUNTIME_CONFIG_SOURCE: hy-workflow.runtime-config-source.v1",
+    "hy-workflow lint --json",
   ]) {
     if (!ci.includes(token)) {
-      findings.push({ rule: "workflow", severity: "hard_fail", message: "Required CI must fail closed: missing " + token + ".", file: "templates/hy-workflow.yml" });
+      findings.push({ rule: "workflow", severity: "hard_fail", message: "Centralized thin CI contract is missing " + token + ".", file: "templates/hy-workflow.yml" });
+    }
+  }
+  for (const forbidden of ["ci.commands", "__HY_WORKFLOW_LINT_BUNDLE_BASE64__", "No supported project ecosystem detected", "No native verification command detected"]) {
+    if (ci.includes(forbidden)) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: "Thin CI must not infer native verification or embed lint payloads: " + forbidden + ".", file: "templates/hy-workflow.yml" });
+    }
+  }
+  const commit = readText(context.root, "src/tools/commit.ts");
+  for (const token of ['stage: "commit.ci"', "noChecks", "noEffectiveChecks", "CI_CHECKS_REQUIRED"]) {
+    if (!commit.includes(token)) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: "Internal commit.ci must fail closed without real effective checks: missing " + token + ".", file: "src/tools/commit.ts" });
     }
   }
   return findings;

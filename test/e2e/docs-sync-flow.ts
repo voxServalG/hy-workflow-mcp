@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -9,6 +9,9 @@ import { handleVerify } from "../../src/tools/verify.js";
 import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -51,6 +54,8 @@ function editState(plan: PlanDoc): WorkflowState {
 const originalCwd = cwd();
 useRuntimeHome("hy-docs-sync-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-docs-sync-"));
+const legacyGraphPath = join(root, ".git", "hy-workflow", "docs-graph.json");
+let legacyGraphContent = "";
 
 try {
   run("git init -b main", root);
@@ -73,7 +78,7 @@ try {
   run("git update-ref refs/remotes/origin/main HEAD", root);
 
   mkdirSync(join(root, ".git", "hy-workflow"), { recursive: true });
-  writeFileSync(join(root, ".git", "hy-workflow", "docs-graph.json"), JSON.stringify({
+  legacyGraphContent = JSON.stringify({
     digest: "legacy",
     docsDir: "docs",
     entryPoints: ["docs/index.md"],
@@ -91,7 +96,9 @@ try {
         referencedBy: ["docs/index.md"],
       },
     },
-  }, null, 2) + "\n", "utf-8");
+  }, null, 2) + "\n";
+  writeFileSync(legacyGraphPath, legacyGraphContent, "utf-8");
+  chmodSync(legacyGraphPath, 0o000);
 
   chdir(root);
   writeFileSync(join(root, "src", "app.ts"), "export const value = 2;\n");
@@ -117,10 +124,10 @@ try {
     throw new Error("after_edit should store implementation digest");
   }
   if (!existsSync(projectPaths(root).docsGraph)) {
-    throw new Error("after_edit should migrate DocsGraph cache into the identity-scoped user cache");
+    throw new Error("after_edit should create DocsGraph only in the identity-scoped user cache");
   }
-  if (!existsSync(join(root, ".git", "hy-workflow", "docs-graph.json"))) {
-    throw new Error("DocsGraph migration must preserve the legacy project-local cache");
+  if (!existsSync(legacyGraphPath)) {
+    throw new Error("the ignored legacy project-local cache must remain untouched");
   }
 
   const missingSync = await handleVerify();
@@ -184,6 +191,11 @@ try {
   if (!deleteSynced.graphInfo.brokenLinkDetails.some((detail: string) => detail.includes("docs/index.md") && detail.includes("docs/usage.md"))) {
     throw new Error(`broken link details should identify source and deleted target, got ${JSON.stringify(deleteSynced.graphInfo)}`);
   }
+  chmodSync(legacyGraphPath, 0o644);
+  if (readFileSync(legacyGraphPath, "utf-8") !== legacyGraphContent) {
+    throw new Error("document gates must never migrate or rewrite the legacy project-local DocsGraph cache");
+  }
 } finally {
+  try { chmodSync(legacyGraphPath, 0o644); } catch {}
   chdir(originalCwd);
 }

@@ -76,7 +76,7 @@ if (process.platform !== "win32") {
   assert(payload.tools?.["docs-gardener"]?.version === "docs-gardener-test", "non-interactive setup must inspect the isolated docs-gardener version");
   assert(fs.realpathSync(payload.tools["docs-gardener"].executable) === fs.realpathSync(docsGardener), "non-interactive setup must not depend on a developer-machine docs-gardener binary");
   assert(/^[0-9a-f]{64}$/.test(payload.tools["docs-gardener"].catalogHash), "non-interactive setup must complete the docs-gardener MCP catalog handshake");
-  assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,AGENTS.md,hy-workflow.json", "non-interactive dry-run should report the three planned managed artifacts");
+  assert(payload.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json", "non-interactive dry-run should report only the config and thin workflow");
   assert(gitStatus(root) === before, "non-interactive dry-run must not touch the project");
   assert(fs.readFileSync(inheritedCodexConfig, "utf8") === poisonConfig, "non-interactive dry-run must not read or rewrite inherited Codex config");
   assert(!fs.existsSync(path.join(isolatedCodexHome, "config.toml")), "non-interactive dry-run must not create isolated Codex config");
@@ -84,6 +84,12 @@ if (process.platform !== "win32") {
   const removedLocal = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--local", "--json"], { cwd: root, env, encoding: "utf-8" });
   const removedError = JSON.parse(removedLocal.stdout).error;
   assert(removedLocal.status === 1 && removedError.code === "CLI_USAGE" && removedError.message.includes("--local has been removed"), "removed local mode should fail with a typed migration message");
+
+  const sharedCompat = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--shared", "--dry-run", "--json"], { cwd: root, env, encoding: "utf-8" });
+  assert(sharedCompat.status === 0 && JSON.parse(sharedCompat.stdout).mode === "shared", `deprecated --shared must remain an inert compatibility input for canonical setup: ${sharedCompat.stderr || sharedCompat.stdout}`);
+
+  const migrationCompat = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--migrate-legacy-clients", "--dry-run", "--json"], { cwd: root, env, encoding: "utf-8" });
+  assert(migrationCompat.status === 0 && fs.readFileSync(inheritedCodexConfig, "utf8") === poisonConfig, `deprecated client migration input must be a no-op and leave old files unread and untouched: ${migrationCompat.stderr || migrationCompat.stdout}`);
 
   const inverted = spawnSync(process.execPath, [server, "unset", "--yes", "--clients", "codex", "--action", "setup", "--json"], { cwd: root, env, encoding: "utf-8" });
   const invertedError = JSON.parse(inverted.stdout).error;
@@ -93,10 +99,9 @@ if (process.platform !== "win32") {
   const bareCiError = JSON.parse(bareCi.stdout).error;
   assert(bareCi.status === 1 && bareCiError.code === "SETUP_PREFLIGHT_FAILED" && /exact reviewed commands/i.test(bareCiError.message), "bare non-interactive CI acceptance must fail closed");
 
-  const bareArtifacts = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--accept-artifact-changes", "--ci-command", "npm test", "--json"], { cwd: root, env, encoding: "utf-8" });
-  const bareArtifactError = JSON.parse(bareArtifacts.stdout).error;
-  assert(bareArtifacts.status === 1 && bareArtifactError.code === "SETUP_ARTIFACT_DRIFT" && /exact reviewed before\/after hashes/i.test(bareArtifactError.message), "bare non-interactive artifact acceptance must fail closed");
-  assert(gitStatus(root) === before, "rejected bare approvals must not touch the project");
+  const bareArtifacts = spawnSync(process.execPath, [server, "setup", "--yes", "--clients", "codex", "--accept-artifact-changes", "--ci-command", "npm test", "--dry-run", "--json"], { cwd: root, env, encoding: "utf-8" });
+  assert(bareArtifacts.status === 0 && JSON.parse(bareArtifacts.stdout).ok, "artifact acceptance must not demand hash replies when no existing file would be overwritten");
+  assert(gitStatus(root) === before, "dry-run compatibility and approval checks must not touch the project");
 
   const missing = spawnSync(process.execPath, [server, "setup", "--clients", "codex", "--json"], { cwd: root, env, encoding: "utf-8" });
   assert(missing.status === 1, "non-TTY setup without --yes should fail");

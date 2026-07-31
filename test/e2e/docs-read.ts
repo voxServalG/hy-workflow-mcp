@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -9,6 +9,9 @@ import { handleReadDocs } from "../../src/tools/read_docs.js";
 import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -70,6 +73,7 @@ try {
   writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   run("git add .", root);
   run("git commit -m init", root);
+  chmodSync(join(root, "AGENTS.md"), 0o000);
   chdir(root);
 
   const plan = basePlan();
@@ -97,8 +101,8 @@ try {
     throw new Error("before_plan should create DocsGraph only in the identity-scoped user cache");
   }
   const baselineFiles = bsnap.files.map((file: any) => file.path);
-  if (!baselineFiles.includes("guides/README.md") || !baselineFiles.includes("AGENTS.md")) {
-    throw new Error(`before_plan should consistently read custom docsDir README and AGENTS.md supplemental entries, got ${baselineFiles.join(", ")}`);
+  if (!baselineFiles.includes("guides/README.md") || baselineFiles.includes("AGENTS.md")) {
+    throw new Error(`before_plan should read configured docs while leaving legacy AGENTS.md unread, got ${baselineFiles.join(", ")}`);
   }
 
   const stateWithBaseline = readState();
@@ -123,17 +127,19 @@ try {
   if (!(missingAudit.error?.message ?? String(missingAudit.error)).includes("before_approve")) {
     throw new Error(`hy_approve should require before_approve audit, got ${JSON.stringify(missingAudit)}`);
   }
+  const stateBeforeDrift = readState();
 
   writeFileSync(join(root, "guides", "workflow.md"), `${DOC_BODY}\nNew approval-relevant workflow fact.\n`);
   const driftAudit = await handleReadDocs({ stage: "before_approve" });
-  if (driftAudit.changedSinceBaseline !== true) {
+  if (driftAudit.changedSinceBaseline !== true || driftAudit.status !== "warning") {
     throw new Error(`before_approve should report document drift, got ${JSON.stringify(driftAudit)}`);
   }
   const driftApproval = await handleApprove({ approved: "approve", note: "user approved" });
-  if (!String(driftApproval.hint).includes("document changes since before_plan")) {
-    throw new Error(`hy_approve should reject before_approve document drift, got ${JSON.stringify(driftApproval)}`);
+  if (driftApproval.phase !== "branch" || driftApproval.approved !== true) {
+    throw new Error(`digest drift alone must not consume another user approval; the agent decides whether facts require replanning: ${JSON.stringify(driftApproval)}`);
   }
 
+  writeState(stateBeforeDrift);
   writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   const audit = await handleReadDocs({ stage: "before_approve" });
   if (audit.phase !== "approve" || audit.stage !== "before_approve") {
@@ -172,5 +178,6 @@ try {
     throw new Error(`hy_approve should pass after before_approve, got ${JSON.stringify(approved)}`);
   }
 } finally {
+  try { chmodSync(join(root, "AGENTS.md"), 0o644); } catch {}
   chdir(originalCwd);
 }

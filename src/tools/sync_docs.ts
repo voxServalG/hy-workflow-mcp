@@ -15,11 +15,12 @@ import { ensureGraph, incrementalUpdate, detectBrokenLinks } from "../docs_graph
 import { isDocumentPath, pathInsideDocs, resolveDocsDir } from "../docs_paths.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { requireRuntimeConfig } from "../config.js";
+import { shouldIgnoreDocumentPath } from "../policy/docs.js";
+import { isRuntimeIgnoredArtifact } from "../policy/artifacts.js";
 
 export function isSyncDocumentPath(file: string): boolean {
+  if (shouldIgnoreDocumentPath(file)) return false;
   return file === "README.md"
-    || file === "AGENTS.md"
-    || file === ".github/workflows/hy-workflow.yml"
     || file.startsWith("templates/")
     || file.startsWith("docs/")
     || isDocumentPath(file);
@@ -70,7 +71,7 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       error: "after_edit document audit is required before hy_sync_docs.",
       hint: "Call hy_read_docs with { stage: \"after_edit\" } after implementation edits, then call hy_sync_docs before hy_verify.",
       allowedTools: ["hy_read_docs", "hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
 
@@ -86,7 +87,7 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
 
@@ -98,18 +99,27 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       error: "Implementation diff changed after hy_read_docs(after_edit).",
       hint: "Rerun hy_read_docs with { stage: \"after_edit\" } so the document sync audit matches the current implementation diff.",
       allowedTools: ["hy_read_docs", "hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
 
+  if (isRuntimeIgnoredArtifact(root, configuredDocsDir)) {
+    return toolResult("edit", {
+      phase: state.phase,
+      error: "Configured project.docsDir points to an ignored legacy or runtime path.",
+      hint: "Choose a maintained documentation directory outside legacy injection and runtime paths.",
+      allowedTools: ["hy_status"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
+    });
+  }
   const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
   if (!resolvedDocsDir.ok) {
     return toolResult("edit", {
       phase: state.phase,
       error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
-      hint: "Update hy-workflow.json project.docsDir to a project-relative directory inside the repository.",
+      hint: "Update project.docsDir in the authoritative project configuration to a project-relative directory inside the repository.",
       allowedTools: ["hy_status"],
-      blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
   }
   const { docsDir } = resolvedDocsDir;
@@ -137,6 +147,7 @@ export async function handleSyncDocs(): Promise<ToolResult> {
 
   // ── Write syncDocs record ─────────────────────────────────
   const next = { ...state };
+  next.stage = "edit.sync_docs";
   next.syncDocs = {
     time: new Date().toISOString(),
     planHash,
@@ -160,6 +171,8 @@ export async function handleSyncDocs(): Promise<ToolResult> {
 
   return toolResult("verify", {
     phase: "edit",
+    stage: "edit.sync_docs",
+    status: graphInfo.brokenLinks > 0 ? "warning" : "passed",
     synced: true,
     allowedDocs,
     graphInfo,
@@ -170,6 +183,9 @@ export async function handleSyncDocs(): Promise<ToolResult> {
     },
     hint: "Use standard file editing tools only within plan.scope for documentation sync. When done, call hy_verify.",
     allowedTools: ["hy_verify", "hy_edit", "hy_status"],
-    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_commit", "hy_merge"],
+    nextAction: { tool: "hy_verify", phase: "edit", stage: "verify.run", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
   });
 }

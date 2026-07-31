@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { lintDocs } from "../../templates/lint/docs.mjs";
+import { resolveLintPolicyRule } from "../../src/policy/effective.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -57,4 +58,21 @@ function config(warning = 200, error = 500): Record<string, unknown> {
   const project = root();
   const result = lintDocs({ root: project, config: config() });
   assert(result.findings.some(item => item.rule === "D001" && item.severity === "error"), `missing docs system must fail D001: ${JSON.stringify(result.findings)}`);
+}
+
+{
+  const project = root();
+  write(project, "docs/index.md", "# Documentation\n\none\n\ntwo\n\nthree\n");
+  const runtimeConfig: any = config();
+  runtimeConfig.policy = {
+    profile: "standard",
+    overrides: [{ files: ["docs/**"], rules: { "docs.max-lines": { severity: "advisory", warning: 2, error: 3 } } }],
+  };
+  const result = lintDocs({
+    root: project,
+    config: runtimeConfig,
+    resolvePolicyRule: (rule: any, file?: string) => resolveLintPolicyRule(runtimeConfig, rule, file),
+  });
+  assert(result.findings.some(item => item.rule === "D005" && item.severity === "advisory"), `path policy must downgrade document size to advisory: ${JSON.stringify(result.findings)}`);
+  assert(!result.findings.some(item => item.rule === "D005" && item.severity === "error"), "advisory document policy must not emit a blocking error");
 }

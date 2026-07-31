@@ -5,7 +5,7 @@ import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const REQUIRED_SCRIPTS = ["clean", "build", "lint", "lint:contract", "test", "test:unit", "test:e2e", "test:contract", "test:acceptance", "test:windows", "verify", "prepack", "prepublishOnly"];
 const FORBIDDEN_PACK_PREFIXES = [".hy/", ".opencode/", ".codex/", "test/", "src/", "node_modules/", "codelint.json", "doclint.json", "docs-gardener.json"];
-const REQUIRED_PACK_FILES = ["dist", "docs", "templates", "AGENTS.md", "README.md"];
+const REQUIRED_PACK_FILES = ["dist", "docs", "schemas", "templates", "README.md"];
 
 export function checkNpmContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
@@ -46,8 +46,8 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
     for (const file of ["code.mjs", "docs.mjs", "fs.mjs", "index.mjs", "markdown.mjs", "python.mjs", "rust.mjs"]) {
       if (!packFiles.includes(`templates/lint/${file}`)) findings.push({ rule: "npm", severity: "hard_fail", message: `npm pack must include templates/lint/${file}.`, file: "package.json" });
     }
-    if (!packFiles.includes("AGENTS.md")) {
-      findings.push({ rule: "npm", severity: "hard_fail", message: "npm pack must include the canonical managed AGENTS migration source.", file: "package.json" });
+    if (packFiles.includes("AGENTS.md")) {
+      findings.push({ rule: "npm", severity: "hard_fail", message: "npm pack must not include AGENTS.md; it is not a setup artifact or contract source.", file: "package.json" });
     }
   }
   const publishWorkflowPath = ".github/workflows/npm-publish.yml";
@@ -88,15 +88,30 @@ export function checkNpmContracts(context: ContractRuleContext): ContractFinding
   for (const [file, tokens] of Object.entries({
     "test/acceptance/runner.ts": ["packAndInstall", "--package-archive", "expectedScenarios", "skipped: []", "terminateAllAcceptanceChildren"],
     "test/acceptance/harness.ts": ["run(\"npm\", [\"pack\"", "run(\"npm\", [\"install\"", "GIT_TERMINAL_PROMPT", "CODEX_HOME", "git push", "npm publish"],
-    "test/acceptance/scenarios.ts": ["concurrency-32", "setup-failpoint-child.mjs", "runRepositoryLintPressure", "assertCompatibilityUnchanged", 'run("hy-workflow", ["lint", "--json"]', "hy_read_docs", "--accept-artifact-changes", "--review-artifact", "--ci-command", "--print-managed-rules"],
+    "test/acceptance/scenarios.ts": ["concurrency-32", "setup-failpoint-child.mjs", "runRepositoryLintPressure", "assertCompatibilityUnchanged", 'run("hy-workflow", ["lint", "--json"]', "hy_read_docs"],
     "test/acceptance/setup-failpoint-child.mjs": ["internal-setup-test-hooks", "dist", "setup-cli.js", "runSetupCli"],
     "test/acceptance/lint-report.ts": ["validateLintPressureEnvelope", "hy-workflow.lint.v1", "notApplicableRules", "notConfiguredRules", "D001", "C005"],
+    "test/acceptance/baseline-matrix.json": ["seamless-upgrade", "INC-UPGRADE-INJECTION-INTERFERENCE"],
+    "test/acceptance/baseline-scenarios.ts": ["runSeamlessUpgradeIncident", "legacyFiles", "byte-for-byte"],
     "test/acceptance/matrix.json": ["https://", "5e16a5c9e57e81f6031a23faa2ace52205fa8242"],
   })) {
     const text = readText(context.root, file);
     for (const token of tokens) {
       if (!text.includes(token)) findings.push({ rule: "npm", severity: "hard_fail", message: `Acceptance contract is missing ${token}.`, file });
     }
+  }
+  const acceptance = readText(context.root, "test/acceptance/scenarios.ts");
+  for (const removed of ["--print-managed-rules", "auto-migrate stale AGENTS", "project-shadow", "--ci-command"]) {
+    if (acceptance.includes(removed)) {
+      findings.push({ rule: "npm", severity: "hard_fail", message: `Acceptance must test seamless upgrade and the two-artifact boundary, not removed legacy behavior: ${removed}.`, file: "test/acceptance/scenarios.ts" });
+    }
+  }
+  const harness = readText(context.root, "test/acceptance/harness.ts");
+  if (!harness.includes('new Set(["hy-workflow.json", ".github/workflows/hy-workflow.yml"')) {
+    findings.push({ rule: "npm", severity: "hard_fail", message: "Acceptance project-boundary oracle must allow exactly the two fresh setup artifacts.", file: "test/acceptance/harness.ts" });
+  }
+  if (harness.includes('"AGENTS.md", ...additionalAllowed')) {
+    findings.push({ rule: "npm", severity: "hard_fail", message: "Acceptance boundary must not treat AGENTS.md as a setup artifact.", file: "test/acceptance/harness.ts" });
   }
   for (const file of ["test/acceptance/scenarios.ts", "test/acceptance/runner.ts", "test/acceptance/lint-report.ts"]) {
     const text = readText(context.root, file);

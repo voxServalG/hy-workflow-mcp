@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 
 export type AcceptanceRepo = {
   id: string;
-  category: "legacy" | "oss";
+  category: "oss";
   url: string;
   mirrorEnv?: string;
   commit: string;
@@ -420,15 +420,9 @@ export async function assertProjectBoundary(
 ): Promise<string[]> {
   const result = await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env });
   const changed = result.stdout.split(/\r?\n/).filter(Boolean).map(line => line.slice(3).replace(/^"|"$/g, ""));
-  const allowed = new Set(["hy-workflow.json", ".github/workflows/hy-workflow.yml", "AGENTS.md", ...additionalAllowed]);
+  const allowed = new Set(["hy-workflow.json", ".github/workflows/hy-workflow.yml", ...additionalAllowed]);
   const illegal = changed.filter(file => !allowed.has(file));
-  if (illegal.length) throw new Error("setup changed files outside its three-file team-artifact boundary: " + illegal.join(", "));
-  for (const forbidden of [".hy", ".codex", ".mcp.json", "codelint.json", "doclint.json", "docs-gardener.json"]) {
-    if (existsSync(join(root, forbidden)) && !changed.includes(forbidden)) {
-      // Existing tracked legacy artifacts are migration inputs; setup must not create new ones.
-      continue;
-    }
-  }
+  if (illegal.length) throw new Error("setup changed files outside its two-file team-artifact boundary: " + illegal.join(", "));
   return changed;
 }
 

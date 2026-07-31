@@ -1,4 +1,4 @@
-import { readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computePlanHash, currentBranch, type PlanDoc } from "../state.js";
+import { approvalMatchesPlan, readState, writeState, transition, assertPhase, projectRoot, getBaseBranch, computeImplementationDigest, computePlanHash, currentBranch, type PlanDoc } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { requireRuntimeConfig } from "../config.js";
 import { commitScope, push, createPr, inspectScopedWorktree, resolveHeadCommit, resolveOriginRepository, parseCommitRecovery, checkCi, type CommitRecoveryRecord } from "../git.js";
@@ -57,6 +57,8 @@ function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown
 
   return toolResult("edit", {
     phase: "edit",
+    stage: "edit.implementation",
+    status: "failed",
     error,
     display: {
       title: "Verified implementation changed — returned to edit",
@@ -69,6 +71,9 @@ function evidenceDriftResult(state: ReturnType<typeof readState>, error: unknown
       tool: "hy_edit",
       instruction: "Re-enter edit, refresh after_edit and sync_docs evidence, then rerun verification.",
     },
+    nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
+    control: { automatic: true, stop: false, reason: "repair_required" },
+    userAction: null,
   });
 }
 
@@ -118,10 +123,16 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     });
   }
 
-  if (!state.approval) {
+  if (!approvalMatchesPlan(state.approval, state.plan)) {
     return toolResult("commit", {
-      error: "Missing approval state",
-      hint: "Reset the invalid workflow state before committing.",
+      error: {
+        type: "workflow_state",
+        subtype: "approval_missing",
+        code: "APPROVAL_PLAN_MISMATCH",
+        message: "The persisted approval does not match the current PlanDoc.",
+        hint: "Return to plan review. Do not commit work whose material intent was not approved.",
+      },
+      hint: "Reset or re-plan the invalid workflow state before committing.",
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_status"],
@@ -211,6 +222,8 @@ export async function handleCommit(args: { title: string; body: string }): Promi
 
   const digest = state.verifiedImplementationDigest ?? "none";
   const body = buildCommitBody({ body: args.body, plan: state.plan, verifyHash: digest });
+  state.stage = "commit.publish";
+  writeState(state);
 
   let c: ReturnType<typeof commitScope>;
   let noScopedChanges: boolean;
@@ -377,6 +390,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     };
     activeState = {
       ...state,
+      stage: "commit.publish",
       approval: { ...state.approval, commitRecovery } as typeof state.approval,
     };
     try {
@@ -407,6 +421,7 @@ export async function handleCommit(args: { title: string; body: string }): Promi
 
   activeState.prNumber = pr.prNumber ?? null;
   activeState.plan!.pr_number = activeState.prNumber;
+  activeState.stage = "commit.ci";
   writeState(activeState);
   const action = pr.reused ? "reused" : "created";
 
@@ -441,9 +456,14 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor }, checks: ciResult.checks },
       requires_user: true,
       stop_here: true,
+      stage: "commit.ci",
+      status: "pending",
       display: { title: "CI query failed", body: `PR #${activeState.prNumber} was created but CI status could not be read.` },
       hint: "Retry hy_commit to re-check CI status; it will not create a duplicate commit or PR.",
       allowedTools: ["hy_commit", "hy_status"],
+      nextAction: { tool: "hy_commit", phase: "commit", stage: "commit.ci", automatic: false },
+      control: { automatic: false, stop: true, reason: "wait_required" },
+      userAction: { kind: "wait", instruction: "Retry the same CI query after the temporary failure clears." },
       message: `PR #${activeState.prNumber} ${action}. CI query failed — retry hy_commit.`,
     });
   }
@@ -474,9 +494,14 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       display: { title: "CI checks required", body: `${reason} for PR #${activeState.prNumber}.` },
       requires_user: true,
       stop_here: true,
+      stage: "commit.ci",
+      status: "blocked",
       allowedTools: ["hy_commit", "hy_status"],
       blockedTools: ["hy_merge"],
       recovery: { tool: "hy_commit", instruction: "Ensure the required Verify check completes successfully, then rerun hy_commit." },
+      nextAction: { tool: "hy_commit", phase: "commit", stage: "commit.ci", automatic: false },
+      control: { automatic: false, stop: true, reason: "external_action_required" },
+      userAction: { kind: "external_action", instruction: "Restore the required CI check, then retry hy_commit." },
       message: `${reason}. Merge remains blocked — retry hy_commit.`,
     });
   }
@@ -497,10 +522,15 @@ export async function handleCommit(args: { title: string; body: string }): Promi
         display: { title: "CI still pending", body: `PR #${activeState.prNumber} checks are still running.` },
         requires_user: true,
         stop_here: true,
+        stage: "commit.ci",
+        status: "pending",
         hint: "CI is still pending after bounded polling. Retry hy_commit later; it will resume polling without creating duplicate commits.",
         allowedTools: ["hy_commit", "hy_status"],
         blockedTools: ["hy_merge"],
         recovery: { tool: "hy_commit", instruction: "Wait for pending CI checks, then rerun hy_commit to continue polling." },
+        nextAction: { tool: "hy_commit", phase: "commit", stage: "commit.ci", automatic: false },
+        control: { automatic: false, stop: true, reason: "wait_required" },
+        userAction: { kind: "wait", instruction: "Wait for CI checks; no new approval is needed." },
         message: `CI is still pending after ${timeoutSeconds}s. Retry hy_commit after checks complete.`,
       });
     }
@@ -517,20 +547,28 @@ export async function handleCommit(args: { title: string; body: string }): Promi
       data: { executor: { commit: c.executor, push: p.executor, createPr: pr.executor, ci: ciResult.executor } },
       requires_user: true,
       stop_here: true,
+      stage: "edit.implementation",
+      status: "failed",
       display: { title: "CI not all green", body: `Failed checks: ${failedNames.join(", ")}. Returned to edit phase.` },
       hint: "CI is not green. Read failed checks before editing. After fixes, run hy_verify, then hy_commit again.",
       allowedTools: ["hy_edit", "hy_verify", "hy_status"],
       blockedTools: ["hy_merge"],
       recovery: { tool: "hy_edit", instruction: "Fix CI failures locally, rerun hy_verify, then hy_commit." },
+      nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
+      control: { automatic: true, stop: false, reason: "repair_required" },
+      userAction: null,
       message: `CI not all green. Failed: ${failedNames.join(", ")}. Fix issues and re-run hy_commit.`,
     });
   }
 
   // CI all green — advance to merge
   const next = transition(activeState, "merge");
+  next.stage = "merge.reconcile";
   writeState(next);
 
   return toolResult("merge", {
+    stage: "merge.reconcile",
+    status: "passed",
     prNumber: activeState.prNumber,
     url: pr.url,
     reused: Boolean(pr.reused),
@@ -542,6 +580,9 @@ export async function handleCommit(args: { title: string; body: string }): Promi
     },
     hint: "Continue to hy_merge. The approved workflow does not stop after CI success.",
     allowedTools: ["hy_merge", "hy_status"],
+    nextAction: { tool: "hy_merge", phase: "merge", stage: "merge.reconcile", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
     message: `PR #${activeState.prNumber} ${action}. Required Verify and all effective CI checks passed. Ready to merge.`,
   });
 }

@@ -1,18 +1,23 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
+import { isWorktreeClean } from "../../src/git.js";
+import { MINIMAL_PROJECT_CONTRACT, writeDeployment } from "../../src/runtime/deployment.js";
 import { acquireMergeLock, computeImplementationDigest, readState, statePath, writeState } from "../../src/state.js";
 import { handleApprove } from "../../src/tools/approve.js";
 import { handleCommit } from "../../src/tools/commit.js";
 import { handlePlan } from "../../src/tools/plan.js";
 import { handleReset } from "../../src/tools/reset.js";
 import { handleStatus } from "../../src/tools/status.js";
+import { isSyncDocumentPath } from "../../src/tools/sync_docs.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
 import type { MergeReceipt } from "../../src/merge-recovery.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
+
+process.env.HY_WORKFLOW_RUNTIME_CONFIG_SOURCE = "hy-workflow.runtime-config-source.v1";
 
 function run(cmd: string, root: string): string {
   return execSync(cmd, { cwd: root, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -57,6 +62,10 @@ function assertErrorCode(error: unknown, code: string): void {
   if (actual !== code) throw new Error(`expected ${code}, got ${JSON.stringify(error)}`);
 }
 
+assert(isSyncDocumentPath("docs/README.md"), "project documentation should remain eligible for document sync");
+assert(!isSyncDocumentPath("AGENTS.md"), "legacy AGENTS.md must never enter document sync");
+assert(!isSyncDocumentPath(".github/workflows/hy-workflow.yml"), "the CI workflow is a code and security surface, not documentation");
+
 const originalCwd = cwd();
 const runtimeHome = useRuntimeHome("hy-state-safety-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-state-safety-"));
@@ -79,11 +88,27 @@ try {
   run("git init -b main", root);
   run("git config user.name test", root);
   run("git config user.email test@example.com", root);
+  mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, "docs"), { recursive: true });
   writeFileSync(join(root, "README.md"), "initial\n");
-  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "main", codeExt: [".ts"], codeDirs: ["src"], docsDir: "docs" } }, null, 2));
-  run("git add README.md hy-workflow.json", root);
+  writeFileSync(join(root, "src", "app.ts"), "export const value = 1;\n");
+  writeFileSync(join(root, "docs", "README.md"), "# Test documentation\n");
+  writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "main", codeExt: [".ts"], codeDirs: ["src"], docsDir: "docs" }, codelint: { lintDirs: ["src"] } }, null, 2));
+  run("git add README.md src/app.ts docs/README.md hy-workflow.json", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
+  writeDeployment(root, { setupVersion: "legacy", mode: "shared", clients: [], projectFiles: ["AGENTS.md", "hy-workflow.json"], tools: {}, artifacts: {} });
+  writeFileSync(join(root, "AGENTS.md"), "legacy injected rules\n");
+  mkdirSync(join(root, ".codex"), { recursive: true });
+  writeFileSync(join(root, ".codex", "config.toml"), "legacy project client config\n");
+  writeFileSync(join(root, "codelint.json"), "{ invalid legacy config\n");
+  chmodSync(join(root, "AGENTS.md"), 0o000);
+  chmodSync(join(root, ".codex", "config.toml"), 0o000);
+  chmodSync(join(root, "codelint.json"), 0o000);
+  const inertManifest = buildImplementationManifest(root);
+  assert(inertManifest.changed.length === 0, `legacy injections must not enter implementation manifest: ${JSON.stringify(inertManifest)}`);
+  const inertClean = isWorktreeClean(root);
+  assert(inertClean.ok && inertClean.value === true, `legacy injections must not make the workflow worktree dirty: ${JSON.stringify(inertClean)}`);
   chdir(root);
 
   const firstLock = acquireMergeLock();
@@ -128,19 +153,16 @@ try {
   });
   assert(statePath().startsWith(runtimeHome), `workflow state should live under isolated user state: ${statePath()}`);
   assert(!existsSync(join(root, ".git", "hy-workflow", "workflow.json")), "writeState must not create project-local git state");
-  // Auto-reset via hy_plan from done phase: should clear all derived state and return to plan
+  // A new plan must never reset a completed or active pipeline implicitly.
   writeState({ ...readState(), phase: "done" as const });
-  const resetResult = await handlePlan({ task: "new task after reset", plan: null });
-  const resetState = readState();
-  assert(resetState.phase === "plan", `auto-reset should return to plan, got ${resetState.phase}`);
-  assert(resetState.approval === null, "reset should clear stale approval");
-  assert(resetState.pendingAmendment === null, "reset should clear pending amendments");
-  assert(resetState.implementationManifest === null, "reset should clear implementation manifest");
-  assert(resetState.documentReads === null, "reset should clear document reads");
-  assert(resetState.syncDocs === null, "reset should clear sync docs");
-  assert(resetState.mergeReceipt === null, "reset should clear a stale merge receipt");
-  assert(resetState.verifiedImplementationDigest === null, "reset should clear verified implementation digest");
-  assert(resetResult.next === "plan", `reset should stop at plan (missing before_plan baseline), got ${JSON.stringify(resetResult)}`);
+  const beforeIllegalPlan = JSON.stringify(readState());
+  try {
+    await handlePlan({ task: "new task before explicit reset", plan: null });
+    throw new Error("hy_plan should reject done phase before explicit reset");
+  } catch (error: any) {
+    assert(error?.name === "StateError", `expected StateError before reset, got ${JSON.stringify(error)}`);
+  }
+  assert(JSON.stringify(readState()) === beforeIllegalPlan, "hy_plan must preserve completed state and approval until hy_reset");
 
   writeState({ ...baseState("merge"), branch: "fix/old", prNumber: 123, mergeReceipt });
   const explicitReset = await handleReset();
@@ -173,20 +195,20 @@ try {
   assert(readState().mergeReceipt === null, "writing a new PlanDoc should clear merge receipt state");
 
   writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
-  const rejected = await handleApprove({ approved: "needs changes", note: "reject" });
-  assert(rejected.approved === false, "rejected approve should report approved false");
-  assert(readState().approval === null, "rejected approve should not leave approval true in status");
+  const beforeInvalid = JSON.stringify(readState());
+  const invalidText = await handleApprove({ approved: "needs changes", note: "ambiguous" });
+  assert(invalidText.error?.code === "APPROVAL_DECISION_INVALID", "unknown approval text should return a stable validation error");
+  assert(JSON.stringify(readState()) === beforeInvalid, "unknown approval text must leave workflow state byte-equivalent");
+  assert(invalidText.userAction === null && invalidText.nextAction.tool === "hy_approve", "agent should repair an invalid enum without asking again");
 
-  writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
-  const trueString = await handleApprove({ approved: "true", note: "legacy true should reject" });
-  assert(trueString.approved === false, "approved='true' should be treated as rejection");
-  assert(readState().phase === "plan", "approved='true' should return to plan instead of branch");
-  assert(readState().approval === null, "approved='true' rejection should clear stale approval");
+  const booleanInput = await handleApprove({ approved: true as any, note: "boolean is invalid" });
+  assert(booleanInput.error?.code === "APPROVAL_DECISION_INVALID", "boolean approved input should be invalid without crashing");
+  assert(JSON.stringify(readState()) === beforeInvalid, "boolean approval input must not reject or mutate the plan");
 
-  writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
-  const booleanInput = await handleApprove({ approved: true as any, note: "boolean should reject" });
-  assert(booleanInput.approved === false, "boolean approved input should be rejected without crashing");
-  assert(readState().phase === "plan", "boolean approved input should return to plan instead of branch");
+  const rejected = await handleApprove({ approved: "reject", note: "needs changes" });
+  assert(rejected.approved === false, "explicit reject should report approved false");
+  assert(readState().phase === "plan", "explicit reject should return to plan");
+  assert(readState().approval === null, "explicit reject should clear stale approval");
 
   writeState({ ...baseState("merge"), mergeReceipt: { ...mergeReceipt, mutationAttempted: "yes" } as any });
   try {
@@ -251,6 +273,12 @@ try {
     implementationManifest: manifest,
     verifiedImplementationDigest: computeImplementationDigest(root, manifest),
   };
+  writeState({ ...commitState, stage: "commit.ci" });
+  const commitCiAfterReload = await handleStatus();
+  assert(commitCiAfterReload.stage === "commit.ci" && commitCiAfterReload.nextAction?.stage === "commit.ci", `status must preserve commit.ci across reload: ${JSON.stringify(commitCiAfterReload)}`);
+  writeState({ ...baseState("merge"), stage: "merge.sync" });
+  const mergeSyncAfterReload = await handleStatus();
+  assert(mergeSyncAfterReload.stage === "merge.sync" && mergeSyncAfterReload.nextAction?.stage === "merge.sync", `status must preserve merge.sync across reload: ${JSON.stringify(mergeSyncAfterReload)}`);
   writeState(commitState);
   writeFileSync(join(root, "README.md"), "changed after verify\n");
   const drift = await handleCommit({ title: "test", body: "test" });
@@ -261,8 +289,31 @@ try {
   const mismatch = await handleCommit({ title: "test", body: "test" });
   assert(mismatch.error?.code === "GIT_BRANCH_MISMATCH", `expected branch mismatch, got ${JSON.stringify(mismatch)}`);
 } finally {
+  for (const file of [join(root, "AGENTS.md"), join(root, ".codex", "config.toml"), join(root, "codelint.json")]) {
+    try { chmodSync(file, 0o644); } catch {}
+  }
   chdir(originalCwd);
 }
+
+const minimalRoot = mkdtempSync(join(tmpdir(), "hy-minimal-artifacts-"));
+run("git init -b main", minimalRoot);
+run("git config user.name test", minimalRoot);
+run("git config user.email test@example.com", minimalRoot);
+mkdirSync(join(minimalRoot, "src"), { recursive: true });
+mkdirSync(join(minimalRoot, "docs"), { recursive: true });
+mkdirSync(join(minimalRoot, ".github", "workflows"), { recursive: true });
+writeFileSync(join(minimalRoot, "src", "app.ts"), "export const value = 1;\n");
+writeFileSync(join(minimalRoot, "docs", "README.md"), "# Facts\n\nMaintained project facts.\n");
+writeFileSync(join(minimalRoot, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "main", codeExt: [".ts"], codeDirs: ["src"], docsDir: "docs" } }, null, 2));
+writeFileSync(join(minimalRoot, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\n");
+run("git add .", minimalRoot);
+run("git commit -m init", minimalRoot);
+run("git update-ref refs/remotes/origin/main HEAD", minimalRoot);
+writeDeployment(minimalRoot, { setupVersion: "test", mode: "shared", clients: [], projectFiles: ["hy-workflow.json", ".github/workflows/hy-workflow.yml"], tools: {}, artifacts: {}, projectContract: MINIMAL_PROJECT_CONTRACT });
+writeFileSync(join(minimalRoot, "hy-workflow.json"), JSON.stringify({ project: { baseBranch: "main", codeExt: [".ts"], codeDirs: ["src"], docsDir: "docs" }, policy: { profile: "standard" } }, null, 2));
+writeFileSync(join(minimalRoot, ".github", "workflows", "hy-workflow.yml"), "name: hy-workflow\non: pull_request\n");
+const minimalManifest = buildImplementationManifest(minimalRoot);
+assert(minimalManifest.changed.includes("hy-workflow.json") && minimalManifest.changed.includes(".github/workflows/hy-workflow.yml"), `minimal-v1 artifact drift must remain visible: ${JSON.stringify(minimalManifest)}`);
 
 const nonGit = mkdtempSync(join(tmpdir(), "hy-no-git-"));
 try {

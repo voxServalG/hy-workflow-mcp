@@ -2,7 +2,11 @@ export const OUTPUT_CONTROL_FIELDS = [
   "ok",
   "phase",
   "next",
+  "stage",
   "status",
+  "nextAction",
+  "control",
+  "userAction",
   "data",
   "error",
   "display",
@@ -26,6 +30,9 @@ export const PAGINATION_FIELDS = ["has_more", "page_token", "next_page_token"] a
 export const META_FIELDS = ["command", "cwd", "identity", "format", "version", "request_id", "trace_id", "duration_ms"] as const;
 export const NOTICE_FIELDS = ["update"] as const;
 export const NOTICE_UPDATE_FIELDS = ["message", "command", "current_version", "latest_version"] as const;
+export const NEXT_ACTION_FIELDS = ["tool", "arguments", "phase", "stage", "automatic"] as const;
+export const CONTROL_FIELDS = ["automatic", "stop", "reason"] as const;
+export const USER_ACTION_FIELDS = ["kind", "decisionId", "prompt", "instruction", "options"] as const;
 
 export const ERROR_ENVELOPE_FIELDS = [
   "type",

@@ -5,10 +5,10 @@ import { findProjectRoot } from "./runtime/project.js";
 import { createClientAdapters, detectClients, executeSetup } from "./setup/operations.js";
 import { previewArtifactChanges } from "./setup/preflight.js";
 import { cacheReviewedArtifacts, loadReviewedArtifacts } from "./setup/reviewed-artifacts.js";
-import { scanLegacyClientConfigs } from "./setup/legacy-migration.js";
 import { beginSetupPrompt, detectWithPrompt, finishPrompt, promptSetupOptions, runWithSpinner, successMessage, failureMessage } from "./setup/prompts.js";
 import { SetupFailure, type SetupAction, type SetupLanguage, type SetupOptions } from "./setup/types.js";
 import { projectReadinessIssues } from "./tools/init.js";
+import { MINIMAL_PROJECT_CONTRACT, readDeployment } from "./runtime/deployment.js";
 
 const CLIENTS: ClientName[] = ["codex", "claude", "opencode"];
 
@@ -174,11 +174,22 @@ export async function runSetupCli(
   let options = parsed.options;
   try {
     const projectRoot = findProjectRoot(root);
+    const deployment = readDeployment(projectRoot);
+    const legacyInert = Boolean(deployment && !(deployment.schemaVersion === "3" && deployment.projectContract === MINIMAL_PROJECT_CONTRACT));
     const adapters = createClientAdapters(projectRoot);
     if (interactive) {
       beginSetupPrompt();
       const context = detectWithPrompt(() => {
         const detections = detectClients(adapters);
+        if (legacyInert) {
+          return {
+            detections,
+            candidate: undefined,
+            ciCandidates: [],
+            hasCiCommands: true,
+            readinessIssues: [],
+          };
+        }
         const configResult = ensureConfigDefaults(projectRoot, { dryRun: true });
         const candidate = configResult.candidate as JsonObject | undefined;
         const ciCandidates = defaultSuggestion(projectRoot).ciCommands;
@@ -206,7 +217,7 @@ export async function runSetupCli(
         hasCiCommands: context.hasCiCommands,
         readinessIssues: context.readinessIssues,
         artifactChangesForCi: commands => {
-          if (!context.candidate) return [];
+          if (legacyInert || !context.candidate) return [];
           const config = commands?.length && !context.hasCiCommands
             ? withConfirmedCiCommands(context.candidate, commands)
             : context.candidate;
@@ -214,8 +225,8 @@ export async function runSetupCli(
         },
       });
       if (!prompted) return 0;
-      // Merge CLI-provided force/migrate flags into the TUI-driven options so
-      // --force-client-overwrite / --migrate-legacy-clients work in interactive mode too.
+      // Merge CLI-provided compatibility flags into the TUI-driven options.
+      // migrateLegacyClients is intentionally a no-op: project injections stay unread and untouched.
       options = {
         ...prompted,
         dryRun: parsed.options.dryRun,
@@ -228,7 +239,7 @@ export async function runSetupCli(
       return 1;
     }
     if (!interactive && options.action === "setup") {
-      if (options.acceptCiCommands && !options.ciCommands?.length) {
+      if (!legacyInert && options.acceptCiCommands && !options.ciCommands?.length) {
         throw new SetupFailure(
           "preflight",
           "SETUP_PREFLIGHT_FAILED",
@@ -236,7 +247,7 @@ export async function runSetupCli(
           "Pass each reviewed command with --ci-command, or use the interactive TUI. A bare --accept-ci-commands flag cannot approve inferred values.",
         );
       }
-      if (options.acceptArtifactChanges && !options.reviewedArtifactChanges?.length) {
+      if (!legacyInert && options.acceptArtifactChanges && !options.reviewedArtifactChanges?.length) {
         // Try the 5-minute TTL reviewed-artifact cache from a recent --dry-run, but only
         // when there are real drift entries that would require acceptance.
         const prePreview = previewArtifactChanges(projectRoot, ensureConfigDefaults(projectRoot, { dryRun: true }).candidate as JsonObject);
@@ -247,7 +258,7 @@ export async function runSetupCli(
             options.reviewedArtifactChanges = fromCache;
           }
         }
-        if (!options.reviewedArtifactChanges?.length) {
+        if (requiringAcceptance.length && !options.reviewedArtifactChanges?.length) {
           throw new SetupFailure(
             "artifact_drift",
             "SETUP_ARTIFACT_DRIFT",

@@ -5,11 +5,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { COMMAND_NAMES } from "../commands/catalog.js";
 import { PACKAGE_VERSION } from "../package-meta.js";
-import { readDeployment } from "../runtime/deployment.js";
+import { MINIMAL_PROJECT_CONTRACT, readDeployment } from "../runtime/deployment.js";
 import { executableInvocation, resolveExecutable, runExecutable } from "./clients/index.js";
 import { assertSafeEffectiveConfig } from "./clients/effective.js";
 import { contentEvidence, renderWorkflowTemplate, SHARED_PROJECT_FILES, sharedArtifactPlan } from "./shared.js";
-import { planAgentsFile } from "./agents-rules.js";
 import {
   MCP_DEFINITIONS,
   SetupFailure,
@@ -30,6 +29,7 @@ export type SetupPreflight = {
   artifactExpectedHashes: Record<string, string>;
   ciCandidates?: string[];
   ciConfirmationRequired?: boolean;
+  managesProjectFiles: boolean;
 };
 
 function digest(value: Buffer | string): string {
@@ -52,31 +52,22 @@ function boundedDiff(file: string, before: string, after: string): string {
 }
 
 export function previewArtifactChanges(root: string, config: any): ArtifactChange[] {
-  const deployment = readDeployment(root);
   return sharedArtifactPlan(root, config).map(item => {
     const target = path.join(root, item.file);
     const existed = fs.existsSync(target);
     const before = existed ? fs.readFileSync(target) : null;
     const beforeHash = before ? digest(before) : null;
     const afterHash = contentEvidence(item.content).sha256;
-    const isAgentsManagedBlock = item.file === "AGENTS.md";
-    const recorded = !isAgentsManagedBlock && deployment?.schemaVersion === "3" ? deployment.artifacts[item.file]?.sha256 : null;
     const changeKind: ArtifactChange["changeKind"] = !existed
       ? "create"
-      : isAgentsManagedBlock
-        ? "managed_update"
-        : recorded && recorded === beforeHash
-          ? "managed_update"
-          : recorded
-            ? "drift"
-            : "unmanaged_existing";
+      : "unmanaged_existing";
     return {
       file: item.file,
       changeKind,
       beforeHash,
       afterHash,
       diff: boundedDiff(item.file, before?.toString("utf-8") ?? "", item.content),
-      requiresAcceptance: !isAgentsManagedBlock && existed && beforeHash !== afterHash,
+      requiresAcceptance: existed && beforeHash !== afterHash,
     };
   });
 }
@@ -198,18 +189,22 @@ export async function runSetupPreflight(
       if (options.action === "setup") assertSafeEffectiveConfig(adapter.name, server, value, MCP_DEFINITIONS[server]);
     }
   }
-  const changes = options.action === "setup" ? previewArtifactChanges(root, config) : [];
-  const artifactExpectedHashes: Record<string, string> = options.action === "setup" ? {
+  const deployment = readDeployment(root);
+  const managesProjectFiles = options.action === "setup" && (
+    !deployment
+    || (deployment.schemaVersion === "3" && deployment.projectContract === MINIMAL_PROJECT_CONTRACT)
+  );
+  const changes = managesProjectFiles ? previewArtifactChanges(root, config) : [];
+  const artifactExpectedHashes: Record<string, string> = managesProjectFiles ? {
     "hy-workflow.json": digest(JSON.stringify(config, null, 2) + "\n"),
     ".github/workflows/hy-workflow.yml": digest(renderWorkflowTemplate()),
-    "AGENTS.md": digest(planAgentsFile(root).nextContent),
   } : {};
-  const artifactBeforeHashes = Object.fromEntries(SHARED_PROJECT_FILES.map(file => {
+  const artifactBeforeHashes = Object.fromEntries((managesProjectFiles ? SHARED_PROJECT_FILES : []).map(file => {
     const target = path.join(root, file);
     return [file, fs.existsSync(target) ? digest(fs.readFileSync(target)) : null];
   }));
   for (const file of SHARED_PROJECT_FILES) {
-    if (options.action !== "setup") break;
+    if (!managesProjectFiles) break;
     const baseline = artifactBeforeHashes[file];
     const expected = artifactExpectedHashes[file];
     const planned = changes.find(item => item.file === file);
@@ -235,5 +230,12 @@ export async function runSetupPreflight(
       );
     }
   }
-  return { tools: inspectDirectTools && options.action === "setup" ? await inspectSetupTools(root) : {}, snapshots, artifactChanges: changes, artifactBeforeHashes, artifactExpectedHashes };
+  return {
+    tools: inspectDirectTools && options.action === "setup" ? await inspectSetupTools(root) : {},
+    snapshots,
+    artifactChanges: changes,
+    artifactBeforeHashes,
+    artifactExpectedHashes,
+    managesProjectFiles,
+  };
 }

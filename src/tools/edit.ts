@@ -27,13 +27,14 @@ export async function handleEdit(): Promise<ToolResult> {
   fs.writeFileSync(target, JSON.stringify(scopeJson, null, 2) + "\n", "utf-8");
 
   // Transition to edit if coming from branch or verify
-  if (state.phase === "branch" || state.phase === "verify") {
-    const next = transition(state, "edit");
-    writeState(next);
-  }
+  const next = state.phase === "edit" ? { ...state } : transition(state, "edit");
+  next.stage = "edit.implementation";
+  writeState(next);
 
   return toolResult("verify", {
     phase: "edit",
+    stage: "edit.implementation",
+    status: "ready",
     branch: state.branch,
     scope: state.plan.scope,
     boundary: state.plan.boundary,
@@ -43,7 +44,10 @@ export async function handleEdit(): Promise<ToolResult> {
     },
     hint: "Use standard file editing tools only within plan.scope. When implementation edits are complete, run hy_read_docs with stage after_edit, then hy_sync_docs, then hy_verify.",
     allowedTools: ["hy_read_docs", "hy_edit", "hy_status"],
-    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_commit", "hy_merge"],
+    nextAction: { tool: "hy_read_docs", arguments: { stage: "after_edit" }, phase: "edit", stage: "after_edit", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
     message: `Scope locked. Edit files within plan.scope: ${state.plan.scope.changes.join(", ")}. When done, run hy_read_docs(after_edit), then hy_sync_docs, then hy_verify.`,
   });
 }

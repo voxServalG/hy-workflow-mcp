@@ -27,7 +27,7 @@ assert(init.includes("setupArtifactStatus"), "dist init should verify user-local
 assert(init.includes("harness_missing"), "dist init should expose structured missing-harness recovery");
 
 assert(!server.includes("初始化项目：部署 hy-harness"), "dist server description must not claim hy_init deploys hy-harness");
-assert(server.includes("默认不写项目或 .git"), "dist server description should describe zero-project-change init");
+assert(server.includes("不读取、迁移或校验任何旧项目注入物，也不写项目或 .git"), "dist server description should describe zero-project-change init and the legacy-ignore boundary");
 assert(server.includes('argv[0] === "setup" || argv[0] === "unset"'), "dist server should expose setup and unset through one CLI engine");
 assert(server.includes('argv[0] === "lint"'), "dist server should expose the built-in lint CLI");
 assert(readDist("lint.js").includes("templates/lint/index.mjs"), "dist lint adapter should execute the packaged first-party engine");

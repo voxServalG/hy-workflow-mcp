@@ -3,7 +3,10 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAllChecksAsync } from "../../src/checks-async.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function git(root: string, ...args: string[]): void {
   execFileSync("git", args, { cwd: root, stdio: "ignore" });

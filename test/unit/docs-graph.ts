@@ -42,6 +42,10 @@ write(root, "docs/usage guide.md", "aaaaaaaaaa\n");
 write(root, "docs/api(v1).md", "# API\n");
 write(root, "docs/reference.md", "# Reference\n");
 write(root, "README.md", "# Outside docs\n");
+write(root, "AGENTS.md", "legacy injected rules that must stay unread\n");
+fs.chmodSync(path.join(root, "AGENTS.md"), 0o000);
+write(root, ".git/hy-workflow/docs-graph.json", "{ this legacy cache must stay unread\n");
+fs.chmodSync(path.join(root, ".git", "hy-workflow", "docs-graph.json"), 0o000);
 
 const graph = buildDocsGraph(root, "docs");
 const index = graph.entries["docs/index.md"];
@@ -69,11 +73,34 @@ try {
   assert(String(error?.message ?? error).includes("must not contain parent segments"), `unexpected docsDir error: ${String(error?.message ?? error)}`);
 }
 
+write(root, ".codex/README.md", "legacy project client instructions\n");
+fs.chmodSync(path.join(root, ".codex"), 0o000);
+try {
+  buildDocsGraph(root, ".codex");
+  throw new Error("buildDocsGraph should reject ignored legacy docsDir without reading it");
+} catch (error: any) {
+  assert(String(error?.message ?? error).includes("ignored legacy or runtime path"), `unexpected ignored docsDir error: ${String(error?.message ?? error)}`);
+}
+fs.chmodSync(path.join(root, ".codex"), 0o755);
+
 const rootDocsGraph = buildDocsGraph(root, ".");
 assert(rootDocsGraph.entries["docs/index.md"] !== undefined, "docsDir=. should be accepted as the project root");
+assert(rootDocsGraph.entries["AGENTS.md"] === undefined, "docsDir=. must leave legacy AGENTS.md unread and outside DocsGraph");
 
 buildDocsGraph(root, "docs");
 const graphFile = projectPaths(root).docsGraph;
+const poisoned = JSON.parse(fs.readFileSync(graphFile, "utf-8"));
+poisoned.entries["AGENTS.md"] = { path: "AGENTS.md", sha256: "legacy", links: [], referencedBy: [] };
+poisoned.entryPoints.push("AGENTS.md");
+poisoned.sentinel = "legacy-cache";
+fs.writeFileSync(graphFile, JSON.stringify(poisoned, null, 2) + "\n", "utf-8");
+const sanitized = ensureGraph(root, "docs") as typeof graph & { sentinel?: string };
+assert(sanitized.entries["AGENTS.md"] === undefined && sanitized.sentinel !== "legacy-cache", "an external cache containing legacy paths must be rebuilt without reading them");
+
+fs.writeFileSync(graphFile, JSON.stringify({ digest: "malformed", docsDir: "docs", entryPoints: [], entries: null }) + "\n", "utf-8");
+const shapeRecovered = ensureGraph(root, "docs");
+assert(shapeRecovered.entries["docs/index.md"] !== undefined, "a malformed external cache shape must rebuild from authoritative documents");
+
 const cached = JSON.parse(fs.readFileSync(graphFile, "utf-8"));
 cached.sentinel = "cache-hit";
 fs.writeFileSync(graphFile, JSON.stringify(cached, null, 2) + "\n", "utf-8");
@@ -85,3 +112,5 @@ write(root, "docs/usage guide.md", "bbbbbbbbbb\n");
 const refreshed = ensureGraph(root, "docs") as typeof graph & { sentinel?: string };
 assert(refreshed.sentinel !== "cache-hit", "same-size content changes should invalidate the cached graph");
 assert(!isGraphStale(root, refreshed), "refreshed graph should be current after rebuild");
+fs.chmodSync(path.join(root, "AGENTS.md"), 0o644);
+fs.chmodSync(path.join(root, ".git", "hy-workflow", "docs-graph.json"), 0o644);

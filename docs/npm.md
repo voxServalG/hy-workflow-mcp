@@ -25,13 +25,21 @@ There is no `prepare`, `install`, or `postinstall` build. Registry users receive
 
 - `name` must be `@voxstudio/hy-workflow`, with public scoped-package access
 - `bin["hy-workflow"]` and `main` must point at `dist/server.js`
-- `files` must include `dist`, `docs`, `templates`, and `README.md`
+- `files` must include `dist`, `docs`, `schemas`, `templates`, and `README.md`
 - `dist/` and local `*.tgz` tarballs must not be tracked by Git
-- npm pack must include `dist/server.js`, `templates/hy-workflow.yml`, and the fixed `templates/lint/*.mjs` module set
+- npm pack must include `dist/server.js`, the project-config schema, `templates/hy-workflow.yml`, and the first-party lint engine
 - npm pack must not include legacy `setup` or `setup.ps1`
 - No `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, compatibility JSON, `test/`, or `src/` files may enter npm pack
 - Every build/prepack begins from an empty `dist/`; consecutive packs must have the same file list and digests even after an orphan file is injected
 - The installed `hy-workflow lint --json` command must run the packaged first-party engine without registry or codeload access and without mutating legacy compatibility JSON
+
+## Generated workflow contract
+
+The packaged `templates/hy-workflow.yml` is intentionally thin. Fresh setup replaces its single package placeholder with the exact current package spec, such as `@voxstudio/hy-workflow@0.4.1-next.6`. The committed workflow uses pull-request and manual triggers, `contents: read`, a SHA-pinned checkout with persisted credentials disabled, and one `hy-workflow lint --json` invocation through that exact package.
+
+The runner may contact npm to obtain the pinned package. The workflow must not infer project ecosystems, install project toolchains, synthesize native CI commands, or rerun repository build/test jobs. Those remain separate repository-owned checks. The same boundary applies to `.github/workflows/reusable-verify.yml`: it calls an exact package version and grants no write permissions.
+
+Package upgrades do not rewrite an already installed project's tracked workflow. In particular, setup does not inspect or hash a legacy workflow during an upgrade. A tracked old workflow may still be executed independently by GitHub until the repository removes or disables it in a separate reviewed change.
 
 ## Release boundary
 

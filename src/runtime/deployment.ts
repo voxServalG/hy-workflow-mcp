@@ -7,6 +7,8 @@ import { internalSetupTestHooks } from "../setup/test-hooks.js";
 
 export type DeploymentMode = "local" | "shared";
 export type ClientName = "codex" | "claude" | "opencode";
+export const MINIMAL_PROJECT_CONTRACT = "minimal-v1" as const;
+export type ProjectContract = typeof MINIMAL_PROJECT_CONTRACT;
 
 export type DeploymentManifest = {
   schemaVersion: "3";
@@ -19,6 +21,8 @@ export type DeploymentManifest = {
   projectFiles: string[];
   tools: Partial<Record<ServerName, ToolEvidence>>;
   artifacts: Record<string, ArtifactEvidence>;
+  /** Present only for genuinely new minimal project integrations. */
+  projectContract?: ProjectContract;
 };
 
 export type LegacyDeploymentManifest = Omit<DeploymentManifest, "schemaVersion" | "tools" | "artifacts"> & {
@@ -105,6 +109,7 @@ export function writeDeployment(
     projectFiles?: string[];
     tools?: Partial<Record<ServerName, ToolEvidence>>;
     artifacts?: Record<string, ArtifactEvidence>;
+    projectContract?: ProjectContract;
   },
   beforeWrite?: (resource: "deployment" | "registry", value: DeploymentManifest | DeploymentRegistry) => void,
   afterWrite?: (resource: "deployment" | "registry") => void,
@@ -123,6 +128,7 @@ export function writeDeployment(
     projectFiles: [...new Set(input.projectFiles ?? [])].sort(),
     tools: input.tools ?? {},
     artifacts: input.artifacts ?? {},
+    ...(input.projectContract ? { projectContract: input.projectContract } : {}),
   };
   beforeWrite?.("deployment", manifest);
   atomicWriteJson(paths.deployment, manifest);

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { atomicWriteText } from "../../runtime/user-paths.js";
 import { SetupFailure, type ClientAdapter, type ClientConfigSource, type ClientDetection, type ClientServerSnapshot, type McpDefinition, type ServerName } from "../types.js";
 import { assertClientSnapshotUnchanged } from "./effective.js";
-import { definitionEquals, normalizeDefinition, resolveExecutable, runExecutable, versionOf } from "./index.js";
+import { definitionEquals, neutralCommandCwd, normalizeDefinition, resolveExecutable, runExecutable, versionOf } from "./index.js";
 
 const STARTUP_TIMEOUT_SEC = 60;
 const TOOL_TIMEOUT_SEC = 300;
@@ -347,15 +347,15 @@ function restoreAbsentConfigFile(snapshot: ClientServerSnapshot): void {
   fs.rmSync(file);
 }
 
-function add(executable: string, server: ServerName, definition: McpDefinition): void {
+function add(executable: string, server: ServerName, definition: McpDefinition, cwd: string): void {
   const env = Object.entries(definition.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
-  const result = runExecutable(executable, ["mcp", "add", ...env, server, "--", definition.command, ...definition.args]);
+  const result = runExecutable(executable, ["mcp", "add", ...env, server, "--", definition.command, ...definition.args], 15_000, { cwd });
   if (!result.ok) throw new Error(`codex mcp add ${server} failed: ${result.stderr || result.stdout}`);
 }
 
 export function createCodexAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?? process.cwd()): ClientAdapter {
   const executable = resolveExecutable("codex");
-  const projectFile = path.join(path.resolve(root), ".codex", "config.toml");
+  const commandCwd = neutralCommandCwd(root);
   const inspect = (server: ServerName): ClientServerSnapshot => {
     const userFile = codexConfigPath();
     const absentSnapshot = (sources: ClientConfigSource[]): ClientServerSnapshot => {
@@ -371,38 +371,20 @@ export function createCodexAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?
       };
     };
     if (locationInside(root, userFile)) {
-      const project = readCodexSource(userFile, server);
-      const sources: ClientConfigSource[] = project
-        ? [{ scope: "project", source: project.source, definition: project.definition, enabled: project.enabled }]
-        : [];
       return {
-        definition: project?.definition ?? null,
-        raw: project?.raw,
+        definition: null,
+        raw: { error: "Codex user config path points inside the project; file was not inspected" },
         source: userFile,
-        scope: "project",
-        enabled: project?.enabled ?? null,
-        state: project ? (project.state === "active" ? "shadowed" : project.state) : "absent",
-        sources,
+        scope: "unknown",
+        enabled: null,
+        state: "unreadable",
+        sources: [],
         ownedDefinition: null,
       };
     }
     const user = readCodexSource(userFile, server);
-    const project = readCodexSource(projectFile, server);
     const sources: ClientConfigSource[] = [];
     if (user) sources.push({ scope: "user", source: user.source, definition: user.definition, enabled: user.enabled });
-    if (project) sources.push({ scope: "project", source: project.source, definition: project.definition, enabled: project.enabled });
-    if (project) {
-      return {
-        definition: project.definition,
-        raw: project.raw,
-        source: project.source,
-        scope: "project",
-        enabled: project.enabled,
-        state: project.state === "active" ? "shadowed" : project.state,
-        sources,
-        ownedDefinition: user?.definition ?? null,
-      };
-    }
     if (user) {
       return {
         definition: user.definition,
@@ -416,7 +398,7 @@ export function createCodexAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?
       };
     }
     if (!executable) return absentSnapshot(sources);
-    const result = runExecutable(executable, ["mcp", "get", server, "--json"]);
+    const result = runExecutable(executable, ["mcp", "get", server, "--json"], 15_000, { cwd: commandCwd });
     if (!result.ok) {
       const diagnostic = `${result.stderr}\n${result.stdout}`.trim();
       if (/not found|does not exist|no mcp server|unknown mcp server/i.test(diagnostic)) {
@@ -435,14 +417,14 @@ export function createCodexAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?
   };
   const removeOnly = (server: ServerName): void => {
     if (!executable) throw new Error("codex is not installed");
-    const result = runExecutable(executable, ["mcp", "remove", server]);
+    const result = runExecutable(executable, ["mcp", "remove", server], 15_000, { cwd: commandCwd });
     if (!result.ok) throw new Error(`codex mcp remove ${server} failed: ${result.stderr || result.stdout}`);
   };
   return {
     name: "codex",
     detect(): ClientDetection {
       const configured = (["hy-workflow", "docs-gardener"] as ServerName[]).filter(server => inspect(server).definition);
-      return { name: "codex", installed: Boolean(executable), executable, version: executable ? versionOf(executable) : null, configured };
+      return { name: "codex", installed: Boolean(executable), executable, version: executable ? versionOf(executable, commandCwd) : null, configured };
     },
     inspect,
     install(server, definition, expectedPrevious) {
@@ -479,7 +461,7 @@ export function createCodexAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?
       }
       if (previous.definition) removeOnly(server);
       try {
-        add(executable, server, definition);
+        add(executable, server, definition, commandCwd);
         setTimeouts(server);
       } catch (error) {
         if (previous.definition) {

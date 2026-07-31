@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest, runScopeCheck, suggestPlanAmendment } from "../../src/checks.js";
-import { handleAmendPlan } from "../../src/tools/amend_plan.js";
-import { readState, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { handleAmendPlan, isNonMaterialScopeNarrowing } from "../../src/tools/amend_plan.js";
+import { computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -53,12 +53,14 @@ try {
   run("git config user.email test@example.com", root);
   run("git config user.name Test", root);
   mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, "docs"), { recursive: true });
   writeFileSync(join(root, "src", "app.ts"), "export const value = 1;\n");
+  writeFileSync(join(root, "docs", "README.md"), "# Test documentation\n");
+  writeFileSync(join(root, "docs", "unchanged.md"), "# Unchanged documentation\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
     project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
     codelint: { lintDirs: ["src"] },
   }, null, 2) + "\n");
-  writeFileSync(join(root, "codelint.json"), "{\"baseBranch\":\"dev\"}\n");
   run("git add .", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
@@ -108,7 +110,7 @@ try {
 
   const overDeclaredPlan: PlanDoc = {
     ...plan,
-    scope: { ...plan.scope, changes: [...plan.scope.changes, "codelint.json"] },
+    scope: { ...plan.scope, changes: [...plan.scope.changes, "docs/unchanged.md"] },
   };
   const missingDeclared = runScopeCheck(root, overDeclaredPlan, manifest)
     .find(check => check.detail.includes("Declared but not changed"));
@@ -116,16 +118,56 @@ try {
     throw new Error(`declared-but-unchanged paths should require explicit scope amendment, got ${JSON.stringify(missingDeclared)}`);
   }
   const removal = suggestPlanAmendment(overDeclaredPlan, manifest);
-  if (!removal?.scope.changes.remove.includes("codelint.json")) {
+  if (!removal?.scope.changes.remove.includes("docs/unchanged.md")) {
     throw new Error(`expected suggested removal for the unchanged declared path, got ${JSON.stringify(removal)}`);
+  }
+  if (isNonMaterialScopeNarrowing(overDeclaredPlan, removal)) {
+    throw new Error("a mixed removal plus new test target must remain a material amendment");
+  }
+  const removalOnly = {
+    ...removal,
+    scope: {
+      changes: { add: [], remove: ["docs/unchanged.md"] },
+      new_files: { add: [], remove: [] },
+      delete: { add: [], remove: [] },
+    },
+  };
+  if (!isNonMaterialScopeNarrowing(overDeclaredPlan, removalOnly)) {
+    throw new Error("removing an unchanged declared path should be a non-material narrowing");
+  }
+  const changeToDelete = {
+    ...removalOnly,
+    scope: {
+      changes: { add: [], remove: ["src/app.ts"] },
+      new_files: { add: [], remove: [] },
+      delete: { add: ["src/app.ts"], remove: [] },
+    },
+  };
+  if (isNonMaterialScopeNarrowing(overDeclaredPlan, changeToDelete)) {
+    throw new Error("moving an approved change target into delete must remain material and require a new decision");
   }
 
   const amendment = suggestPlanAmendment(plan, manifest);
   if (!amendment?.scope.new_files.add.includes("tests/test_000_path.py")) {
     throw new Error(`expected suggested amendment for test support file, got ${JSON.stringify(amendment)}`);
   }
+  if (isNonMaterialScopeNarrowing(plan, amendment)) {
+    throw new Error("adding a new test write target must remain a material amendment");
+  }
+
+  const priorApproval = { time: "approved-at", note: "original", decisionId: `plan:${computePlanHash(overDeclaredPlan)}`, planHash: computePlanHash(overDeclaredPlan)! };
+  const narrowedPlan: PlanDoc = { ...overDeclaredPlan, scope: { ...overDeclaredPlan.scope, changes: ["src/app.ts"] } };
+  const rebound = rebindApprovalForNonMaterialNarrowing(priorApproval, overDeclaredPlan, narrowedPlan, "amendment:narrow");
+  if (rebound.decisionId !== priorApproval.decisionId || rebound.planHash !== computePlanHash(narrowedPlan) || rebound.audit?.[0]?.kind !== "non_material_scope_narrowing") {
+    throw new Error(`non-material narrowing should preserve decision identity with audit metadata: ${JSON.stringify(rebound)}`);
+  }
 
   writeState({ ...baseState(plan), pendingAmendment: amendment, implementationManifest: manifest });
+  const beforeInvalidDecision = JSON.stringify(readState());
+  const invalidDecision = await handleAmendPlan({ approved: "yes", note: "ambiguous" });
+  if (invalidDecision.error?.code !== "AMENDMENT_DECISION_INVALID" || JSON.stringify(readState()) !== beforeInvalidDecision) {
+    throw new Error(`invalid amendment decision must preserve pending state: ${JSON.stringify(invalidDecision)}`);
+  }
   const amendResult = await handleAmendPlan({ approved: "approve", note: "test approved amendment" });
   if (amendResult.phase !== "edit" || !amendResult.amended) {
     throw new Error(`hy_amend_plan should return to edit, got ${JSON.stringify(amendResult)}`);
@@ -136,6 +178,9 @@ try {
   }
   if (amendedState.pendingAmendment) {
     throw new Error("hy_amend_plan should clear pendingAmendment");
+  }
+  if (amendedState.approval?.planHash !== computePlanHash(amendedState.plan) || amendedState.approval?.decisionId !== `plan:${computePlanHash(amendedState.plan)}`) {
+    throw new Error(`amendment approval should bind the amended PlanDoc: ${JSON.stringify(amendedState.approval)}`);
   }
   const lockedScope = JSON.parse(readFileSync(scopePath(), "utf-8"));
   if (lockedScope.lockedAt) {

@@ -16,9 +16,7 @@ The core skill lives at docs/skills/core/SKILL.md and must mention every MCP too
 - `hy_verify`
 - `hy_amend_plan`
 - `hy_commit`
-- `hy_ci`
 - `hy_merge`
-- `hy_chain`
 - `hy_reset`
 - `hy_status`
 

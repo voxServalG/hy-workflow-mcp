@@ -2,11 +2,14 @@ import { chdir, cwd } from "node:process";
 import { handleMerge } from "../../src/tools/merge.js";
 import { acquireMergeLock, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import type { MergeReceipt } from "../../src/merge-recovery.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import {
   createGitGhHarness,
   type GitGhHarness,
   type GitFaultOperation,
 } from "../helpers/git-gh-harness.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

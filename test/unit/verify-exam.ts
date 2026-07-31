@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { execFileSync } from "node:child_process";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import { issueExam, submitExam, computeScopeFingerprint } from "../../src/verify-exam.js";
 import { readState, writeState } from "../../src/state.js";
 import { handleExamSubmit } from "../../src/tools/exam-submit.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);

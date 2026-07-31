@@ -1,8 +1,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
-import { PHASES, VALID_TRANSITIONS, isPhase, type Phase } from "./runtime/state-machine.js";
+import {
+  DEFAULT_STAGE_BY_PHASE,
+  PHASES,
+  VALID_TRANSITIONS,
+  isPhase,
+  isWorkflowStage,
+  type Phase,
+  type WorkflowStage,
+} from "./runtime/state-machine.js";
 import { configuredBaseBranch, currentGitBranch, findProjectRoot, resolveGitPrivatePath } from "./runtime/project.js";
 import { createHash, randomUUID } from "node:crypto";
 import { atomicWriteJson, ensureParent, projectPaths } from "./runtime/user-paths.js";
@@ -195,11 +202,26 @@ export interface DocumentReadHealth {
 export interface Approval {
   time: string;
   note: string;
+  /** Stable identity of the human decision. Optional for historical state. */
+  decisionId?: string;
+  /** Material PlanDoc hash approved by the user. Optional for historical state. */
+  planHash?: string;
+  /** Previous decision replaced by an explicitly approved material amendment. */
+  supersedesDecisionId?: string;
+  audit?: Array<{
+    time: string;
+    kind: "non_material_scope_narrowing";
+    amendmentDecisionId: string;
+    previousPlanHash: string;
+    planHash: string;
+  }>;
 }
 
 export interface WorkflowState {
   version: "1";
   phase: Phase;
+  /** Persisted intra-phase progress. Optional only for historical state files. */
+  stage?: WorkflowStage;
   branch: string | null;
   prNumber: number | null;
   plan: PlanDoc | null;
@@ -216,11 +238,6 @@ export interface WorkflowState {
 }
 
 // ── State path ───────────────────────────────────────────────
-
-const RUNTIME_STATE_FILE = path.join("hy-workflow", "workflow.json");
-const RUNTIME_SCOPE_FILE = path.join("hy-workflow", "scope.json");
-const LEGACY_STATE_FILE = path.join(".hy", "workflow.json");
-const LEGACY_SCOPE_FILE = path.join(".hy", "scope.json");
 
 export interface LegacyRuntimeDiagnostic {
   file: string;
@@ -294,74 +311,22 @@ export function acquireMergeLock(graceMs = 60_000): MergeLockResult {
 }
 
 export function scopePath(): string {
-  const root = projectRoot();
-  const target = projectPaths(root).scope;
-  migrateLegacyFile(target, [gitPrivatePath(root, RUNTIME_SCOPE_FILE), legacyScopePath(root)]);
-  return target;
-}
-
-function legacyStatePath(root: string): string {
-  return path.join(root, LEGACY_STATE_FILE);
-}
-
-function legacyScopePath(root: string): string {
-  return path.join(root, LEGACY_SCOPE_FILE);
-}
-
-function gitPrivatePath(root: string, relativePath: string): string {
-  return resolveGitPrivatePath(root, relativePath);
+  return projectPaths(projectRoot()).scope;
 }
 
 export function projectRoot(): string {
   return findProjectRoot(process.cwd());
 }
 
-function isTracked(root: string, file: string): boolean | null {
-  try {
-    execSync(`git ls-files --error-unmatch -- "${file}"`, { cwd: root, stdio: "ignore" });
-    return true;
-  } catch (e: any) {
-    if (e.status === 1) return false;
-    return null;
-  }
-}
-
 export function legacyRuntimeDiagnostics(root = projectRoot()): LegacyRuntimeDiagnostic[] {
-  const diagnostics: LegacyRuntimeDiagnostic[] = [];
-  for (const file of [LEGACY_STATE_FILE, LEGACY_SCOPE_FILE]) {
-    const fullPath = path.join(root, file);
-    if (!fs.existsSync(fullPath)) continue;
-    const tracked = isTracked(root, file);
-    if (tracked === true) {
-      diagnostics.push({
-        file,
-        tracked: true,
-        message: `${file} is legacy hy-workflow runtime metadata tracked by Git and may block branch checkout.`,
-        remediation: `Run git rm --cached ${file} and add .hy/ to .gitignore, then commit that cleanup.`,
-      });
-      continue;
-    }
-    if (tracked === null) {
-      diagnostics.push({
-        file,
-        tracked: false,
-        message: `${file} exists but Git tracking status could not be determined, so hy-workflow will not delete it automatically.`,
-      });
-    }
-  }
-  return diagnostics;
+  // Compatibility export only. Normal runtime must not inspect legacy project
+  // paths because their mere presence must be invisible after upgrade.
+  void root;
+  return [];
 }
 
 export function cleanupLegacyRuntimeFiles(root = projectRoot()): void {
   void root;
-}
-
-function migrateLegacyFile(target: string, candidates: string[]): void {
-  if (fs.existsSync(target)) return;
-  const source = candidates.find(candidate => fs.existsSync(candidate));
-  if (!source) return;
-  ensureParent(target);
-  fs.copyFileSync(source, target);
 }
 
 // ── Read / Write ─────────────────────────────────────────────
@@ -372,7 +337,7 @@ function structuredWorkflowStateError(code: string, message: string, detail?: Re
     subtype: "invalid_phase",
     code,
     message,
-    hint: "Inspect or remove the Git-private hy-workflow runtime state, then retry from hy_status.",
+    hint: "Inspect or remove the external user workflow-state file named in error.detail.file, then retry from hy_status. Project-local legacy state is not consulted.",
     detail,
     retryable: false,
   };
@@ -382,6 +347,7 @@ function initialState(): WorkflowState {
   return {
     version: "1",
     phase: "init",
+    stage: "init.ready",
     branch: null,
     prNumber: null,
     plan: null,
@@ -431,6 +397,7 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
     ...raw,
     version: "1",
     phase,
+    stage: isWorkflowStage(raw.stage) ? raw.stage : DEFAULT_STAGE_BY_PHASE[phase],
     branch: normalizeNullableString(raw.branch),
     prNumber: normalizeNullablePrNumber(raw.prNumber, file),
     plan: (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null,
@@ -456,23 +423,16 @@ function parseWorkflowStateFile(file: string): WorkflowState {
 }
 
 export function readState(): WorkflowState {
-  const root = projectRoot();
   const p = statePath();
-  if (!fs.existsSync(p)) {
-    const legacy = [gitPrivatePath(root, RUNTIME_STATE_FILE), legacyStatePath(root)]
-      .find(candidate => fs.existsSync(candidate));
-    if (legacy) {
-      const state = parseWorkflowStateFile(legacy);
-      writeState(state);
-      return state;
-    }
-    return initialState();
-  }
+  if (!fs.existsSync(p)) return initialState();
   return parseWorkflowStateFile(p);
 }
 
 export function writeState(state: WorkflowState): void {
-  atomicWriteJson(statePath(), state);
+  atomicWriteJson(statePath(), {
+    ...state,
+    stage: isWorkflowStage(state.stage) ? state.stage : DEFAULT_STAGE_BY_PHASE[state.phase],
+  });
 }
 
 // ── Phase transitions ────────────────────────────────────────
@@ -495,7 +455,7 @@ export function transition(state: WorkflowState, to: Phase): WorkflowState {
       `Allowed transitions from "${state.phase}": ${allowed?.join(", ") ?? "none"}.`
     );
   }
-  return { ...state, phase: to };
+  return { ...state, phase: to, stage: DEFAULT_STAGE_BY_PHASE[to] };
 }
 
 export class StateError extends Error {
@@ -543,6 +503,68 @@ export function computePlanHash(plan: PlanDoc | null): string | null {
   return hash.digest("hex").slice(0, 12);
 }
 
+export function planDecisionId(plan: PlanDoc | null): string | null {
+  const planHash = computePlanHash(plan);
+  return planHash ? `plan:${planHash}` : null;
+}
+
+export function amendmentDecisionId(plan: PlanDoc | null, amendment: PendingPlanAmendment | null | undefined): string | null {
+  const planHash = computePlanHash(plan);
+  if (!planHash || !amendment) return null;
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify({ planHash, reason: amendment.reason, scope: amendment.scope, warnings: amendment.warnings }));
+  return `amendment:${hash.digest("hex").slice(0, 12)}`;
+}
+
+export function approvalMatchesPlan(approval: Approval | null, plan: PlanDoc | null): boolean {
+  if (!approval || !plan) return false;
+  const planHash = computePlanHash(plan);
+  if (!planHash) return false;
+  // Historical approvals predate planHash. They remain valid for the already
+  // persisted PlanDoc so upgrading an active project does not interrupt it.
+  return approval.planHash === undefined || approval.planHash === planHash;
+}
+
+export function createPlanApproval(plan: PlanDoc, note = "", previous?: Approval | null): Approval {
+  const planHash = computePlanHash(plan)!;
+  const decisionId = `plan:${planHash}`;
+  return {
+    time: new Date().toISOString(),
+    note,
+    decisionId,
+    planHash,
+    ...(previous?.decisionId && previous.decisionId !== decisionId
+      ? { supersedesDecisionId: previous.decisionId }
+      : {}),
+  };
+}
+
+export function rebindApprovalForNonMaterialNarrowing(
+  approval: Approval | null,
+  previousPlan: PlanDoc,
+  nextPlan: PlanDoc,
+  amendmentId: string,
+): Approval {
+  const previousPlanHash = computePlanHash(previousPlan)!;
+  const planHash = computePlanHash(nextPlan)!;
+  const decisionId = approval?.decisionId ?? `plan:${previousPlanHash}`;
+  return {
+    ...(approval ?? { time: new Date().toISOString(), note: "" }),
+    decisionId,
+    planHash,
+    audit: [
+      ...(approval?.audit ?? []),
+      {
+        time: new Date().toISOString(),
+        kind: "non_material_scope_narrowing",
+        amendmentDecisionId: amendmentId,
+        previousPlanHash,
+        planHash,
+      },
+    ],
+  };
+}
+
 function gate(status: DocumentGateStatus, reason: string, expected?: string | null, actual?: string | null): DocumentGateHealth {
   return { status, reason, expected, actual };
 }
@@ -566,7 +588,7 @@ export function documentReadHealth(state: WorkflowState, currentImplementationDi
       : !planHash || beforeApprove.planHash !== planHash
         ? gate("stale", "before_approve plan hash does not match the current PlanDoc.", planHash, beforeApprove.planHash)
         : beforeApprove.changedSinceBaseline
-          ? gate("stale", "before_approve document audit detected document changes since before_plan; regenerate the PlanDoc before approval.", beforePlan?.digest ?? null, beforeApprove.digest)
+          ? gate("current", "before_approve detected document changes since before_plan. Review their relevance, but digest drift alone does not invalidate the approved PlanDoc.", beforePlan?.digest ?? null, beforeApprove.digest)
           : gate("current", "before_approve document audit matches the current PlanDoc."),
     afterEdit: !afterEdit
       ? gate("missing", "after_edit document audit is missing.")

@@ -29,21 +29,27 @@ export async function handleBranch(args: { category: string; topic: string }): P
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_branch", "hy_status"],
-      blockedTools: ["hy_edit", "hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_edit", "hy_verify", "hy_commit", "hy_merge"],
       recovery: { instruction: result.error?.hint ?? "Fix the git branch setup issue, then retry hy_branch." },
     });
   }
 
   const next = transition(state, "edit");
+  next.stage = "edit.scope";
   next.branch = result.branch;
   next.plan!.branch = result.branch;
   writeState(next);
 
   return toolResult("edit", {
     branch: result.branch,
+    stage: "edit.scope",
+    status: "passed",
     message: `Branch ${result.branch} created. Call hy_edit to lock scope.`,
     hint: "Call hy_edit next to lock scope before editing files.",
     allowedTools: ["hy_edit", "hy_status"],
-    blockedTools: ["hy_verify", "hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
+    nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.scope", automatic: true },
+    control: { automatic: true, stop: false, reason: "automatic" },
+    userAction: null,
   });
 }

@@ -5,7 +5,7 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-for (const field of ["status", "data", "error", "summary", "checks", "findings", "pagination", "meta", "_notice"]) {
+for (const field of ["stage", "status", "nextAction", "control", "userAction", "data", "error", "summary", "checks", "findings", "pagination", "meta", "_notice"]) {
   assert((OUTPUT_CONTROL_FIELDS as readonly string[]).includes(field), `output contract should include ${field}`);
 }
 for (const field of ["code", "hint", "retryable", "risk", "permission_violations", "missing_scopes", "console_url", "request_id", "trace_id"]) {
@@ -31,7 +31,10 @@ const ok = toolResult("plan", {
 });
 assert(ok.ok === true, "success envelope should be ok");
 assert(ok.phase === "plan" && ok.next === "plan", "success envelope should include phase and next");
+assert(ok.stage === "plan.compose", "success envelope should derive a stable intra-phase stage");
 assert(ok.status === "ready", "status should survive normalization");
+assert(ok.nextAction.tool === "hy_approve", "nextAction should select the first safe non-status tool");
+assert(ok.control.stop && ok.userAction?.kind === "review_failure", "legacy requires_user should never be guessed as approval");
 assert((ok.data as any).id === "plan-1", "data should survive normalization");
 assert(ok.summary === "review this plan", "summary should survive normalization");
 assert(ok.recovery?.command === "npm run lint:contract", "recovery.command should survive normalization");
@@ -59,3 +62,20 @@ assert(failed.error?.code === "SCOPE_DRIFT", "error code should survive normaliz
 assert(failed.error?.hint === "return to hy_edit", "error hint should survive normalization");
 assert(failed.error?.request_id === "req-2", "error request_id should survive normalization");
 assert(failed.allowedTools?.includes("hy_edit"), "allowedTools should survive normalization");
+assert(failed.stage === "edit.implementation" && failed.status === "failed", "failure envelope should normalize stage and status");
+assert(failed.next === "edit", "legacy next must remain available");
+
+const approval = toolResult("approve", {
+  phase: "approve",
+  stage: "approve.decision",
+  status: "pending",
+  requires_user: true,
+  stop_here: true,
+  allowedTools: ["hy_approve", "hy_status"],
+  nextAction: { tool: "hy_approve", phase: "approve", stage: "approve.decision", automatic: false },
+  control: { automatic: false, stop: true, reason: "approval_required" },
+  userAction: { kind: "approval", decisionId: "plan:abc123", options: ["approve", "reject", "revise"] },
+});
+assert(approval.userAction?.kind === "approval", "only an explicit typed decision gate should request approval");
+assert(approval.userAction?.decisionId === "plan:abc123", "approval should bind one stable decision identity");
+assert(approval.next === "approve" && approval.nextAction.automatic === false, "typed control must not remove legacy next");
