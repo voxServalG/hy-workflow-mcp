@@ -9,11 +9,12 @@ const releaseWorkflow = readFileSync(".github/workflows/npm-publish.yml", "utf8"
 const docs = readFileSync("docs/acceptance.md", "utf8");
 const baselineRunner = readFileSync("test/acceptance/baseline-runner.ts", "utf8");
 const baselineScenarios = readFileSync("test/acceptance/baseline-scenarios.ts", "utf8");
+const releaseScenarios = readFileSync("test/acceptance/scenarios.ts", "utf8");
 const mergeRecoveryIncident = readFileSync("test/acceptance/merge-recovery-incident.ts", "utf8");
 
 assert(pkg.scripts["test:acceptance:baseline"] === "npx tsx test/acceptance/baseline-runner.ts", "baseline script drift");
 assert(pkg.scripts["test:acceptance:pressure"]?.includes("runner.ts --profile release"), "release pressure script drift");
-assert(pkg.scripts["test:acceptance"] === "npm run test:acceptance:pressure", "release compatibility alias drift");
+assert(pkg.scripts["test:acceptance"] === "npm run test:acceptance:pressure --", "release compatibility alias must forward explicit runner arguments");
 assert(pkg.scripts["verify:dev"] === "npm run verify && npm run test:acceptance:baseline", "dev verifier must include baseline");
 assert(baseline.fixtures.length >= 7 && new Set(baseline.fixtures.map((item: any) => item.incident)).size === baseline.fixtures.length, "baseline must cover unique incident fixtures");
 assert(baseline.fixtures.some((item: any) => item.incident === "INC-LINT-INTERNAL-OFFLINE"), "baseline must encode the internal offline lint incident");
@@ -26,6 +27,7 @@ for (const token of ["HY_ACCEPTANCE_PACKAGE_ROOT", 'dist", "tools", "merge.js', 
 assert(baselineRunner.includes("INC-MERGE-UNKNOWN-OUTCOME") && baselineRunner.includes("completedIncidents") && baselineRunner.includes("incidents: completedIncidents"), "baseline runner must count and report the executed merge incident");
 for (const token of ["main", "dev", "trunk", "master", ".js", ".ts", ".py", ".rs"]) assert(JSON.stringify(baseline).includes(token), `baseline matrix missing ${token}`);
 assert(release.repositories.length === 5, "release pressure matrix must contain five public repositories");
+assert(releaseScenarios.includes("normalizeCodeExt(config.project?.codeExt)"), "release pressure must accept both scalar and array codeExt contracts");
 assert((releaseWorkflow.match(/actions\/checkout@/g) ?? []).length === 6, "release workflow must check out source plus five pressure repositories");
 for (const token of ["name: Acceptance Baseline", "branches: [dev]", "npm run test:acceptance:baseline", "contents: read", "persist-credentials: false"]) assert(workflow.includes(token), `baseline workflow missing ${token}`);
 for (const stale of ["seven repositories", "two private", "ACCEPTANCE_REPOS_TOKEN"]) assert(!docs.includes(stale), `acceptance docs retain stale claim: ${stale}`);
