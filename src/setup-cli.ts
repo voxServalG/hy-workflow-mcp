@@ -3,10 +3,9 @@ import { defaultSuggestion, ensureConfigDefaults, withConfirmedCiCommands, type 
 import { structuredError } from "./errs/structured.js";
 import { findProjectRoot } from "./runtime/project.js";
 import { createClientAdapters, detectClients, executeSetup } from "./setup/operations.js";
-import { previewArtifactChanges } from "./setup/preflight.js";
-import { cacheReviewedArtifacts, loadReviewedArtifacts } from "./setup/reviewed-artifacts.js";
+import { existingSharedProjectFiles, previewArtifactChanges } from "./setup/preflight.js";
 import { beginSetupPrompt, detectWithPrompt, finishPrompt, promptSetupOptions, runWithSpinner, successMessage, failureMessage } from "./setup/prompts.js";
-import { SetupFailure, type SetupAction, type SetupLanguage, type SetupOptions } from "./setup/types.js";
+import { SetupFailure, type SetupAction, type SetupFailureResult, type SetupLanguage, type SetupOptions } from "./setup/types.js";
 import { projectReadinessIssues } from "./tools/init.js";
 import { MINIMAL_PROJECT_CONTRACT, readDeployment } from "./runtime/deployment.js";
 
@@ -38,6 +37,7 @@ export function setupHelp(): string {
     "Options:",
     "  --clients <list|all>  Explicit client selection for non-interactive use",
     "  --remove-global       On final unset, remove MCP entries owned by hy-workflow",
+    "  --sync-project-artifacts  Independently replace occupied project integration files",
     "  --accept-artifact-changes  Allow reviewed team-artifact diffs to be applied",
     "  --review-artifact <file>:<before|absent>:<after>  Bind one reviewed SHA-256 diff; repeat as needed",
     "  --ci-command <cmd>    Explicit confirmed CI command; repeat for multiple commands",
@@ -84,6 +84,7 @@ export function parseSetupArgs(argv: string[], invokedAction: SetupAction): Pars
     else if (arg === "--shared") parsed.options.mode = "shared";
     else if (arg === "--remove-global") parsed.options.removeGlobal = true;
     else if (arg === "--keep-global") parsed.options.removeGlobal = false;
+    else if (arg === "--sync-project-artifacts") parsed.options.syncProjectArtifacts = true;
     else if (arg === "--accept-artifact-changes") parsed.options.acceptArtifactChanges = true;
     else if (arg === "--review-artifact") {
       const value = take(i, arg);
@@ -149,9 +150,33 @@ export function parseSetupArgs(argv: string[], invokedAction: SetupAction): Pars
   return parsed;
 }
 
-function emitError(error: unknown, json: boolean): void {
+function failureResult(error: unknown, action: SetupAction, argv: string[]): SetupFailureResult {
   const detail = structuredError(error, "setup", "preflight");
-  if (json) process.stdout.write(JSON.stringify({ ok: false, error: detail }, null, 2) + "\n");
+  const stage = action === "setup" ? "setup.apply" : "setup.unset";
+  const retryArgv = [action, ...argv];
+  const command = ["hy-workflow", ...retryArgv].map(value => JSON.stringify(value)).join(" ");
+  const instruction = detail.hint ?? `Review ${detail.code ?? detail.subtype}, correct the input or environment, then retry ${command}.`;
+  const retryable = detail.retryable === true;
+  return {
+    ok: false,
+    phase: "setup",
+    action,
+    stage,
+    status: "failed",
+    nextAction: { tool: "hy-workflow", arguments: { argv: retryArgv }, phase: "setup", stage, automatic: false },
+    control: { automatic: false, stop: true, reason: retryable ? "wait_required" : "repair_required" },
+    userAction: { kind: retryable ? "wait" : "review_failure", instruction },
+    recovery: retryable
+      ? { strategy: "wait_and_retry", tool: "hy-workflow", arguments: { argv: retryArgv }, command, instruction }
+      : { strategy: "repair_and_retry", tool: "hy-workflow", arguments: { argv: retryArgv }, command, instruction },
+    error: detail,
+  };
+}
+
+function emitError(error: unknown, json: boolean, action: SetupAction, argv: string[]): void {
+  const result = failureResult(error, action, argv);
+  const detail = result.error;
+  if (json) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   else process.stderr.write(`hy-workflow setup: ${detail.message}${detail.hint ? `\n${detail.hint}` : ""}\n`);
 }
 
@@ -166,7 +191,7 @@ export async function runSetupCli(
     return parsed.errors.length ? 1 : 0;
   }
   if (parsed.errors.length) {
-    emitError({ type: "validation", subtype: "invalid_arguments", code: "CLI_USAGE", message: parsed.errors.join("; "), retryable: false }, parsed.options.json);
+    emitError({ type: "validation", subtype: "invalid_arguments", code: "CLI_USAGE", message: parsed.errors.join("; "), retryable: false }, parsed.options.json, invokedAction, argv);
     return 1;
   }
 
@@ -176,6 +201,8 @@ export async function runSetupCli(
     const projectRoot = findProjectRoot(root);
     const deployment = readDeployment(projectRoot);
     const legacyInert = Boolean(deployment && !(deployment.schemaVersion === "3" && deployment.projectContract === MINIMAL_PROJECT_CONTRACT));
+    const orphanProjectArtifacts = !deployment && existingSharedProjectFiles(projectRoot).length > 0;
+    const projectArtifactsInert = legacyInert || orphanProjectArtifacts;
     const adapters = createClientAdapters(projectRoot);
     if (interactive) {
       beginSetupPrompt();
@@ -217,7 +244,7 @@ export async function runSetupCli(
         hasCiCommands: context.hasCiCommands,
         readinessIssues: context.readinessIssues,
         artifactChangesForCi: commands => {
-          if (legacyInert || !context.candidate) return [];
+          if (projectArtifactsInert || !context.candidate) return [];
           const config = commands?.length && !context.hasCiCommands
             ? withConfirmedCiCommands(context.candidate, commands)
             : context.candidate;
@@ -233,9 +260,12 @@ export async function runSetupCli(
         json: parsed.options.json,
         forceClientOverwrite: parsed.options.forceClientOverwrite ?? prompted.forceClientOverwrite,
         migrateLegacyClients: parsed.options.migrateLegacyClients ?? prompted.migrateLegacyClients,
+        syncProjectArtifacts: parsed.options.syncProjectArtifacts,
+        acceptArtifactChanges: parsed.options.acceptArtifactChanges,
+        reviewedArtifactChanges: parsed.options.reviewedArtifactChanges,
       };
     } else if (!parsed.options.yes || !parsed.explicitClients) {
-      emitError({ type: "validation", subtype: "invalid_arguments", code: "CLI_USAGE", message: "non-interactive use requires --yes and --clients <list|all>", retryable: false }, parsed.options.json);
+      emitError({ type: "validation", subtype: "invalid_arguments", code: "CLI_USAGE", message: "non-interactive use requires --yes and --clients <list|all>", retryable: false }, parsed.options.json, invokedAction, argv);
       return 1;
     }
     if (!interactive && options.action === "setup") {
@@ -247,32 +277,18 @@ export async function runSetupCli(
           "Pass each reviewed command with --ci-command, or use the interactive TUI. A bare --accept-ci-commands flag cannot approve inferred values.",
         );
       }
-      if (!legacyInert && options.acceptArtifactChanges && !options.reviewedArtifactChanges?.length) {
-        // Try the 5-minute TTL reviewed-artifact cache from a recent --dry-run, but only
-        // when there are real drift entries that would require acceptance.
-        const prePreview = previewArtifactChanges(projectRoot, ensureConfigDefaults(projectRoot, { dryRun: true }).candidate as JsonObject);
-        const requiringAcceptance = prePreview.filter(a => a.requiresAcceptance);
-        if (requiringAcceptance.length) {
-          const fromCache = loadReviewedArtifacts(projectRoot, requiringAcceptance);
-          if (fromCache) {
-            options.reviewedArtifactChanges = fromCache;
-          }
-        }
-        if (requiringAcceptance.length && !options.reviewedArtifactChanges?.length) {
-          throw new SetupFailure(
-            "artifact_drift",
-            "SETUP_ARTIFACT_DRIFT",
-            "Non-interactive artifact approval requires exact reviewed before/after hashes.",
-            "Run --dry-run --json first (it caches reviewed hashes for 5 minutes), then rerun with --accept-artifact-changes. Or pass each accepted tuple with --review-artifact <file>:<before-sha256|absent>:<after-sha256>.",
-          );
-        }
+      if (!legacyInert && options.syncProjectArtifacts && (!options.acceptArtifactChanges || !options.reviewedArtifactChanges?.length)) {
+        throw new SetupFailure(
+          "artifact_drift",
+          "SETUP_ARTIFACT_REVIEW_INCOMPLETE",
+          "Explicit project artifact sync requires acceptance and complete exact review tuples.",
+          "Use --sync-project-artifacts together with --accept-artifact-changes and one --review-artifact tuple for every occupied integration target. Ordinary setup is a separate operation and leaves those files untouched.",
+          { occupiedTargets: orphanProjectArtifacts ? existingSharedProjectFiles(projectRoot).sort() : [] },
+        );
       }
     }
-    // When running non-interactive dry-run, cache the exact artifact hashes so the next
-    // --accept-artifact-changes invocation can reuse them without manual copy-paste.
     if (!interactive && options.dryRun && options.json) {
       const result = await executeSetup(projectRoot, options, adapters, { inspectDirectTools: true });
-      if (Array.isArray(result.artifactChanges)) cacheReviewedArtifacts(projectRoot, result.artifactChanges);
       process.stdout.write(JSON.stringify(result, null, 2) + "\n");
       return result.ok ? 0 : 1;
     }
@@ -294,7 +310,7 @@ export async function runSetupCli(
     else process.stdout.write((result.ok ? successMessage(options.action, result.projectFilesChanged, options.language) : result.message) + "\n");
     return result.ok ? 0 : 1;
   } catch (error: any) {
-    emitError(error instanceof Error ? error : new SetupFailure("preflight", "SETUP_PREFLIGHT_FAILED", String(error)), options.json);
+    emitError(error instanceof Error ? error : new SetupFailure("preflight", "SETUP_PREFLIGHT_FAILED", String(error)), options.json, invokedAction, argv);
     return 1;
   }
 }

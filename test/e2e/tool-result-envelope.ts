@@ -9,12 +9,15 @@ import { handleCommit } from "../../src/tools/commit.js";
 import { handleMerge } from "../../src/tools/merge.js";
 import { handleStatus } from "../../src/tools/status.js";
 import { handleApprove } from "../../src/tools/approve.js";
+import { handleEdit } from "../../src/tools/edit.js";
+import { handleSyncDocs } from "../../src/tools/sync_docs.js";
 import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import { OUTPUT_CONTROL_FIELDS } from "../../src/output/contract.js";
-import { computePlanHash, writeState } from "../../src/state.js";
+import { computePlanHash, readState, writeState } from "../../src/state.js";
 import type { PlanDoc, WorkflowState } from "../../src/state.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
 import { createGitGhHarness, type GitGhHarness } from "../helpers/git-gh-harness.js";
+import { workflowStageMatchesPhase } from "../../src/runtime/state-machine.js";
 
 process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
@@ -111,6 +114,9 @@ function assertEnvelope(name: string, result: any): void {
   if (typeof result.ok !== "boolean") throw new Error(`${name} missing ok`);
   if (typeof result.phase !== "string" || !result.phase) throw new Error(`${name} missing typed phase`);
   if (typeof result.stage !== "string" || !result.stage) throw new Error(`${name} missing typed stage`);
+  if (!workflowStageMatchesPhase(result.phase, result.stage)) {
+    throw new Error(`${name} stage ${result.stage} does not belong to phase ${result.phase}`);
+  }
   if (typeof result.status !== "string" || !result.status) throw new Error(`${name} missing typed status`);
   if (typeof result.next !== "string" || !result.next) throw new Error(`${name} missing next`);
   if (!result.nextAction || (result.nextAction.tool !== null && typeof result.nextAction.tool !== "string")
@@ -118,9 +124,15 @@ function assertEnvelope(name: string, result: any): void {
       || typeof result.nextAction.automatic !== "boolean") {
     throw new Error(`${name} missing typed nextAction`);
   }
+  if (!workflowStageMatchesPhase(result.nextAction.phase, result.nextAction.stage)) {
+    throw new Error(`${name} nextAction stage ${result.nextAction.stage} does not belong to phase ${result.nextAction.phase}`);
+  }
   if (!result.control || typeof result.control.automatic !== "boolean"
       || typeof result.control.stop !== "boolean" || typeof result.control.reason !== "string") {
     throw new Error(`${name} missing typed control`);
+  }
+  if (result.nextAction.automatic !== result.control.automatic || (result.control.stop && result.control.automatic)) {
+    throw new Error(`${name} has contradictory nextAction/control automation: ${JSON.stringify(result)}`);
   }
   if (result.userAction !== null && (typeof result.userAction !== "object" || typeof result.userAction.kind !== "string")) {
     throw new Error(`${name} missing typed userAction`);
@@ -246,18 +258,48 @@ try {
     throw new Error("hy_approve should describe merge-to-baseBranch completion");
   }
 
+  writeState({ ...baseState("branch"), branch: "feat/envelope", plan: basePlan(), approval: { time: "historical", note: "approved" } });
+  const editResult = await handleEdit();
+  assertEnvelope("hy_edit", editResult);
+  if (editResult.nextAction.tool !== null
+      || editResult.nextAction.phase !== "edit"
+      || editResult.nextAction.stage !== "edit.implementation"
+      || editResult.control.reason !== "external_action_required"
+      || !editResult.control.stop) {
+    throw new Error(`hy_edit must stop for actual file editing instead of claiming an automatic tool transition: ${JSON.stringify(editResult)}`);
+  }
+
   writeState(baseState("edit"));
   const verifyResult = await handleVerify();
   assertEnvelope("hy_verify", verifyResult);
-  if (!verifyResult.error || !verifyResult.allowedTools?.includes("hy_status")) {
-    throw new Error("hy_verify error should include envelope guidance");
+  if (verifyResult.error?.code !== "VERIFY_PLAN_MISSING"
+      || verifyResult.recovery?.strategy !== "reset"
+      || verifyResult.nextAction.tool !== "hy_reset"
+      || verifyResult.phase !== "edit"
+      || verifyResult.stage !== "edit.implementation") {
+    throw new Error(`hy_verify impossible state should preserve position and route reset: ${JSON.stringify(verifyResult)}`);
   }
 
-  writeState(baseState("commit"));
+  writeState({ ...baseState("verify"), stage: "verify.amendment" });
+  const noPlanSync = await handleSyncDocs();
+  assertEnvelope("hy_sync_docs:no-plan", noPlanSync);
+  if (noPlanSync.phase !== "verify" || noPlanSync.stage !== "verify.amendment") {
+    throw new Error(`hy_sync_docs errors must preserve the persisted verify.amendment stage: ${JSON.stringify(noPlanSync)}`);
+  }
+  if (noPlanSync.recovery?.strategy !== "reset" || noPlanSync.nextAction.tool !== "hy_reset") {
+    throw new Error(`hy_sync_docs impossible state must expose executable reset recovery: ${JSON.stringify(noPlanSync)}`);
+  }
+
+  writeState({ ...baseState("commit"), stage: "commit.ci" });
   const noPlanCommit = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:no-plan", noPlanCommit);
-  if (!noPlanCommit.error?.message.includes("No plan")) {
-    throw new Error(`hy_commit without plan should report No plan, got ${JSON.stringify(noPlanCommit)}`);
+  if (noPlanCommit.error?.code !== "COMMIT_PLAN_MISSING"
+      || noPlanCommit.recovery?.strategy !== "reset"
+      || noPlanCommit.nextAction.tool !== "hy_reset") {
+    throw new Error(`hy_commit without plan should route reset, got ${JSON.stringify(noPlanCommit)}`);
+  }
+  if (noPlanCommit.stage !== "commit.ci") {
+    throw new Error(`hy_commit errors must preserve the persisted commit.ci stage: ${JSON.stringify(noPlanCommit)}`);
   }
 
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/envelope" });
@@ -266,12 +308,17 @@ try {
   if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verified implementation digest") || !commitResult.allowedTools?.includes("hy_exam_plan") || !commitResult.allowedTools?.includes("hy_exam_submit")) {
     throw new Error("hy_commit missing digest precondition should include error and hint");
   }
+  if (commitResult.phase !== "edit" || commitResult.stage !== "edit.implementation" || commitResult.nextAction.tool !== "hy_verify" || commitResult.nextAction.phase !== "verify" || readState().phase !== "edit") {
+    throw new Error(`hy_commit verify recovery must first persist an executable edit phase: ${JSON.stringify(commitResult)}`);
+  }
 
   writeState({ ...baseState("commit"), plan: basePlan(), verifiedImplementationDigest: "abc123" });
   const noBranchCommit = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:no-branch", noBranchCommit);
-  if (!noBranchCommit.error?.message.includes("No active branch")) {
-    throw new Error(`hy_commit without branch should report No active branch, got ${JSON.stringify(noBranchCommit)}`);
+  if (noBranchCommit.error?.code !== "COMMIT_BRANCH_MISSING"
+      || noBranchCommit.recovery?.strategy !== "reset"
+      || noBranchCommit.nextAction.tool !== "hy_reset") {
+    throw new Error(`hy_commit without branch should route reset, got ${JSON.stringify(noBranchCommit)}`);
   }
 
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/not-current", verifiedImplementationDigest: "abc123" });
@@ -286,6 +333,7 @@ try {
   assertEnvelope("hy_merge", mergeResult);
   if (!mergeResult.error) throw new Error("hy_merge without PR should report error");
 
+  writeState(baseState("plan"));
   const statusResult = await handleStatus();
   assertEnvelope("hy_status", statusResult);
   if (!statusResult.capabilities?.git || !statusResult.capabilities?.gh) {
@@ -332,7 +380,7 @@ await withEnvelopeMergeHarness("merge-envelope-sync-failure", async harness => {
   }
   assertGitExecutor("hy_merge:post-sync-incomplete", result.data?.executor);
   assertMergeIdentityDetail("hy_merge:post-sync-incomplete", result, harness);
-  if (!result.requires_user || !result.stop_here || result.recovery?.tool !== "hy_merge" || !result.allowedTools?.includes("hy_merge") || !result.allowedTools?.includes("hy_status")) {
+  if (!result.requires_user || !result.stop_here || result.recovery?.strategy !== "wait_and_retry" || result.recovery.tool !== "hy_merge" || !result.allowedTools?.includes("hy_merge") || !result.allowedTools?.includes("hy_status")) {
     throw new Error(`hy_merge local recovery failure should expose retry controls: ${JSON.stringify(result)}`);
   }
 });
@@ -349,7 +397,7 @@ await withEnvelopeMergeHarness("merge-envelope-unknown-outcome", async harness =
   }
   assertMergeIdentityDetail("hy_merge:unknown-outcome", result, harness);
   assertExactAllowedTools("hy_merge:unknown-outcome", result, ["hy_merge", "hy_status"]);
-  if (!result.requires_user || !result.stop_here || result.recovery?.tool !== "hy_merge") {
+  if (!result.requires_user || !result.stop_here || result.recovery?.strategy !== "wait_and_retry" || result.recovery.tool !== "hy_merge") {
     throw new Error(`hy_merge unknown outcome should direct retry through hy_merge: ${JSON.stringify(result)}`);
   }
 });

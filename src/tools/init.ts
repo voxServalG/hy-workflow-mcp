@@ -7,6 +7,7 @@ import { projectPaths } from "../runtime/user-paths.js";
 import { assertSafeRuntimeBoundary } from "../runtime/boundary.js";
 import { assertPhase, projectRoot, readState, transition, writeState } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { DEFAULT_STAGE_BY_PHASE } from "../runtime/state-machine.js";
 import { validateBaseBranch } from "../project-profile.js";
 import { isDocumentPath, resolveDocsDir } from "../docs_paths.js";
 import { inspectDocumentation, shouldIgnoreDocumentPath } from "../policy/docs.js";
@@ -104,7 +105,7 @@ function setupMissingResult(missingArtifacts: string[]): ToolResult {
     stop_here: true,
     allowedTools: ["hy_init", "hy_status"],
     blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_merge", "hy_reset"],
-    recovery: { tool: "terminal", instruction: SETUP_COMMAND },
+    recovery: { strategy: "external_action", tool: "terminal", instruction: SETUP_COMMAND },
     missingArtifacts,
   });
 }
@@ -115,13 +116,14 @@ export async function handleInit(): Promise<ToolResult> {
   const state = readState();
 
   if (state.phase !== "init" && state.phase !== "plan") {
+    const stage = state.stage ?? DEFAULT_STAGE_BY_PHASE[state.phase];
     return toolResult(state.phase, {
-      stage: "init.ready",
+      stage,
       status: "ready",
       message: `Workflow is already active in ${state.phase}; hy_init left it unchanged.`,
       hint: "Call hy_status and resume the persisted pipeline. Do not initialize or approve again.",
       allowedTools: ["hy_status"],
-      nextAction: { tool: "hy_status", phase: state.phase, stage: "init.ready", automatic: true },
+      nextAction: { tool: "hy_status", phase: state.phase, stage, automatic: true },
       control: { automatic: true, stop: false, reason: "automatic" },
       userAction: null,
     });
@@ -179,12 +181,25 @@ export async function handleInit(): Promise<ToolResult> {
   const paths = projectPaths(root);
   const artifactGuidance = initArtifactGuidance();
   return toolResult("plan", {
+    stage: "plan.before_plan",
+    status: "ready",
     display: {
       title: "Setup ready",
       body: `External deployment and authoritative runtime configuration verified. hy_init changed no project files.\n\n${artifactGuidance.body}`,
     },
     hint: "For a concrete repository change task, call hy_read_docs({ stage: 'before_plan', task }) before hy_plan.",
     allowedTools: ["hy_read_docs", "hy_status"],
+    nextAction: {
+      tool: null,
+      phase: "plan",
+      stage: "plan.before_plan",
+      automatic: false,
+    },
+    control: { automatic: false, stop: true, reason: "information_required" },
+    userAction: {
+      kind: "provide_information",
+      instruction: "Use the current user development request as hy_read_docs(before_plan).task; ask only when no concrete task exists.",
+    },
     commitArtifacts: [],
     localArtifacts: [paths.configDir, paths.stateDir, paths.cacheDir],
     projectFilesChanged: [],

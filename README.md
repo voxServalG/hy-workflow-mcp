@@ -115,12 +115,19 @@ sequenceDiagram
     A->>D: hy_read_docs(before_plan) 读 docs/ 建基线
     A->>U: hy_plan 出 PlanDoc（改哪些文件、风险、验证）
     U-->>A: approve
-    A->>D: hy_read_docs(before_approve) 二审计划没飘
-    A->>A: hy_approve 记录批准
+    A->>A: hy_approve 记录这一次决定
+    A->>D: hy_read_docs(before_approve) 自动二审计划
+    alt 文档事实未漂移
+        A->>A: hy_approve 自动续跑原决定，不再询问
+    else 文档事实有漂移
+        A->>A: agent 选择 auditDecision=continue 或 replan
+    end
     A->>G: hy_branch 建分支
-    A->>A: hy_edit 锁 Scope，开始改代码
-    A->>D: hy_read_docs(after_edit) 审计实现 diff
-    A->>D: hy_sync_docs 同步文档
+    A->>A: hy_edit 锁 Scope 后停下
+    A->>A: 用标准文件工具完成代码编辑
+    A->>D: hy_read_docs(after_edit) 审计实现 diff 后停下
+    A->>D: 完成 PlanDoc 已声明的文档编辑
+    A->>D: hy_sync_docs 记录同步证据并自动续跑
     A->>A: hy_verify 本地 compile+contract-lint+tests
     A->>G: hy_commit 提交、建 PR，并执行 commit.ci
     A->>G: hy_merge 复用原审批合并，并执行 merge.sync
@@ -135,15 +142,17 @@ hy_status
 → hy_read_docs(before_plan)      # 先读文档建基线
 → hy_plan                         # 产出 PlanDoc 给你看
 → 你 approve                      # approve 放行；别的就是驳回
-→ hy_read_docs(before_approve)    # 二审没飘
-→ hy_approve                      # 你 approve
+→ hy_approve                      # 记录这一次人工决定
+→ hy_read_docs(before_approve)    # 自动二审，不新增人工确认
+→ hy_approve                      # 无漂移自动续跑；有漂移由 agent continue/replan，不再问同一计划
 → hy_branch                       # 建分支
-→ hy_edit                         # 锁 Scope
-→ （agent 改代码 / 文档）
-→ hy_read_docs(after_edit)        # 审计 diff
-→ hy_sync_docs                    # 同步文档
+→ hy_edit                         # 锁 Scope 后停下
+→ （agent 用标准文件工具改代码）
+→ hy_read_docs(after_edit)        # 审计 diff 后停下
+→ （agent 完成 PlanDoc 已声明的文档编辑）
+→ hy_sync_docs                    # 记录同步证据，自动进入验证
 → hy_verify                       # 本地全量校验（compile/contract-lint/tests）
-→ hy_amend_plan                   # 纯缩小 Scope 复用批准；增加目标或新增删除需新批准
+→ hy_amend_plan                   # 仅需要修订时；纯缩小 Scope 复用批准
 → hy_commit                       # 提交、PR、commit.ci；pending 时重试
 → hy_merge                        # 合并，并执行/恢复 merge.sync
 → hy_reset                        # 回 plan 等下一个任务
@@ -178,10 +187,15 @@ agent：
 你：approve
 
 agent：
+  [hy_approve] 已记录这一次人工决定
+  [hy_read_docs(before_approve)] 自动二审 PlanDoc
+  [hy_approve] 无事实漂移，自动续跑原决定，没有再次询问
   [hy_branch] fix/rate-limit-login
   [hy_edit] 锁定 2 个代码文件 + 1 个文档文件
   [改代码 ...]
-  [hy_sync_docs] 同步 docs/api.md
+  [hy_read_docs(after_edit)] 审计实现 diff 后停下
+  [改文档 ...] 完成 PlanDoc 已声明的 docs/api.md 修改
+  [hy_sync_docs] 记录当前文档同步证据并自动进入验证
   [hy_verify] lint ✅ build ✅ test ✅ 42 passed
   [hy_commit] 推送并建 PR #142
   [hy_commit/commit.ci] 等待 CI... Verify ✅ doclint ✅ codelint ✅
@@ -232,7 +246,7 @@ hy-workflow config --apply --code-dirs service,tools --docs-dir docs --base-bran
 或先写好 `hy-workflow.json`（见 [docs/setup.md](./docs/setup.md)）。
 
 **Q4: `hy_verify` 跑测试超时 / MCP Client 报 -32001？**
-A: 同步 `hy_verify` 适合 <60s 的快路径。长测试套件用异步 verify-as-oracle：Agent 调 `hy_exam_plan` 拿到检查清单和 nonce，用 Bash 逐条跑（没 MCP transport 超时），把 exitCode + 最后 4KB stdout 交给 `hy_exam_submit` 交卷。阅卷检查 nonce、命令字串、exitCode、mustContain 和 git tree hash，通过才写 verifyHash 放行 commit。2 小时内修完只需补交失败条目。
+A: 同步 `hy_verify` 适合 <60s 的快路径。长测试套件用异步 verify-as-oracle：Agent 调 `hy_exam_plan` 拿到检查清单和 nonce，用 Bash 逐条跑（没有 MCP transport 超时），再把完整结果集交给 `hy_exam_submit`。试卷绑定精确 PlanDoc hash 和包含未跟踪文件的完整实现指纹；阅卷还会复核当前审批、文档证据、本地 scope 与 `no_new_external` 边界。通过后保存 implementation manifest 与 verified implementation digest；兼容输出或 PR 标签中仍叫 `verifyHash` 的值只是该 digest 的别名。任何一项失败都会回到 edit；修复后必须重新完成 after_edit、sync_docs 并领取新试卷，不能沿用原试卷局部补交。
 
 **Q5: 支持 Python / Go / Rust / Bun 吗？**
 A: 支持识别这些项目并执行统一边界和 lint/policy 规则。生成的 hy-workflow job 不会替项目安装 toolchain，也不会重复跑 `pytest`/`go test`/`cargo test`/`bun test`；这些仍放在项目自己的 CI jobs 里。

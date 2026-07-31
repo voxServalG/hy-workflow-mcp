@@ -173,8 +173,18 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     return toolResult("plan", {
       error: "before_plan document baseline is required before hy_plan.",
       hint: `Call hy_read_docs with { stage: "before_plan", task } first. This is an automatic agent context step, not a user review gate.`,
+      stage: "plan.before_plan",
       allowedTools: ["hy_read_docs", "hy_status"],
       blockedTools: ["hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
+      nextAction: {
+        tool: "hy_read_docs",
+        arguments: { stage: "before_plan", task },
+        phase: "plan",
+        stage: "plan.before_plan",
+        automatic: true,
+      },
+      control: { automatic: true, stop: false, reason: "repair_required" },
+      userAction: null,
     });
   }
   const beforePlanTaskMismatch = beforePlan.task !== task;
@@ -286,8 +296,8 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   const scopePathErrors = validatePlanScopePaths(projectRoot(), p);
   if (scopePathErrors.length) {
     return toolResult("plan", {
-      error: `PlanDoc scope paths must stay inside the project root, and scope.changes/scope.delete paths must already exist before approval: ${scopePathErrors.join("; ")}. Put planned creations in scope.new_files.`,
-      hint: "Confirm each existing-file path with Read/Glob before hy_plan. Keep files that will be created in scope.new_files, but still use project-relative paths under the repository root.",
+      error: `PlanDoc scope contains invalid paths: ${scopePathErrors.join("; ")}.`,
+      hint: "Use project-relative paths, put planned creations in scope.new_files, and remove every legacy ignored or local/runtime artifact because those paths are permanently outside hy-workflow authority.",
       allowedTools: ["hy_plan", "hy_status"],
     });
   }
@@ -398,6 +408,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   // A new PlanDoc is a new material intent. Historical approval must never
   // leak into the new decision even if state was recovered unusually.
   next.approval = null;
+  next.pendingApproval = null;
   next.documentReads = {
     ...(state.documentReads ?? {}),
     beforeApprove: null,
@@ -426,11 +437,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     hint: "You MUST display the ENTIRE display.body to the user, matching ALL requiredSections anchors in order. Do not skip any section. Wait for explicit approval before calling hy_approve.",
     allowedTools: ["hy_read_docs", "hy_approve", "hy_status"],
     blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
-    recovery: {
-      tool: "hy_plan",
-      instruction: "If the user rejects the plan, revise the PlanDoc and call hy_plan again.",
-    },
-    nextAction: { tool: "hy_approve", phase: "approve", stage: "approve.decision", automatic: false },
+    nextAction: { tool: null, phase: "approve", stage: "approve.decision", automatic: false },
     control: { automatic: false, stop: true, reason: "approval_required" },
     userAction: {
       kind: "approval",

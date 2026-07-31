@@ -1,5 +1,6 @@
 import {
   acquireMergeLock,
+  approvalMatchesPlan,
   assertPhase,
   projectRoot,
   readState,
@@ -33,9 +34,10 @@ import {
   type MergeIdentity,
   type MergeReceipt,
 } from "../merge-recovery.js";
-import { toolResult, type ToolResult } from "./_base.js";
+import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
 
 type Executor = unknown;
+type MergeStage = "merge.reconcile" | "merge.sync";
 
 type DownstreamSnapshot =
   | { ok: true; progress: DownstreamBranchProgress[]; skipped: string[]; executor?: Executor }
@@ -94,6 +96,13 @@ function receiptStageForError(code: string): "merge.reconcile" | "merge.sync" {
     : "merge.reconcile";
 }
 
+function mergeStageForState(state: WorkflowState): MergeStage {
+  if (state.stage === "merge.sync") return "merge.sync";
+  return state.mergeReceipt && state.mergeReceipt.remote.outcome !== "pending"
+    ? "merge.sync"
+    : "merge.reconcile";
+}
+
 function stopFailure(
   identity: MergeIdentity,
   code: string,
@@ -103,19 +112,23 @@ function stopFailure(
   detail: Record<string, unknown> = {},
   data: Record<string, unknown> = {},
   cause?: unknown,
+  stageOverride?: MergeStage,
 ): ToolResult {
   const tool = retryable ? "hy_merge" : "hy_reset";
+  const stage = stageOverride ?? receiptStageForError(code);
   return toolResult("merge", {
     error: mergeError(code, message, hint, identity, retryable, detail, cause),
     data,
     display: { title: message, body: hint },
     requires_user: true,
     stop_here: true,
-    stage: receiptStageForError(code),
+    stage,
     status: retryable ? "pending" : "blocked",
-    recovery: { tool, instruction: hint },
+    recovery: retryable
+      ? { strategy: "wait_and_retry", tool: "hy_merge", instruction: hint }
+      : { strategy: "reset", tool: "hy_reset", instruction: hint },
     allowedTools: retryable ? ["hy_merge", "hy_status"] : ["hy_reset", "hy_status"],
-    nextAction: { tool, phase: "merge", stage: receiptStageForError(code), automatic: false },
+    nextAction: { tool, phase: "merge", stage, automatic: false },
     control: { automatic: false, stop: true, reason: retryable ? "wait_required" : "review_required" },
     userAction: retryable
       ? { kind: "wait", instruction: hint }
@@ -556,6 +569,8 @@ function handleMergeLocked(root: string, state: WorkflowState, identity: MergeId
       false,
       { receiptIdentity: receipt.identity },
       { executor },
+      undefined,
+      mergeStageForState(state),
     );
   }
   if (receipt && receipt.remote.outcome !== "pending") return finalizeLocalSync(root, state, receipt, [], executor);
@@ -644,11 +659,36 @@ function handleMergeLocked(root: string, state: WorkflowState, identity: MergeId
 export async function handleMerge(): Promise<ToolResult> {
   const initial = readState();
   assertPhase(initial, "merge");
-  if (!initial.prNumber) return toolResult("merge", { error: "No active PR", allowedTools: ["hy_status"] });
+  const initialStage = mergeStageForState(initial);
+  if (!initial.plan) {
+    return invalidWorkflowStateResult(
+      initial,
+      "MERGE_PLAN_MISSING",
+      "Workflow state does not contain the PlanDoc required to merge.",
+      "Reset the invalid workflow state before starting another approved task.",
+    );
+  }
+  if (!approvalMatchesPlan(initial.approval, initial.plan)) {
+    return invalidWorkflowStateResult(
+      initial,
+      "APPROVAL_PLAN_MISMATCH",
+      "The persisted approval does not match the current PlanDoc.",
+      "Reset the invalid workflow state before creating a new approved PlanDoc.",
+    );
+  }
+  if (!initial.prNumber) {
+    return invalidWorkflowStateResult(
+      initial,
+      "MERGE_PR_MISSING",
+      "Workflow state reached merge without an active pull request.",
+      "Reset the impossible workflow state before starting another approved task.",
+    );
+  }
   const root = projectRoot();
   const resolved = resolveMergeIdentity(root, initial.prNumber);
   if (!resolved.ok) {
     return toolResult("merge", {
+      stage: initialStage,
       error: resolved.error,
       data: { executor: resolved.executor },
       requires_user: true,
@@ -668,12 +708,28 @@ export async function handleMerge(): Promise<ToolResult> {
       { owner, lockPath: lock.path },
       { executor: resolved.executor },
       lock.cause,
+      initialStage,
     );
   }
   try {
     const state = readState();
     assertPhase(state, "merge");
-    if (!state.prNumber) return toolResult("merge", { error: "No active PR", allowedTools: ["hy_status"] });
+    if (!state.plan || !approvalMatchesPlan(state.approval, state.plan)) {
+      return invalidWorkflowStateResult(
+        state,
+        "APPROVAL_PLAN_MISMATCH",
+        "The approval or PlanDoc changed while acquiring the project merge lock.",
+        "Reset the invalid workflow state before starting another approved task.",
+      );
+    }
+    if (!state.prNumber) {
+      return invalidWorkflowStateResult(
+        state,
+        "MERGE_PR_MISSING",
+        "The active pull request disappeared from workflow state while acquiring the merge lock.",
+        "Reset the impossible workflow state before starting another approved task.",
+      );
+    }
     state.stage = state.mergeReceipt && state.mergeReceipt.remote.outcome !== "pending"
       ? "merge.sync"
       : "merge.reconcile";
@@ -681,6 +737,7 @@ export async function handleMerge(): Promise<ToolResult> {
     const lockedIdentity = resolveMergeIdentity(root, state.prNumber);
     if (!lockedIdentity.ok) {
       return toolResult("merge", {
+        stage: mergeStageForState(state),
         error: lockedIdentity.error,
         data: { executor: lockedIdentity.executor ?? resolved.executor },
         requires_user: true,
@@ -697,6 +754,8 @@ export async function handleMerge(): Promise<ToolResult> {
         false,
         { lockedIdentity: lockedIdentity.identity },
         { executor: lockedIdentity.executor ?? resolved.executor },
+        undefined,
+        mergeStageForState(state),
       );
     }
     return handleMergeLocked(root, state, lockedIdentity.identity, lockedIdentity.executor ?? resolved.executor);

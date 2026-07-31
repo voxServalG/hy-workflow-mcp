@@ -3,8 +3,11 @@ import * as path from "node:path";
 import {
   assertPhase,
   computePlanHash,
+  pendingApprovalMatchesPlan,
+  planDecisionId,
   projectRoot,
   readState,
+  transition,
   writeState,
   type DocumentReadFile,
   type DocumentReadSnapshot,
@@ -17,7 +20,7 @@ import {
 } from "../docs_graph.js";
 import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest, implementationFilesForDigest } from "./sync_docs.js";
-import { toolResult, type ToolResult } from "./_base.js";
+import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
 import { resolveDocsDir } from "../docs_paths.js";
 import { requireRuntimeConfig } from "../config.js";
 import { inspectDocumentation, selectDocumentPage } from "../policy/docs.js";
@@ -31,6 +34,12 @@ function documentReadPhase(stage: DocumentReadStage): "plan" | "approve" | "edit
   if (stage === "before_plan") return "plan";
   if (stage === "before_approve") return "approve";
   return "edit";
+}
+
+function documentWorkflowStage(stage: DocumentReadStage): "plan.before_plan" | "approve.before_approve" | "edit.after_edit" {
+  if (stage === "before_plan") return "plan.before_plan";
+  if (stage === "before_approve") return "approve.before_approve";
+  return "edit.after_edit";
 }
 
 function buildFindings(
@@ -79,11 +88,13 @@ function buildSnapshot(
 ): DocumentReadSnapshot | ToolResult {
   const root = projectRoot();
   const nextPhase = documentReadPhase(stage);
+  const workflowStage = documentWorkflowStage(stage);
   let configuredDocsDir: string;
   try {
     configuredDocsDir = readDocsDir(root);
   } catch (error) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error,
       hint: "Run hy-workflow setup in the project root, then retry hy_read_docs.",
       requires_user: true,
@@ -93,6 +104,7 @@ function buildSnapshot(
   }
   if (isRuntimeIgnoredArtifact(root, configuredDocsDir)) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error: "Configured project.docsDir points to an ignored legacy or runtime path.",
       hint: "Choose a maintained documentation directory outside legacy injection and runtime paths.",
       allowedTools: ["hy_status"],
@@ -101,6 +113,7 @@ function buildSnapshot(
   const resolvedDocsDir = resolveDocsDir(root, configuredDocsDir);
   if (!resolvedDocsDir.ok) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
       hint: "Update project.docsDir in the authoritative project configuration to a project-relative directory inside the repository.",
       allowedTools: ["hy_status"],
@@ -110,6 +123,7 @@ function buildSnapshot(
 
   if (!fs.existsSync(docsRoot) || !fs.statSync(docsRoot).isDirectory()) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error: `Configured docsDir does not exist or is not a directory: ${docsDir}`,
       hint: "Create the configured docs directory or update project.docsDir in the authoritative project configuration before continuing.",
       allowedTools: ["hy_status"],
@@ -129,6 +143,7 @@ function buildSnapshot(
     .find(issue => issue.code === "DOCS_EMPTY" || issue.code === "DOCS_NO_FACTS");
   if (blockingIssue) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error: {
         type: "docs",
         subtype: "docs_missing",
@@ -160,6 +175,7 @@ function buildSnapshot(
     page = selectDocumentPage(root, candidates, task, [...graph.entryPoints, ...extraEntryPoints], graph.digest, cursor);
   } catch (error: any) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error: { type: "docs", subtype: "docs_stale", code: "DOCS_CURSOR_INVALID", message: error?.message ?? String(error), retryable: true },
       hint: "Discard the stale cursor and restart hy_read_docs without a cursor so facts are read from the current DocsGraph.",
       requires_user: false,
@@ -170,6 +186,7 @@ function buildSnapshot(
   const files: DocumentReadFile[] = page.files;
   if (!files.length) {
     return toolResult(nextPhase, {
+      stage: workflowStage,
       error: { type: "docs", subtype: "docs_missing", code: "DOCS_NO_FACTS", message: "No relevant substantive document facts fit the configured read policy.", retryable: false },
       hint: "Add a maintained README/index and task-relevant documentation before planning.",
       requires_user: true,
@@ -240,9 +257,10 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     }
     const snapshot = buildSnapshot(stage, task, null, args.cursor);
     if ("next" in snapshot) return snapshot;
+    const workflowStage = documentWorkflowStage(stage);
     const next = {
       ...state,
-      stage,
+      stage: workflowStage,
       documentReads: {
         ...(state.documentReads ?? {}),
         beforePlan: withoutDocumentContents(snapshot),
@@ -251,7 +269,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     };
     writeState(next);
     return toolResult("plan", {
-      stage,
+      stage: workflowStage,
       status: "passed",
       snapshot,
       display: {
@@ -261,8 +279,8 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       },
       hint: "Use the document baseline to construct PlanDoc, then call hy_plan. This is not a user review gate.",
       allowedTools: ["hy_plan", "hy_status"],
-      nextAction: { tool: "hy_plan", phase: "plan", stage: "plan.compose", automatic: true },
-      control: { automatic: true, stop: false, reason: "automatic" },
+      nextAction: { tool: null, phase: "plan", stage: "plan.compose", automatic: false },
+      control: { automatic: false, stop: true, reason: "information_required" },
       userAction: null,
     });
   }
@@ -271,14 +289,17 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
     assertPhase(state, "edit", "verify");
     const planHash = computePlanHash(state.plan);
     if (!state.plan || !planHash) {
-      return toolResult("edit", {
-        phase: state.phase,
-        error: "after_edit document reading requires an existing PlanDoc.",
-        hint: "Call hy_plan and hy_edit before hy_read_docs with stage after_edit.",
-        allowedTools: ["hy_status"],
-      });
+      return invalidWorkflowStateResult(
+        state,
+        "AFTER_EDIT_PLAN_MISSING",
+        "after_edit document reading requires an existing PlanDoc.",
+        "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+      );
     }
-    const snapshot = buildSnapshot(stage, state.plan.task, planHash, args.cursor);
+    const editState = state.phase === "edit" ? state : transition(state, "edit");
+    editState.stage = documentWorkflowStage(stage);
+    writeState(editState);
+    const snapshot = buildSnapshot(stage, editState.plan!.task, planHash, args.cursor);
     if ("next" in snapshot) return snapshot;
     const manifest = buildImplementationManifest(projectRoot());
     const auditedSnapshot: DocumentReadSnapshot = {
@@ -287,8 +308,8 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       implementationDigest: implementationDigest(projectRoot(), state.plan, manifest),
     };
     writeState({
-      ...state,
-      stage,
+      ...editState,
+      stage: documentWorkflowStage(stage),
       documentReads: {
         ...(state.documentReads ?? {}),
         afterEdit: withoutDocumentContents(auditedSnapshot),
@@ -296,8 +317,8 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       syncDocs: null,
     });
     return toolResult("edit", {
-      phase: state.phase,
-      stage,
+      phase: "edit",
+      stage: documentWorkflowStage(stage),
       status: "passed",
       snapshot: auditedSnapshot,
       display: {
@@ -305,11 +326,11 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
         body: auditedSnapshot.findings.join("\n"),
         files: auditedSnapshot.files.map(f => f.path),
       },
-      hint: "Use this after_edit audit to identify documentation or shared template updates, then call hy_sync_docs before hy_verify.",
+      hint: "Use this after_edit audit to complete any declared documentation or shared template edits. Call hy_sync_docs only after those edits are complete.",
       allowedTools: ["hy_sync_docs", "hy_edit", "hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
-      nextAction: { tool: "hy_sync_docs", phase: "edit", stage: "edit.sync_docs", automatic: true },
-      control: { automatic: true, stop: false, reason: "automatic" },
+      nextAction: { tool: null, phase: "edit", stage: "edit.after_edit", automatic: false },
+      control: { automatic: false, stop: true, reason: "external_action_required" },
       userAction: null,
     });
   }
@@ -317,10 +338,34 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
   assertPhase(state, "approve");
   const planHash = computePlanHash(state.plan);
   if (!state.plan || !planHash) {
+    return invalidWorkflowStateResult(
+      state,
+      "BEFORE_APPROVE_PLAN_MISSING",
+      "before_approve document reading requires an existing PlanDoc.",
+      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+    );
+  }
+
+  if (!pendingApprovalMatchesPlan(state.pendingApproval, state.plan)) {
     return toolResult("approve", {
-      error: "before_approve document reading requires an existing PlanDoc.",
-      hint: "Call hy_plan first, then hy_read_docs with stage before_approve.",
-      allowedTools: ["hy_status"],
+      phase: "approve",
+      stage: "approve.decision",
+      status: "pending",
+      display: {
+        title: "Plan approval required",
+        body: "before_approve runs only after hy_approve has recorded the users decision for this exact PlanDoc.",
+      },
+      hint: "Show the current PlanDoc decision gate. After the user approves, call hy_approve once; it will preserve that decision across the automatic document audit.",
+      allowedTools: ["hy_approve", "hy_status"],
+      blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
+      nextAction: { tool: null, phase: "approve", stage: "approve.decision", automatic: false },
+      control: { automatic: false, stop: true, reason: "approval_required" },
+      userAction: {
+        kind: "approval",
+        decisionId: planDecisionId(state.plan) ?? undefined,
+        prompt: "Review the complete PlanDoc and approve, reject, or request revision.",
+        options: ["approve", "reject", "revise"],
+      },
     });
   }
 
@@ -334,7 +379,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
   const auditedSnapshot: DocumentReadSnapshot = { ...snapshot, changedSinceBaseline, findings };
   writeState({
     ...state,
-    stage,
+    stage: documentWorkflowStage(stage),
     documentReads: {
       ...(state.documentReads ?? {}),
       beforeApprove: withoutDocumentContents(auditedSnapshot),
@@ -342,7 +387,7 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
   });
 
   return toolResult("approve", {
-    stage,
+    stage: documentWorkflowStage(stage),
     status: changedSinceBaseline ? "warning" : "passed",
     snapshot: auditedSnapshot,
     changedSinceBaseline,
@@ -351,10 +396,22 @@ export async function handleReadDocs(args: { stage?: DocumentReadStage; task?: s
       body: auditedSnapshot.findings.join("\n"),
       files: auditedSnapshot.files.map(f => f.path),
     },
-    hint: "Use this audit to decide whether the PlanDoc is still valid. If valid, call hy_approve with the user's existing approval. This is not a separate user review gate.",
+    hint: changedSinceBaseline
+      ? "Review the document drift against intent, scope, verification, and risks. Call hy_approve with auditDecision=continue if the PlanDoc remains materially valid, or auditDecision=replan otherwise. Do not ask the user to approve the same PlanDoc again."
+      : "The PlanDoc facts remain current. Resume the users existing approval automatically; this is not a separate user review gate.",
     allowedTools: ["hy_approve", "hy_status"],
-    nextAction: { tool: "hy_approve", phase: "approve", stage: "approve.decision", automatic: true },
-    control: { automatic: true, stop: false, reason: "automatic" },
+    nextAction: changedSinceBaseline
+      ? { tool: null, phase: "approve", stage: "approve.before_approve", automatic: false }
+      : {
+          tool: "hy_approve",
+          arguments: { approved: "approve", note: state.pendingApproval?.note ?? "", auditDecision: "continue" },
+          phase: "approve",
+          stage: "approve.decision",
+          automatic: true,
+        },
+    control: changedSinceBaseline
+      ? { automatic: false, stop: true, reason: "review_required" }
+      : { automatic: true, stop: false, reason: "automatic" },
     userAction: null,
   });
 }

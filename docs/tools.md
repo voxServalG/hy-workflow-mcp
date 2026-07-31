@@ -9,13 +9,13 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 | `hy_init`   | init | — | plan | 否 |
 | `hy_read_docs` | plan, approve, edit, verify | `{stage, task?, cursor?}` | plan / approve / edit | 否 |
 | `hy_plan`   | plan | `{task}` | plan (返回 next=approve) | 否 |
-| `hy_approve` | plan, approve | `{approved: string, note: string}` | branch (批准) / plan (驳回) | 否 |
+| `hy_approve` | approve | `{approved: string, note?: string}` | approve（自动审计待续跑）/ branch（批准完成）/ plan（驳回） | 否 |
 | `hy_branch` | approve, branch | `{category, topic}` | edit | 否 |
-| `hy_edit`   | branch, edit, verify | — | edit (返回 next=verify) | 否 |
-| `hy_sync_docs` | edit, verify | — | edit (返回 next=verify) | 否 |
+| `hy_edit`   | branch, edit, verify | — | edit（锁 scope 后停止，等待真实代码编辑） | 否 |
+| `hy_sync_docs` | edit, verify | — | edit（记录证据，自动路由 verify） | 否 |
 | `hy_verify` | edit, verify | — | commit (通过) / edit (失败) | 否 |
 | `hy_exam_plan` | edit, verify | — | verify (异步 verify 出题) | 否 |
-| `hy_exam_submit` | edit, verify | `{examId, results[]}` | commit (阅卷通过) / edit (失败补交) | 否 |
+| `hy_exam_submit` | edit, verify | `{examId, results[]}` | commit (完整阅卷通过) / edit (任一失败，修复后重新出题) | 否 |
 | `hy_amend_plan` | verify | `{approved, note?}` | edit / verify | 否 |
 | `hy_commit` | commit | `{title, body}` | merge（commit.ci 全绿）/ commit（等待）/ edit（失败） | 否 |
 | `hy_merge`  | merge | — | done（当前 handler 完成远端确认和安全下游同步）/ merge（恢复或人工处理） | 否 |
@@ -24,20 +24,20 @@ hy-workflow MCP server 注册了 15 个工具，定义在 `src/tools/` 中。分
 
 ## hy_init
 
-`hy_init` 的 authority 只有当前选中的配置和外置 state。setup 只产生两个 fresh artifact：`hy-workflow.json` 与 `.github/workflows/hy-workflow.yml`。`hy_init` 检查可解析的 `project.baseBranch` 与非空文档事实，然后把 workflow state 初始化到 identity-scoped user state；它不写工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
+`hy_init` 只验证外置 deployment identity、当前被精确选中的配置、可解析的 `project.baseBranch` 与非空文档事实，然后把 workflow state 初始化到 identity-scoped user state。配置 authority 可以是完整外置配置、由 exact external marker 或 clean-runner signal 授权的根 `hy-workflow.json`，也可以是 read-only project detection 加 frozen legacy-compatible defaults。`hy_init` 不读取旧注入来决定 authority，不写工作树或 `.git`，也不会在 MCP 内启动 setup TUI。
 
 - **进入 Phase**: `init`, `plan`
 - **转换到**: `plan`
 - **成功返回**: `{ next: "plan", message, display, commitArtifacts: [], localArtifacts, projectFilesChanged: [], allowedTools: ["hy_read_docs", "hy_status"] }`
-- **失败返回**: `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`
+- **失败返回**: 外置 deployment 缺失时返回 `{ next: "init", error: { type: "setup_artifacts_missing", missingArtifacts }, requires_user: true, stop_here: true, recovery }`；选中的配置、base ref 或文档事实无效时返回对应结构化错误
 
-`hy-workflow.json` 是唯一有效项目配置源，根配置必须显式包含 runtime 必填字段。旧项目注入物不被读取、哈希、校验、设为 gate、迁移、重写、移动或删除，也不会产生 runtime copy 或 diagnostic。缺少当前配置、两个 fresh artifact、有效 ref、文档或实质事实时返回结构化 stop envelope。
+只有被 exact marker 或 clean-runner signal 选中的根 `hy-workflow.json` 才是 project authority；文件仅仅存在不能授权它。完整外置配置本身可以成为 authority；两者都不存在时，runtime 使用只读检测和 frozen legacy-compatible defaults。旧项目注入物不被读取、哈希、校验、设为 gate、迁移、重写、移动或删除，也不会产生 runtime copy 或 diagnostic。外置 deployment 缺失或不安全，或者选中的配置、有效 ref、文档事实无效时，`hy_init` 返回结构化 stop envelope；两个 fresh repository artifact 的存在性不属于 init gate。
 
 Artifact contract: setup 只维护根 `hy-workflow.json` 和 `.github/workflows/hy-workflow.yml`。deployment/state/cache 与客户端配置不提交。
 
 ## Session setup check
 
-MCP runtime 每次处理任意 `hy_*` tool 前都会检查当前选中的 identity-scoped deployment、配置、外置 state 与两个 fresh artifact。这个轻量 live check 不递归启动 MCP handshake。当前 authority 缺失或损坏时会 stop；runtime 不会自行运行 setup 或启动 TUI。
+MCP runtime 每次处理任意 `hy_*` tool 前只做轻量的 identity-scoped 外置 deployment gate；各工具按需读取已精确选中的配置和外置 state。这个检查不打开、比较或哈希任何项目 artifact，也不递归启动 MCP handshake。外置 deployment 缺失或不安全时会 stop；runtime 不会自行运行 setup 或启动 TUI。
 
 ## Config CLI
 
@@ -45,7 +45,7 @@ MCP runtime 每次处理任意 `hy_*` tool 前都会检查当前选中的 identi
 
 ## hy_read_docs
 
-自动读取 `project.docsDir`，使用 DocsGraph 和 task relevance 建立有界事实页。`before_plan` 必须传 `task`；`before_approve` 审计 PlanDoc；`after_edit` 审计实现 diff。结果最多 12 files、48,000 chars、每文件 12,000 chars并报告 token estimate；`pagination.hasMore/nextCursor` 可继续同一 stage/task，三者仍是自动 gate。
+自动读取 `project.docsDir`，使用 DocsGraph 和 task relevance 建立有界事实页。`before_plan` 必须传 `task`；`before_approve` 只在首次 `hy_approve` 已为当前 PlanDoc 保存原决定后自动审计。无漂移时自动续跑，有漂移时停止等待 agent 的 `auditDecision=continue|replan`，不新增用户 gate；直接在用户决定前调用会停回唯一的 approval gate。`after_edit` 审计实现 diff，随后停止等待任何已声明的文档编辑。结果最多 12 files、48,000 chars、每文件 12,000 chars并报告 token estimate；`pagination.hasMore/nextCursor` 可继续同一选择器/task。这三个无前缀值只属于输入参数和文档快照；工具 envelope 与 workflow state 分别使用 `plan.before_plan`、`approve.before_approve`、`edit.after_edit`。
 
 DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 docsDir 根部大小写无关的 `index`/`README`（含 RST），再按 task 排序。`node_modules`、examples、fixtures、generated、build/vendor 等目录，越界目标、外链和代码块链接均排除。`hy_read_docs` 不读取或校验 managed AGENTS。
 
@@ -53,7 +53,7 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 
 ## hy_plan
 
-要求已存在 `before_plan` 文档事实基线。随后校验 PlanDoc shape、scope 非空、所有 scope 路径必须是项目根内相对路径、`scope.changes` / `scope.delete` 指向项目内已存在路径、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；`scope.new_files` 允许声明尚不存在的计划创建文件，但同样必须留在项目根内。malformed nested PlanDoc 会返回结构化错误并停在 `plan`，不会抛出未捕获异常。task/risks/discussion 过短仅作为 soft warning。成功写入新 PlanDoc 时会清空 `beforeApprove`、`afterEdit` 和 `syncDocs`，避免复用旧 gate。
+要求已存在 `before_plan` 文档事实基线。随后校验 PlanDoc shape、scope 非空、所有 scope 路径必须是项目根内相对路径、`scope.changes` / `scope.delete` 指向项目内已存在路径、boundary/verify/risks/discussion 有实质内容、禁止空洞命令；`scope.new_files` 允许声明尚不存在的计划创建文件，但同样必须留在项目根内。旧注入和本地运行目录永久处于 workflow authority 之外，因此 `changes`、`new_files`、`delete` 都会拒绝 `AGENTS.md`、旧 lint JSON、项目客户端目录和 `.hy/` 等路径；plan、amendment、verify 使用同一校验。malformed nested PlanDoc 会返回结构化错误并停在 `plan`，不会抛出未捕获异常。task/risks/discussion 过短仅作为 soft warning。成功写入新 PlanDoc 时会清空 `beforeApprove`、`afterEdit` 和 `syncDocs`，避免复用旧 gate。
 
 成功返回的 `summary` 和 `display.body` 是给用户审批的友善摘要，不是 PlanDoc 内部字段直出。摘要保留稳定结构：Plan（现在状态、期望状态）、Scope（将要增加/改动/删除，格式为 path: reason）、Boundary（影响范围、外部依赖、关键检查入口）、Verify（测试平台搭建，以及单元测试、集成测试、系统测试、验收测试四层）、Risks、Discussion。其中“期望状态”描述 PlanDoc 应用后项目应呈现的行为、文档或验证状态，不应是审批摘要本身的固定说明。`plan` 字段仍保留完整 PlanDoc，供 agent 和兼容客户端读取。
 
@@ -64,9 +64,10 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 
 ## hy_approve
 
-用户审视 PlanDoc 的入口。批准前要求已存在匹配当前 PlanDoc hash 的 `before_approve` 文档审计。`changedSinceBaseline` 只警告 agent 刷新并核对事实，不会自动使批准失效，也不是新增人类审核。只有新事实导致任务意图、scope 或风险发生实质变化时，才回到 `hy_plan` 并请求新的批准；否则继续提交当前决定。`approved` 只接受 `"approve"`、`"reject"` 或 `"revise"`。
+用户审视 PlanDoc 后提交唯一一次人工决定的入口。Agent 收到决定后立即调用一次 `hy_approve`。如果 `"approve"` 对应的当前 PlanDoc 还没有匹配的 `before_approve` 审计，工具会把原 `decisionId`、PlanDoc hash、note 和时间持久化为 `pendingApproval`，自动路由 `hy_read_docs(before_approve)`。无漂移时自动续跑原参数；有漂移时 agent 必须用 `auditDecision="continue"` 明确原 PlanDoc 仍无实质变化，或用 `auditDecision="replan"` 清除未应用的批准并自动刷新事实。该判断不是新的用户批准，也不得把同一 PlanDoc 再交给用户。`approved` 只接受 `"approve"`、`"reject"` 或 `"revise"`；`auditDecision` 只接受 `"continue"` 或 `"replan"`。
 
 - **进入 Phase**: `approve`
+- **审计缺失时**: 保持 `approve`，返回 `approvalPending: true`，并自动调用 `hy_read_docs({stage:"before_approve"})`
 - **批准后转换到**: `branch`，写入 Approval 记录
 - **驳回后转换到**: `plan`，不写入 Approval 记录，并清空 verify/manifest/sync 等下游派生状态
 - **批准返回**: `{ next: "branch", approved: true, plan, pipeline, stopAfter: "hy_reset", allowedTools }`
@@ -82,52 +83,53 @@ DocsGraph 全量索引只在 OS 用户 cache 保存 digest/links；读取优先 
 
 ## hy_edit
 
-锁定 scope 到 OS 用户 state 的 identity-scoped `scope.json`，workflow phase 也写入用户 state；不污染工作区或 `.git`。
+锁定 scope 到 OS 用户 state 的 identity-scoped `scope.json`，workflow phase 也写入用户 state；不污染工作区或 `.git`。工具在 `edit.implementation` 停止，等待 agent 用标准文件工具完成真实代码编辑，不会假装已经改过文件，也不会自动调用 `after_edit`。
 
 - **进入 Phase**: `branch`, `edit`, `verify`
-- **转换到**: `transition(state, "edit")`，返回 `next: "verify"`
-- **返回**: `{ next: "verify", phase: "edit", branch, scope, boundary, display, hint, allowedTools, blockedTools, message }`
+- **转换到**: `transition(state, "edit")`，保持 `stage: "edit.implementation"`
+- **返回**: `{ next: "edit", phase: "edit", stage: "edit.implementation", nextAction: {tool:null}, control: {stop:true, reason:"external_action_required"}, ... }`
+- **后续**: 代码编辑完成后调用 `hy_read_docs(after_edit)`；该审计停止后完成所有已声明文档编辑，再调用 `hy_sync_docs`
 
 ## hy_sync_docs
 
-实现编辑后、最终验证前的文档同步 gate。要求已存在匹配当前 PlanDoc 的 `documentReads.afterEdit`，并记录 `syncDocs`，供 `hy_verify` 校验。工具不自动改写文档；agent 只能在 `plan.scope` 声明的文档或团队 workflow/template 文件内同步，再运行 `hy_verify`。
+实现编辑和 `hy_read_docs(after_edit)` 后、最终验证前的文档同步 gate。`after_edit` 返回后，agent 必须先用标准文件工具完成 `plan.scope` 中已声明的文档或团队 workflow/template 编辑，再调用本工具。工具本身不改写文档；它只确认当前实现 digest 仍与审计一致，记录 `syncDocs` 证据，随后自动路由 `hy_verify`。
 
 同步时增量更新用户 cache 中的 DocsGraph 并检测坏链接；结果通过 `graphInfo` 返回。docsDir membership 使用规范化路径边界判断。
 
 - **进入 Phase**: `edit`, `verify`
-- **转换到**: 保持 `edit`，返回 `next: "verify"`
-- **返回**: `{ next: "verify", phase: "edit", synced, allowedDocs, display, hint }`
+- **转换到**: 当前 envelope 保持 `edit` / `edit.sync_docs`，`next` 为兼容字段 `verify`
+- **返回**: 下一动作 `{ phase: "verify", stage: "verify.run", tool: "hy_verify", automatic: true }`，`control.stop` 为 false
 
 ## hy_verify
 
-执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已完成；全部通过后记录 implementation manifest、manifest hash、verifyHash 并转换到 commit。`boundary.no_new_external` 校验外部依赖声明（package.json scripts/version 元数据允许变；真正的依赖清单变化仍 fail closed）。
+执行本地任务 gate（compile、scope、boundary、platform、smoke、tests）。运行前要求 `hy_read_docs(after_edit)` 和 `hy_sync_docs` 已完成；handler 通过 `runAllChecksAsync` 执行检查，全部通过后记录 `implementationManifest` 与 `verifiedImplementationDigest` 并转换到 commit。`boundary.no_new_external` 校验外部依赖声明（package.json scripts/version 元数据允许变；真正的依赖清单变化仍 fail closed）。
 
 - **进入 Phase**: `edit`, `verify`; **通过→commit**; **失败→edit**
-- **通过**: `{ next:"commit", allPassed:true, checks, verifyHash }`
+- **通过**: `{ next:"commit", allPassed:true, checks, implementationManifest, verifyHash }`，其中 `verifyHash` 是 verified implementation digest 的兼容输出别名
 - **失败**: `{ next:"edit", allPassed:false, hardFailed, failedChecks, recovery.byLayer }`
-- **长测试套件**: 命令预计 >60s 或 sync 超时，请改用异步 `hy_exam_plan`+`hy_exam_submit`（verifyHash 等价）。
+- **长测试套件**: 命令预计 >60s 或 sync 超时，请改用异步 `hy_exam_plan`+`hy_exam_submit`；两条路径持久化相同的 canonical implementation manifest 与 digest。
 
 ## hy_exam_plan / hy_exam_submit（异步 verify）
 
 两工具实现 verify-as-oracle 模式，解决长测试套件触发 MCP `-32001 Request timed out`（90s）。sync `hy_verify` 仍保留为 <60s 快路径。
-- **hy_exam_plan**（出题）：立即返回 `examId`（2h TTL）、`scopeFingerprint`（git write-tree）、per-check `{id, layer, command, timeoutMs, expectExitCode, nonce, mustContain?}`；agent 用 Bash 逐条跑，收集 exitCode + 最后 4KB stdout。
-- **hy_exam_submit**（阅卷）：提交 `{examId, results:[{id, command, nonce, exitCode, stdoutTail?}]}`。校验：(1) exam 未过期；(2) nonce 匹配；(3) command 字串完全一致；(4) exitCode 匹配；(5) mustContain 正则；(6) git write-tree 未变。通过则原子写入 implementation manifest、manifest hash、implementation digest 和 verifyHash 放行 `hy_commit`，与 sync 路径等价；失败返回 `failedChecks[]`，2h 内只需补交失败项。进入 Phase: `edit, verify`；成功 → `commit`，失败 → `edit`（`recovery.nextAction=fix_then_resubmit`）。
+- **hy_exam_plan**（出题）：立即返回 `examId`（2h TTL）、`scopeFingerprint`（由当前 implementation manifest 与文件内容计算，覆盖未跟踪变化）、per-check `{id, layer, command, timeoutMs, expectExitCode, nonce, mustContain?}`。试卷内部同时绑定精确 `planHash`；agent 用 Bash 逐条执行命令，收集 exitCode 与最后 4KB stdout。
+- **hy_exam_submit**（阅卷）：提交一个完整的 `{examId, results:[{id, command, nonce, exitCode, stdoutTail?}]}` 结果集。校验 exam 有效期、精确 planHash、完整实现指纹、每项 nonce、command、exitCode 与输出约束，并要求当前审批和文档证据仍有效；随后在本地重新执行 scope 与 `no_new_external` boundary 检查。全部通过才写入 `implementationManifest` 与 `verifiedImplementationDigest` 放行 `hy_commit`，与 sync 路径等价；成功输出若包含 `verifyHash`，它只是 digest 的兼容别名。任一失败都返回 `edit` 和 `failedChecks[]`，recovery 指向 `hy_edit`；修复后必须刷新 `hy_read_docs(after_edit)` 与 `hy_sync_docs` 并重新调用 `hy_exam_plan`，不能在原试卷上局部补交。进入 Phase: `edit, verify`；成功 → `commit`，失败 → `edit`。
 
 ## hy_amend_plan
 
-`hy_verify` 返回 `amend_required` 时，`hy_amend_plan` 处理 pending scope amendment。纯 scope narrowing 保留原 decision；增加任何 target 或新增 delete 都是 material change，必须回到新 PlanDoc 和新的 approval。应用前会校验 pending amendment shape、所有路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的用户 state scope lock。
+`hy_verify` 返回 `amend_required` 时，`hy_amend_plan` 处理 pending scope amendment。纯 scope narrowing 保留原 decision；增加任何 target 或新增 delete 都是 material change，必须取得绑定修订后 PlanDoc 的明确 approval。应用前会校验 pending amendment shape、所有路径仍在项目根内；应用后会重新校验 PlanDoc scope 非空、`changes/delete` 仍指向已存在路径，并写入与 `hy_edit` 相同结构的用户 state scope lock。PlanDoc hash 改变时会清除旧 `afterEdit`、`syncDocs` 和 verification evidence，自动重新执行 `after_edit → sync_docs → verify`，不会再向用户索要同一修订的 approval。
 
 - **进入 Phase**: `verify`
 - **转换到**: `edit` / `verify`
-- **返回**: `{ next, approved, amendment, allowedTools }`
+- **返回**: `{ next, approved, amendment, allowedTools }`；应用成功后当前 stage 是 `edit.implementation`，`nextAction` 自动调用 `hy_read_docs({stage:"after_edit"})`，再由 `hy_sync_docs` 进入 `hy_verify`
 
 ## hy_commit
 
-`hy_commit` 依次运行 `commit.prepare`、`commit.publish`、`commit.ci`。它先固定 `baseBranch` 和 origin repository，要求 origin fetch/push URL 解析为同一带 host selector，再用 `git status --porcelain -z` 在 PlanDoc scope 内筛出当前真实差异并执行 git add → commit。提交后再次核对 implementation 路径集合与内容 digest，并在 publish 前持久化 commit OID、verifyHash、branch、baseBranch 和 repository。push 使用 `<verified-commit-oid>:refs/heads/<branch>`，不会推送可移动 branch ref。PR 操作忽略 `GH_REPO` 与 `GH_HOST`，查询 repository/base/head/headRefOid 全部精确匹配的 OPEN PR：唯一匹配直接复用，零匹配才调用 `gh pr create`；多匹配、旧 head OID、查询失败、JSON 异常或不精确匹配均 fail closed。create 无论命令成功或失败都必须再查询确认 exact PR，成功输出的 PR number 也必须与确认结果一致。
+`hy_commit` 依次运行 `commit.prepare`、`commit.publish`、`commit.ci`。它先固定 `baseBranch` 和 origin repository，要求 origin fetch/push URL 解析为同一带 host selector，再用 `git status --porcelain -z` 在 PlanDoc scope 内筛出当前真实差异并执行 git add → commit。提交后再次核对 implementation 路径集合与内容 digest，并在 publish 前持久化 commit OID、verified implementation digest、branch、baseBranch 和 repository。push 使用 `<verified-commit-oid>:refs/heads/<branch>`，不会推送可移动 branch ref。PR 操作忽略 `GH_REPO` 与 `GH_HOST`，查询 repository/base/head/headRefOid 全部精确匹配的 OPEN PR：唯一匹配直接复用，零匹配才调用 `gh pr create`；多匹配、旧 head OID、查询失败、JSON 异常或不精确匹配均 fail closed。create 无论命令成功或失败都必须再查询确认 exact PR，成功输出的 PR number 也必须与确认结果一致。
 
-已在前一次提交中删除的 `scope.delete` 路径不会在 CI 修复后的后续提交中重复传给 `git add`。一般情况下没有真实 scope 差异仍返回 `NO_SCOPED_CHANGES`；只有持久化 recovery record 与当前 verifyHash/branch/base/repository/HEAD 全部一致时，重试才把记录中的 OID 作为 `recovered_verified_head` 继续 exact-SHA push 和 PR lookup。相同 verifyHash 已存在 recovery record 时进入 recovery-only 路径，绝不再次 commit；scope worktree 变脏，或 branch/base/repository 任一漂移都会在 push 前 fail closed。缺少记录或 clean HEAD 被空提交等方式移动时同样失败。提交前当前 Git 分支必须等于 `WorkflowState.branch`。`hy_commit` 全程使用 argv 传参，并在 `data.executor` 及 `data.commit`/`data.push` 中报告执行器、恢复动作和 SHA。
+已在前一次提交中删除的 `scope.delete` 路径不会在 CI 修复后的后续提交中重复传给 `git add`。一般情况下没有真实 scope 差异仍返回 `NO_SCOPED_CHANGES`；只有持久化 recovery record 与当前 verified implementation digest、branch、base、repository、HEAD 全部一致时，重试才把记录中的 OID 作为 `recovered_verified_head` 继续 exact-SHA push 和 PR lookup。相同 digest 已存在 recovery record 时进入 recovery-only 路径，绝不再次 commit；scope worktree 变脏，或 branch/base/repository 任一漂移都会在 push 前 fail closed。缺少记录或 clean HEAD 被空提交等方式移动时同样失败。提交前当前 Git 分支必须等于 `WorkflowState.branch`。`hy_commit` 全程使用 argv 传参，并在 `data.executor` 及 `data.commit`/`data.push` 中报告执行器、恢复动作和 SHA。
 
-新建 PR 的 body 自动附加 scope/boundary/verify 元信息、verifyHash、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 PR 新建或复用成功之后，不反向改写 PR body。复用既有 PR 时不覆盖它的 body。
+新建 PR 的 body 自动附加 scope/boundary/verify 元信息、`verifyHash` 兼容标签、planHash，并在 `Raw PlanDoc JSON` 折叠区写入 `hy_commit` 当下的完整 `WorkflowState.plan` JSON 备查。该 `verifyHash` 标签的值就是 verified implementation digest，不是额外 gate。PlanDoc 快照在 PR 创建前生成，因此会保留当时的 runtime 字段状态；PR number 写回状态发生在 PR 新建或复用成功之后，不反向改写 PR body。复用既有 PR 时不覆盖它的 body。
 
 - **进入 Phase**: `commit`
 - **转换到**: pending 时保持 `commit`；CI 全绿时进入 `merge`，结果 stage 为 `merge.reconcile`
@@ -178,7 +180,7 @@ confirmed receipt 首次同步时要求 fresh remote base 包含 verified OID �
 
 ## hy_reset
 
-可任意阶段调用，回到 `plan` 并清空 plan、approval、branch、PR、verifyHash、pending amendment、implementation manifest、document reads 和 syncDocs 等 workflow 派生状态。该工具要求当前目录在真实 Git worktree 内；找不到项目根时返回 `PROJECT_ROOT_NOT_FOUND`，不会创建伪 `.git/hy-workflow`。
+可任意阶段调用，回到 `plan` 并清空 plan、approval、branch、PR、canonical implementation manifest/digest、旧兼容 verifyHash/verifiedManifestHash、pending amendment、document reads 和 syncDocs 等 workflow 派生状态。该工具要求当前目录在真实 Git worktree 内；找不到项目根时返回 `PROJECT_ROOT_NOT_FOUND`，不会创建伪 `.git/hy-workflow`。
 
 ## hy_status
 

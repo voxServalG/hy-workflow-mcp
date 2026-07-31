@@ -43,7 +43,7 @@ export type ConfigCheckResult = {
   requires_user?: boolean;
   stop_here?: boolean;
   allowedTools?: string[];
-  recovery?: { tool?: string; instruction?: string };
+  recovery?: { strategy: "external_action"; tool?: string; instruction: string };
   error?: {
     type: "config";
     subtype: "invalid_arguments";
@@ -226,7 +226,10 @@ function readJsonPath(filePath: string, label = filePath): JsonRead {
 }
 
 export function effectiveConfigPath(root: string): string {
-  return path.join(root, UNIFIED_CONFIG_FILE);
+  const selected = selectRuntimeConfig(root, defaultSuggestion(root));
+  return selected.authority.kind === "legacy-detected"
+    ? projectPaths(root).config
+    : selected.authority.source;
 }
 
 function readJson(root: string, rel: string): JsonObject | null {
@@ -531,25 +534,6 @@ function runtimeRequiredFieldIssues(raw: JsonObject): string[] {
   return issues;
 }
 
-function inspectRuntimeConfig(root: string, suggestion: ConfigSuggestion): { config: JsonObject | null; issues: string[]; missing: boolean } {
-  const source = path.join(root, UNIFIED_CONFIG_FILE);
-  const unifiedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
-  if (!unifiedRead.value) {
-    const missing = !fs.existsSync(source);
-    return {
-      config: null,
-      issues: [unifiedRead.issue ?? `Missing project config: ${source}`],
-      missing,
-    };
-  }
-  const unified = normalizedUnified(unifiedRead.value, suggestion);
-  const issues = [
-    ...validateUnifiedConfig(root, unifiedRead.value, unified, { checkExists: false }),
-    ...runtimeRequiredFieldIssues(unifiedRead.value),
-  ];
-  return { config: issues.length ? null : unified, issues: [...new Set(issues)], missing: false };
-}
-
 export function isProjectRuntimeConfigSource(value: JsonObject): value is ProjectRuntimeConfigSource {
   return value.schema === RUNTIME_CONFIG_SOURCE_SCHEMA
     && value.authority === "project"
@@ -669,7 +653,10 @@ export function resolveRuntimeConfig(root: string, suggestion = defaultSuggestio
 }
 
 export function readUnifiedConfig(root: string, suggestion = defaultSuggestion(root)): JsonObject | null {
-  return inspectRuntimeConfig(root, suggestion).config;
+  const selected = selectRuntimeConfig(root, suggestion);
+  if (selected.authority.kind !== "project") return null;
+  const resolved = resolveSelectedRuntimeConfig(root, suggestion, selected);
+  return resolved.issues.length ? null : resolved.config;
 }
 
 function runtimeBaseBranchIssues(raw: JsonObject): string[] {
@@ -709,11 +696,12 @@ function preservedKeys(before: JsonObject | null, after: JsonObject): string[] {
 }
 
 export function applyConfig(root: string, suggestion: ConfigSuggestion, options: { preserveExisting: boolean; dryRun: boolean; mode?: string; overrides?: Partial<ConfigSuggestion> }): ConfigCheckResult {
-  const targetPath = path.join(root, UNIFIED_CONFIG_FILE);
-  const targetRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
-  if (targetRead.issue) return configResult(root, suggestion, [targetRead.issue], [], false);
+  const selected = selectRuntimeConfig(root, suggestion);
+  const projectTarget = selected.authority.kind === "project";
+  const targetPath = projectTarget ? path.join(root, UNIFIED_CONFIG_FILE) : projectPaths(root).config;
+  if (selected.issues.length) return configResult(root, suggestion, selected.issues, [], false);
 
-  const before = targetRead.value;
+  const before = selected.authority.kind === "legacy-detected" ? null : selected.raw;
   const merged = unifiedFromInputs(before, suggestion, options.preserveExisting);
   const unified = normalizedUnified(withExplicitOverrides(merged, options.overrides ?? {}), suggestion);
   const validationIssues = validateUnifiedConfig(root, unified, unified);
@@ -736,7 +724,10 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
   const preserved: Record<string, string[]> = {};
   if (!fs.existsSync(targetPath) || JSON.stringify(before) !== JSON.stringify(unified)) changed.push(UNIFIED_CONFIG_FILE);
   preserved[UNIFIED_CONFIG_FILE] = preservedKeys(before, unified);
-  if (!options.dryRun) writeJson(root, UNIFIED_CONFIG_FILE, unified);
+  if (!options.dryRun) {
+    if (projectTarget) writeJson(root, UNIFIED_CONFIG_FILE, unified);
+    else atomicWriteJson(targetPath, unified);
+  }
   const result = options.dryRun ? configResult(root, suggestion, [], [], false) : checkConfig(root, suggestion);
   return {
     ...result,
@@ -749,7 +740,7 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
       title: options.dryRun ? "Config dry run complete" : result.ok ? "Config updated" : "Config update needs attention",
       body: (options.dryRun ? "Would update " : "Updated ") + (changed.length ? targetPath : "no config files") + " while preserving unknown fields.",
     },
-    hint: result.ok ? "The project-owned config is valid and can be used immediately." : result.hint,
+    hint: result.ok ? "The selected config is valid and can be used immediately." : result.hint,
   };
 }
 
@@ -976,7 +967,8 @@ function validateUnifiedConfig(
 }
 
 function migrationInput(root: string): JsonObject | null {
-  return readJsonFile(root, UNIFIED_CONFIG_FILE).value;
+  const selected = selectRuntimeConfig(root, defaultSuggestion(root));
+  return selected.authority.kind === "legacy-detected" ? null : selected.raw;
 }
 
 function buildDocsRecoveryCommand(): string {
@@ -1012,7 +1004,7 @@ function configResult(root: string, suggestion: ConfigSuggestion, issues: string
     display: {
       title: ok ? "Config looks consistent" : "Project config needs confirmation",
       body: ok
-        ? `${UNIFIED_CONFIG_FILE} is a valid project-owned configuration; historical injected files are not consulted.`
+        ? "The selected configuration authority is valid; historical injected files are not consulted."
         : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}
 
 Suggested command:
@@ -1022,7 +1014,7 @@ ${suggestedCommand}`,
     requires_user: ok ? false : true,
     stop_here: ok ? false : true,
     allowedTools: ok ? ["hy_init", "hy_status"] : ["terminal", "hy_init", "hy_status"],
-    recovery: ok ? undefined : { tool: "terminal", instruction: suggestedCommand },
+    recovery: ok ? undefined : { strategy: "external_action", tool: "terminal", instruction: suggestedCommand },
     project,
     issues,
     drift,
@@ -1033,13 +1025,10 @@ ${suggestedCommand}`,
 
 export function checkConfig(root: string, suggestion = defaultSuggestion(root)): ConfigCheckResult {
   const project = detectProject(root);
-  const issues: string[] = [];
-  const source = path.join(root, UNIFIED_CONFIG_FILE);
-  const unifiedRead = readJsonFile(root, UNIFIED_CONFIG_FILE);
-  const unifiedRaw = unifiedRead.value;
-
-  if (unifiedRead.issue) issues.push(unifiedRead.issue);
-  if (!unifiedRaw && !unifiedRead.issue) issues.push("Missing project config: " + source);
+  const selected = selectRuntimeConfig(root, suggestion);
+  const issues: string[] = [...selected.issues];
+  const source = selected.authority.source;
+  const unifiedRaw = selected.raw;
 
   const unified = normalizedUnified(
     unifiedRaw ?? unifiedFromInputs(null, suggestion, true),
@@ -1048,7 +1037,7 @@ export function checkConfig(root: string, suggestion = defaultSuggestion(root)):
   const projectConfig = asObject(unified.project);
 
   if (unifiedRaw) {
-    issues.push(...validateUnifiedConfig(root, unifiedRaw, unified));
+    issues.push(...validateUnifiedConfig(root, unifiedRaw, unified, { allowLegacyCompatible: selected.allowLegacyCompatible }));
     issues.push(...runtimeRequiredFieldIssues(unifiedRaw));
   }
 
@@ -1159,7 +1148,7 @@ export function configHelp(): string {
     "  hy-workflow config --explain-policy code.max-lines --file src/parser.ts --json",
     "  hy-workflow config --python --code-dirs src,test --docs-dir docs --base-branch dev --json",
     "",
-    "Project config is stored in hy-workflow.json.",
+    "Configuration is stored externally unless an exact new marker or CI signal selects hy-workflow.json.",
     "Config commands emit a single JSON envelope when --json is passed.",
   ].join("\n");
 }
@@ -1290,10 +1279,11 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
       overrides: args.applySuggested ? undefined : args.explicit,
     });
   } else {
-    const snapshots = [
-      configFileSnapshot(path.join(root, UNIFIED_CONFIG_FILE)),
-      configFileSnapshot(projectPaths(root).config),
-    ];
+    const projectTarget = path.join(root, UNIFIED_CONFIG_FILE);
+    const externalTarget = projectPaths(root).config;
+    const target = effectiveConfigPath(root);
+    const snapshots = [...new Set([target, ...(target === projectTarget ? [externalTarget] : [])])]
+      .map(configFileSnapshot);
     try {
       result = applyConfig(root, suggestion, {
         preserveExisting: !args.applySuggested,
@@ -1301,8 +1291,9 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
         mode: "shared",
         overrides: args.applySuggested ? undefined : args.explicit,
       });
-      if (result.ok) atomicWriteJson(projectPaths(root).config, projectRuntimeConfigSource());
-      else rollbackConfigApply(snapshots, result.issues.join("; ") || "config validation failed");
+      if (result.ok) {
+        if (result.source === projectTarget) atomicWriteJson(externalTarget, projectRuntimeConfigSource());
+      } else rollbackConfigApply(snapshots, result.issues.join("; ") || "config validation failed");
     } catch (error) {
       rollbackConfigApply(snapshots, error);
       throw error;

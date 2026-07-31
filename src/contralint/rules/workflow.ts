@@ -6,6 +6,7 @@ const DOCUMENT_GATE_SEQUENCE = [
   "hy_status",
   "hy_read_docs(before_plan)",
   "hy_plan",
+  "hy_approve",
   "hy_read_docs(before_approve)",
   "hy_approve",
   "hy_branch",
@@ -87,7 +88,7 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
       findings.push({
         rule: "workflow",
         severity: "hard_fail",
-        message: "Public workflow must preserve hy_status -> docs/plan/approve -> branch/edit/docs/verify -> hy_commit -> hy_merge -> hy_reset.",
+        message: "Public workflow must preserve one user decision through hy_approve -> automatic before_approve audit -> hy_approve resume, then branch/edit/docs/verify -> hy_commit -> hy_merge -> hy_reset.",
         file,
         detail: { expected: DOCUMENT_GATE_SEQUENCE },
       });

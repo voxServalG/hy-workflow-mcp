@@ -149,7 +149,7 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
     stop_here: true,
     allowedTools: ["hy_status"],
     blockedTools: BLOCKED_TOOLS,
-    recovery: { tool: "terminal", instruction: SETUP_COMMAND },
+    recovery: { strategy: "external_action", tool: "terminal", instruction: SETUP_COMMAND },
     setupUpdateCheck: check,
   });
 }

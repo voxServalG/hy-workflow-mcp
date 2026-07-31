@@ -7,6 +7,22 @@ The canonical field lists live in `src/output/contract.ts`. Runtime helpers and 
 ## Fields
 
 ```ts
+type HyRecoveryCompatibilityFields = {
+  tool?: string;
+  arguments?: Record<string, unknown>;
+  command?: string;
+  instruction?: string;
+  byLayer?: Record<string, string>;
+};
+
+type HyToolRecovery =
+  | (HyRecoveryCompatibilityFields & { strategy: "retry"; tool: string })
+  | (HyRecoveryCompatibilityFields & { strategy: "repair_and_retry"; tool: string; instruction: string })
+  | (HyRecoveryCompatibilityFields & { strategy: "wait_and_retry"; tool: string; instruction: string })
+  | (HyRecoveryCompatibilityFields & { strategy: "replan"; tool: string; instruction: string })
+  | (HyRecoveryCompatibilityFields & { strategy: "reset"; tool: "hy_reset"; instruction: string })
+  | (HyRecoveryCompatibilityFields & { strategy: "external_action"; instruction: string });
+
 type HyToolResult = {
   ok: boolean;
   phase: string;
@@ -42,12 +58,7 @@ type HyToolResult = {
   stop_here?: boolean;
   allowedTools?: string[];
   blockedTools?: string[];
-  recovery?: {
-    tool?: string;
-    command?: string;
-    instruction?: string;
-    byLayer?: Record<string, string>;
-  };
+  recovery?: HyToolRecovery;
   checks?: unknown[];
   findings?: unknown[];
   pagination?: {
@@ -102,7 +113,7 @@ Agents should handle tool results in this order:
 1. If `display` exists, show `display.title`, `display.body`, and any `display.files` or `display.urls` to the user. If `summary` exists for an approval gate, show it exactly.
 2. If `ok` is false, show `error.message`, include `error.code`, `error.hint`, `error.console_url`, `error.request_id`, and `error.trace_id` when present, then use `error.type` and `error.subtype` for recovery routing.
 3. Obey `control`. Ask for approval only when `userAction.kind` is `approval`; otherwise present the typed recovery, wait, review, configuration, authentication, permission, or external action without relabeling it.
-4. If `recovery` exists, use it as the next repair action. `recovery.command` is the shell command to run when provided; `recovery.byLayer` maps verify layers to targeted fixes.
+4. If `recovery` exists, route by its required `strategy`: `retry` invokes the named tool directly, `repair_and_retry` repairs before invoking it, `wait_and_retry` waits before invoking it, `replan` revises the plan or amendment, `reset` abandons the current workflow through `hy_reset`, and `external_action` requires work outside the MCP pipeline. When `recovery.tool` names an MCP or CLI tool, pass its complete `recovery.arguments`; never reconstruct required input from prose. `recovery.command` remains the shell command to run when provided; `recovery.byLayer` maps verify layers to targeted fixes. Do not infer a strategy from `instruction` prose.
 5. If continuing automatically, choose only from `allowedTools`. Never call a `blockedTools` entry.
 6. Use `phase` as coarse state, `stage` as the current step, and `nextAction` as the primary routing contract. `next` remains only for legacy clients.
 7. Use `pagination.has_more`, `pagination.page_token`, and `pagination.next_page_token` for paged output. Preserve `meta.command`, `meta.cwd`, `meta.identity`, `meta.format`, `meta.version`, `meta.request_id`, `meta.trace_id`, and `meta.duration_ms` in logs. Surface `_notice.update.message` and `_notice.update.command` when setup or CLI update guidance is returned.
@@ -110,11 +121,13 @@ Agents should handle tool results in this order:
 
 Legacy `requires_user` and `stop_here` remain additive compatibility fields. They never imply approval without `userAction.kind: "approval"`.
 
-Terminal CLI commands follow the same contract when `--json` is passed. For example, `hy-workflow config --check --json` returns one JSON envelope with `ok`, `display`, `hint`, `issues`, `suggestedCommand`, and `recovery`. `hy-workflow setup --yes --clients ... --json` and `hy-workflow unset --yes --clients ... --json` likewise emit one machine-readable result; unattended calls must supply the noninteractive choices explicitly. These commands do not return prose that agents must scrape.
+Terminal CLI commands follow the same control vocabulary when `--json` is passed. For example, `hy-workflow config --check --json` returns one JSON envelope with `ok`, `display`, `hint`, `issues`, `suggestedCommand`, and structured `recovery`. Setup and unset emit `phase: setup`, `action: setup|unset`, canonical `stage: setup.apply|setup.unset`, `status`, `nextAction`, `control`, `userAction`, and a strategy-discriminated recovery on failure. Retryable failures use wait-and-retry; repairable failures use repair-and-retry. Neither is an approval. Unattended calls must supply their noninteractive choices explicitly, and agents never need to scrape prose.
 
 ## Examples
 
-`hy_plan` success returns the legacy `summary` and the same text in `display.body`. It also returns `userAction.kind: "approval"` with a `decisionId` bound to the exact PlanDoc hash. One approval covers unchanged intent through edits, retries, verify, `commit.ci`, merge, `merge.sync`, and reset. Pure scope removal or `changes`/`new_files` normalization preserves it. A new PlanDoc, real scope or risk expansion, or any new delete target requires a new decision. Unknown approval text changes no state.
+`hy_plan` success returns the legacy `summary` and the same text in `display.body`. It also returns `userAction.kind: "approval"` with a `decisionId` bound to the exact PlanDoc hash. Submit that one human decision immediately through `hy_approve`; do not call `hy_read_docs(before_approve)` first. If the audit is missing, the first `hy_approve` persists the exact decision and returns an automatic `hy_read_docs(before_approve)` action. No drift returns an automatic replay. Drift returns `control.reason: "review_required"` with no user action; the agent calls `hy_approve` with `auditDecision=continue` if the PlanDoc remains materially valid or `auditDecision=replan` to refresh facts and produce a new PlanDoc. The same PlanDoc is never presented for a second approval. One approval covers unchanged intent through edits, retries, verify, `commit.ci`, merge, `merge.sync`, and reset. Pure scope removal or `changes`/`new_files` normalization preserves it. A new PlanDoc, real scope or risk expansion, or any new delete target requires a new decision. Unknown approval or audit-decision text changes no state.
+
+`hy_edit` returns `control.stop: true` with `external_action_required` after locking scope, because standard file tools must perform the code edits. `hy_read_docs(after_edit)` likewise stops so declared documentation edits can be completed. Only after those edits does `hy_sync_docs` record the current evidence and return an automatic `hy_verify` action.
 
 `hy_verify` failure returns `checks` and `failedChecks` as before. It also returns `findings` and `recovery.byLayer` guidance for lint, compile, scope, boundary, platform, smoke, and tests failures.
 
@@ -134,7 +147,7 @@ Legacy merge state without a receipt may recover after fresh Git ancestry proves
 
 ## Compatibility
 
-The envelope is additive. Existing clients that read `next`, `message`, `summary`, `checks`, `prNumber`, or `url` can keep doing so. New agents use typed `phase`, `stage`, `status`, `nextAction`, `control`, and `userAction`; display/recovery/pagination/meta/notice/error and other legacy details remain available.
+The envelope is additive. Existing clients that read `next`, `message`, `summary`, `checks`, `prNumber`, `url`, or the compatibility recovery fields `tool`, `arguments`, `command`, `instruction`, and `byLayer` can keep doing so. New agents use typed `phase`, `stage`, `status`, `nextAction`, `control`, `userAction`, and `recovery.strategy`; display/recovery/pagination/meta/notice/error and other legacy details remain available.
 
 ## Structured Errors
 

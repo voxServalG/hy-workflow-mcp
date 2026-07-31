@@ -38,6 +38,10 @@ export function isLegacyIgnoredArtifact(file: string): boolean {
   });
 }
 
+export function isWorkflowAuthorityExcludedArtifact(file: string): boolean {
+  return isLocalArtifact(file) || isLegacyIgnoredArtifact(file);
+}
+
 export function isNewProjectArtifact(file: string): boolean {
   const normalized = file.replace(/\\/g, "/");
   return NEW_PROJECT_ARTIFACTS.some(pattern => normalized === pattern);

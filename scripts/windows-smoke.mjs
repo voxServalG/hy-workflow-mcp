@@ -127,15 +127,6 @@ try {
   writeFileSync(join(project, "src", "index.js"), "export const value = 1;\n", "utf8");
   writeFileSync(join(project, "docs", "index.md"), "# Windows smoke\n\nSetup and unset must work from the installed npm tarball.\n", "utf8");
   writeFileSync(join(project, "package.json"), JSON.stringify({ name: "windows-smoke-fixture", private: true, type: "module" }, null, 2) + "\n", "utf8");
-  const config = {
-    project: { baseBranch: "main", codeExt: ".js", codeDirs: ["src"], docsDir: "docs" },
-    codelint: { lintDirs: ["src"], maxLinesWarning: 300, maxLinesError: 500 },
-    doclint: { maxLinesWarning: 200, maxLinesError: 500 },
-    docsGardener: { catalogs: {} },
-    ci: { commands: ["node --version"] },
-  };
-  const configText = JSON.stringify(config, null, 2) + "\n";
-  writeFileSync(join(project, "hy-workflow.json"), configText, "utf8");
   run("git init", "git", ["init", "-b", "main"], { cwd: project, env, timeout: 30_000 });
   run("git email", "git", ["config", "user.email", "windows-smoke@example.invalid"], { cwd: project, env, timeout: 30_000 });
   run("git name", "git", ["config", "user.name", "Windows Smoke"], { cwd: project, env, timeout: 30_000 });
@@ -145,7 +136,18 @@ try {
   const lint = runJson("installed lint", process.execPath, [installedServer, "lint", "--json"], { cwd: project, env, timeout: 120_000 });
   assert(lint.schema === "hy-workflow.lint.v1" && lint.counts?.checks === 10 && lint.counts?.errors === 0 && lint.counts?.docs > 0, "installed tarball lint did not return the clean ten-rule report");
 
-  const setupArgs = [installedServer, "setup", "--yes", "--clients", "codex", "--json", "--language", "en"];
+  const setupArgs = [
+    installedServer,
+    "setup",
+    "--yes",
+    "--clients",
+    "codex",
+    "--json",
+    "--language",
+    "en",
+    "--ci-command",
+    "node --version",
+  ];
   let setup;
   try {
     setup = runJson("installed setup", process.execPath, setupArgs, { cwd: project, env, timeout: 120_000 });
@@ -160,7 +162,23 @@ try {
     throw new Error(message, { cause: error });
   }
   assert(setup.ok === true, "installed setup did not return ok=true");
-  assert(readFileSync(join(project, "hy-workflow.json"), "utf8") === configText, "setup rewrote the explicit shared config");
+  assert(
+    setup.projectFilesChanged?.slice().sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json",
+    "fresh installed setup must create exactly the shared config and thin workflow",
+  );
+  const generatedConfig = JSON.parse(readFileSync(join(project, "hy-workflow.json"), "utf8"));
+  assert(
+    generatedConfig.project?.baseBranch === "main"
+      && generatedConfig.project?.codeExt === ".js"
+      && generatedConfig.project?.codeDirs?.join(",") === "src"
+      && generatedConfig.project?.docsDir === "docs",
+    "fresh installed setup generated incorrect project facts",
+  );
+  assert(
+    generatedConfig.policy?.profile === "standard"
+      && generatedConfig.ci?.commands?.join(",") === "node --version",
+    "fresh installed setup did not persist the standard policy and exact reviewed CI command",
+  );
   assert(existsSync(join(project, ".github", "workflows", "hy-workflow.yml")), "setup did not create the shared workflow");
   const repeated = runJson("repeated installed setup", process.execPath, setupArgs, { cwd: project, env, timeout: 120_000 });
   assert(repeated.ok === true && repeated.projectFilesChanged?.length === 0, "repeated setup was not idempotent");

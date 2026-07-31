@@ -24,6 +24,7 @@ import {
   type McpDefinition,
   type ServerName,
   type SetupOptions,
+  type SetupContract,
   type SetupResult,
 } from "./types.js";
 
@@ -598,6 +599,19 @@ async function postcondition(
   }
 }
 
+function setupSuccessContract(action: "setup" | "unset"): Omit<SetupContract, "recovery"> {
+  const stage = action === "setup" ? "setup.apply" : "setup.unset";
+  return {
+    phase: "setup",
+    action,
+    stage,
+    status: "completed",
+    nextAction: { tool: null, phase: "setup", stage, automatic: false },
+    control: { automatic: false, stop: true, reason: "completed" },
+    userAction: null,
+  };
+}
+
 function setupResult(
   root: string,
   options: SetupOptions,
@@ -610,21 +624,36 @@ function setupResult(
   const copy = options.language === "en"
     ? {
         changed: `Minimal project integration created: ${projectFilesChanged.join(", ")}`,
-        current: preflight.managesProjectFiles ? "Minimal project integration already current" : "Legacy project injections left untouched and inert",
+        current: preflight.managesProjectFiles
+          ? "Minimal project integration already current"
+          : preflight.projectFileDisposition === "external-only"
+            ? "Setup ready using complete external config; existing project artifacts were left untouched"
+            : "Legacy project injections left untouched and inert",
       }
     : {
         changed: `已创建最小项目接入：${projectFilesChanged.join("、")}`,
-        current: preflight.managesProjectFiles ? "最小项目接入已是最新 (already current)" : "旧项目注入保持原样且不再参与运行",
+        current: preflight.managesProjectFiles
+          ? "最小项目接入已是最新 (already current)"
+          : preflight.projectFileDisposition === "external-only"
+            ? "配置已就绪并使用完整外置配置；现有项目文件保持原样"
+            : "旧项目注入保持原样且不再参与运行",
       };
   return {
+    ...setupSuccessContract("setup"),
     ok: true,
-    action: "setup",
     mode: "shared",
     projectId: paths.identity.id,
     projectRoot: paths.identity.root,
     clients,
     projectFilesChanged,
-    localFilesChanged: options.dryRun ? [] : [paths.deployment, paths.registry, paths.clientOwnership],
+    localFilesChanged: options.dryRun
+      ? []
+      : [
+          paths.deployment,
+          paths.registry,
+          paths.clientOwnership,
+          ...(preflight.configPersistence === "preserve" ? [] : [paths.config]),
+        ],
     dryRun: options.dryRun,
     message: projectFilesChanged.length ? copy.changed : copy.current,
     transactionId,
@@ -632,6 +661,12 @@ function setupResult(
     artifactChanges: preflight.artifactChanges,
     ciCandidates: preflight.ciCandidates,
     ciConfirmationRequired: preflight.ciConfirmationRequired,
+    projectFileDisposition: preflight.projectFileDisposition,
+    configAuthority: preflight.configPersistence === "project-source"
+      ? "project"
+      : preflight.configPersistence === "external-full"
+        ? "external"
+        : "preserved",
   };
 }
 
@@ -685,7 +720,7 @@ async function executeInstall(
     const projectFiles = lockedPreflight.managesProjectFiles
       ? SHARED_PROJECT_FILES.map(file => path.join(root, file))
       : [];
-    const runtimeSourceFiles = lockedPreflight.managesProjectFiles ? [paths.config] : [];
+    const runtimeSourceFiles = lockedPreflight.configPersistence === "preserve" ? [] : [paths.config];
     internalSetupTestHooks().afterLockedPreflight?.(root);
     transaction.capture([...projectFiles, ...runtimeSourceFiles, paths.deployment, paths.registry, paths.clientOwnership]);
     for (const file of lockedPreflight.managesProjectFiles ? SHARED_PROJECT_FILES : []) {
@@ -709,8 +744,10 @@ async function executeInstall(
             file => transaction.markApplied([path.join(root, file)]),
           )
         : [];
-      if (lockedPreflight.managesProjectFiles) {
-        const source = projectRuntimeConfigSource();
+      if (lockedPreflight.configPersistence !== "preserve") {
+        const source = lockedPreflight.configPersistence === "project-source"
+          ? projectRuntimeConfigSource()
+          : lockedConfig;
         transaction.prepareExpected(paths.config, jsonHash(source));
         atomicWriteJson(paths.config, source);
         transaction.markApplied([paths.config]);
@@ -765,8 +802,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
   const preview = observe();
   if (!preview.exists && !preview.hasExplicitOwnershipTarget) {
     return {
+      ...setupSuccessContract("unset"),
       ok: true,
-      action: "unset",
       mode: "shared",
       projectId: id,
       projectRoot: paths.identity.root,
@@ -782,8 +819,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
   }
   if (options.dryRun) {
     return {
+      ...setupSuccessContract("unset"),
       ok: true,
-      action: "unset",
       mode: preview.deployment?.mode ?? "shared",
       projectId: id,
       projectRoot: paths.identity.root,
@@ -805,8 +842,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
     if (!locked.exists && !locked.hasExplicitOwnershipTarget) {
       return {
         result: {
+          ...setupSuccessContract("unset"),
           ok: true,
-          action: "unset",
           mode: "shared",
           projectId: id,
           projectRoot: paths.identity.root,
@@ -863,8 +900,8 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
         ...(options.removeGlobal && locked.remainingAfter === 0 && remainingOwnedClients.length ? ["Run hy-workflow doctor --offline --json to reconcile remaining owned client entries."] : []),
       ];
       const result: SetupResult = {
+        ...setupSuccessContract("unset"),
         ok: true,
-        action: "unset",
         mode: locked.deployment?.mode ?? "shared",
         projectId: id,
         projectRoot: paths.identity.root,
@@ -877,7 +914,9 @@ async function executeUnset(root: string, options: SetupOptions, selected: Clien
         removed: outcome.removed,
         transactionId: transaction.id,
         message: outcome.removed ? "Local deployment removed; shared project files kept" : "No local deployment found; shared project files kept",
-        recovery: recovery.length ? recovery : undefined,
+        recovery: recovery.length
+          ? { strategy: "external_action", tool: "hy-workflow doctor", instruction: recovery.join("\n") }
+          : undefined,
       };
       const unresolvedClients = removedClients.clients.filter(client => client.status === "recovery_required");
       return {

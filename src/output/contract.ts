@@ -25,7 +25,7 @@ export const OUTPUT_CONTROL_FIELDS = [
 ] as const;
 
 export const DISPLAY_FIELDS = ["title", "body", "files", "urls"] as const;
-export const RECOVERY_FIELDS = ["tool", "command", "instruction", "byLayer"] as const;
+export const RECOVERY_FIELDS = ["strategy", "tool", "arguments", "command", "instruction", "byLayer"] as const;
 export const PAGINATION_FIELDS = ["has_more", "page_token", "next_page_token"] as const;
 export const META_FIELDS = ["command", "cwd", "identity", "format", "version", "request_id", "trace_id", "duration_ms"] as const;
 export const NOTICE_FIELDS = ["update"] as const;

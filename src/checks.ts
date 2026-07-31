@@ -608,14 +608,22 @@ function npmDependencyDeclarationsChanged(root: string): boolean {
   return JSON.stringify(npmDependencyProjection(currentPackage, currentLock)) !== JSON.stringify(npmDependencyProjection(basePackage, baseLock));
 }
 
-export function runBoundaryCheck(root: string, plan: PlanDoc, manifest?: ImplementationManifest, manifestError?: string): CheckResult[] {
+export function runBoundaryCheck(
+  root: string,
+  plan: PlanDoc,
+  manifest?: ImplementationManifest,
+  manifestError?: string,
+  options: { skipEntryPoints?: boolean } = {},
+): CheckResult[] {
   const res: CheckResult[] = [];
 
-  for (const ep of plan.boundary.entry_points) {
-    const r = execOr(ep, root);
-    res.push(r.ok
-      ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
-      : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", `${formatExit(r)}: ${r.stderr || r.stdout || "command failed"}`));
+  if (!options.skipEntryPoints) {
+    for (const ep of plan.boundary.entry_points) {
+      const r = execOr(ep, root);
+      res.push(r.ok
+        ? ok(`entry: ${ep.slice(0, 55)}...`, "boundary", "OK")
+        : fail(`entry: ${ep.slice(0, 55)}...`, "boundary", `${formatExit(r)}: ${r.stderr || r.stdout || "command failed"}`));
+    }
   }
 
   if (plan.boundary.no_new_external) {

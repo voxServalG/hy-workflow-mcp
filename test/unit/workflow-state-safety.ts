@@ -6,7 +6,7 @@ import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
 import { isWorktreeClean } from "../../src/git.js";
 import { MINIMAL_PROJECT_CONTRACT, writeDeployment } from "../../src/runtime/deployment.js";
-import { acquireMergeLock, computeImplementationDigest, readState, statePath, writeState } from "../../src/state.js";
+import { acquireMergeLock, approvalMatchesPlan, computeImplementationDigest, computePlanHash, readState, statePath, writeState } from "../../src/state.js";
 import { handleApprove } from "../../src/tools/approve.js";
 import { handleCommit } from "../../src/tools/commit.js";
 import { handlePlan } from "../../src/tools/plan.js";
@@ -153,8 +153,164 @@ try {
   });
   assert(statePath().startsWith(runtimeHome), `workflow state should live under isolated user state: ${statePath()}`);
   assert(!existsSync(join(root, ".git", "hy-workflow", "workflow.json")), "writeState must not create project-local git state");
+
+  const historicalPlan = basePlan();
+  assert(!approvalMatchesPlan({} as any, historicalPlan), "a malformed in-memory approval must fail closed before any workflow gate");
+  const malformedApprovals: unknown[] = [
+    {},
+    { time: "missing-note" },
+    { note: "missing-time" },
+    { time: 1, note: "wrong-time-type" },
+    { time: "wrong-note-type", note: [] },
+    { time: "half-bound-plan", note: "", planHash: "000000000000" },
+    { time: "half-bound-decision", note: "", decisionId: "plan:000000000000" },
+    {
+      time: "broken-audit",
+      note: "",
+      decisionId: "plan:111111111111",
+      planHash: "222222222222",
+      audit: [{
+        time: "audit",
+        kind: "non_material_scope_narrowing",
+        amendmentDecisionId: "amendment:test",
+        previousPlanHash: "333333333333",
+        planHash: "222222222222",
+      }],
+    },
+  ];
+  for (const approval of malformedApprovals) {
+    const serialized = `${JSON.stringify({ ...baseState("approve"), plan: historicalPlan, approval })}\n`;
+    writeFileSync(statePath(), serialized, "utf-8");
+    let code = "";
+    try { readState(); } catch (error: any) { code = error?.code ?? ""; }
+    assert(code === "WORKFLOW_STATE_INVALID_APPROVAL", `malformed approval must make external state fail closed: ${serialized}`);
+    assert(readFileSync(statePath(), "utf-8") === serialized, "approval normalization failure must not rewrite external state");
+  }
+
+  const invalidPending = `${JSON.stringify({ ...baseState("approve"), plan: historicalPlan, pendingApproval: {} })}\n`;
+  writeFileSync(statePath(), invalidPending, "utf-8");
+  let pendingCode = "";
+  try { readState(); } catch (error: any) { pendingCode = error?.code ?? ""; }
+  assert(pendingCode === "WORKFLOW_STATE_INVALID_PENDING_APPROVAL", "malformed pending approval must not replay a synthetic human decision");
+  assert(readFileSync(statePath(), "utf-8") === invalidPending, "pending approval normalization failure must not rewrite external state");
+
+  const impossiblePositions: Array<{ phase: WorkflowState["phase"]; stage: WorkflowState["stage"] }> = [
+    { phase: "approve", stage: "approve.before_approve" },
+    { phase: "branch", stage: "branch.create" },
+    { phase: "edit", stage: "edit.after_edit" },
+    { phase: "verify", stage: "verify.amendment" },
+    { phase: "commit", stage: "commit.ci" },
+    { phase: "merge", stage: "merge.sync" },
+  ];
+  for (const position of impossiblePositions) {
+    writeState({ ...baseState(position.phase), stage: position.stage });
+    const before = readFileSync(statePath(), "utf-8");
+    const result = await handleStatus();
+    assert(result.phase === position.phase && result.stage === position.stage,
+      `status must preserve persisted impossible position ${position.phase}/${position.stage}: ${JSON.stringify(result)}`);
+    assert(result.error?.code === "WORKFLOW_PLAN_MISSING"
+      && result.recovery?.strategy === "reset"
+      && result.nextAction.tool === "hy_reset",
+    `status must break impossible-state loops through explicit reset recovery: ${JSON.stringify(result)}`);
+    assert(readFileSync(statePath(), "utf-8") === before, "status recovery reporting must not mutate impossible state");
+  }
+
+  writeState({ ...baseState("plan"), stage: "plan.compose" });
+  const planningStatus = await handleStatus();
+  assert(planningStatus.stage === "plan.compose" && planningStatus.nextAction.stage === "plan.before_plan",
+    `status must keep persisted current stage separate from the derived next target: ${JSON.stringify(planningStatus)}`);
+
+  writeState({ ...baseState("approve"), plan: historicalPlan, approval: { time: "historical", note: "approved before plan hashes" } });
+  const historicalStatus = await handleStatus();
+  const normalizedHistoricalApproval = readState().approval;
+  assert(historicalStatus.approved === true, `historical approval should remain bound to its persisted plan after upgrade: ${JSON.stringify(historicalStatus)}`);
+  assert(normalizedHistoricalApproval?.planHash === computePlanHash(historicalPlan)
+    && normalizedHistoricalApproval.decisionId === `plan:${computePlanHash(historicalPlan)}`,
+  `historical approval should bind to the exact persisted PlanDoc during safe normalization: ${JSON.stringify(normalizedHistoricalApproval)}`);
+  assert(historicalStatus.userAction === null && historicalStatus.control.reason !== "approval_required", `historical approval must not create a new approval gate: ${JSON.stringify(historicalStatus)}`);
+  assert(historicalStatus.nextAction.tool === null && historicalStatus.nextAction.phase === "branch" && historicalStatus.nextAction.stage === "branch.create" && historicalStatus.control.reason === "information_required", `historical approval should preserve the decision while requiring only agent-composed branch arguments: ${JSON.stringify(historicalStatus)}`);
+
+  writeState({
+    ...baseState("verify"),
+    stage: "verify.run",
+    branch: "fix/historical",
+    plan: historicalPlan,
+    approval: { time: "historical", note: "approved" },
+  });
+  const missingAfterEditStatus = await handleStatus();
+  assert(missingAfterEditStatus.phase === "verify"
+    && missingAfterEditStatus.stage === "verify.run"
+    && missingAfterEditStatus.nextAction.tool === "hy_read_docs"
+    && missingAfterEditStatus.nextAction.arguments?.stage === "after_edit"
+    && missingAfterEditStatus.nextAction.phase === "edit"
+    && missingAfterEditStatus.nextAction.stage === "edit.after_edit"
+    && missingAfterEditStatus.nextAction.automatic,
+  `verify status must recover missing document evidence instead of looping to verify: ${JSON.stringify(missingAfterEditStatus)}`);
+
+  const historicalPlanHash = computePlanHash(historicalPlan)!;
+  writeState({
+    ...readState(),
+    documentReads: {
+      afterEdit: {
+        stage: "after_edit",
+        purpose: "status recovery",
+        time: new Date().toISOString(),
+        task: historicalPlan.task,
+        planHash: historicalPlanHash,
+        docsDir: "docs",
+        digest: "after-edit-status",
+        files: [],
+        findings: [],
+        implementationFiles: [],
+        implementationDigest: "status-digest",
+      },
+    },
+  });
+  const missingSyncStatus = await handleStatus();
+  assert(missingSyncStatus.phase === "verify"
+    && missingSyncStatus.stage === "verify.run"
+    && missingSyncStatus.nextAction.tool === "hy_sync_docs"
+    && missingSyncStatus.nextAction.phase === "edit"
+    && missingSyncStatus.nextAction.stage === "edit.after_edit"
+    && missingSyncStatus.nextAction.automatic,
+  `verify status must route missing sync evidence to hy_sync_docs: ${JSON.stringify(missingSyncStatus)}`);
+
+  writeState({ ...baseState("edit"), stage: "edit.implementation", plan: historicalPlan, approval: { time: "historical", note: "approved" } });
+  const implementationStatus = await handleStatus();
+  assert(implementationStatus.nextAction.tool === null
+    && implementationStatus.nextAction.phase === "edit"
+    && implementationStatus.nextAction.stage === "edit.implementation"
+    && implementationStatus.nextAction.automatic === false
+    && implementationStatus.control.stop
+    && implementationStatus.control.reason === "external_action_required"
+    && implementationStatus.userAction === null,
+  `edit.implementation status must stop for real external editing work: ${JSON.stringify(implementationStatus)}`);
+
+  writeState({ ...baseState("edit"), stage: "edit.after_edit", plan: historicalPlan, approval: { time: "historical", note: "approved" } });
+  const afterEditStatus = await handleStatus();
+  assert(afterEditStatus.nextAction.tool === null
+    && afterEditStatus.nextAction.phase === "edit"
+    && afterEditStatus.nextAction.stage === "edit.after_edit"
+    && afterEditStatus.nextAction.automatic === false
+    && afterEditStatus.control.stop
+    && afterEditStatus.control.reason === "external_action_required"
+    && afterEditStatus.userAction === null,
+  `edit.after_edit status must stop until declared document edits are complete: ${JSON.stringify(afterEditStatus)}`);
+  writeState({ ...readState(), stage: "edit.sync_docs" });
+  const syncDocsStatus = await handleStatus();
+  assert(syncDocsStatus.nextAction.tool === "hy_verify" && syncDocsStatus.nextAction.phase === "verify" && syncDocsStatus.nextAction.stage === "verify.run", `edit.sync_docs status should route to verify target: ${JSON.stringify(syncDocsStatus)}`);
+
+  writeFileSync(statePath(), `${JSON.stringify({ ...baseState("plan"), stage: "before_plan" })}\n`, "utf-8");
+  assert(readState().stage === "plan.before_plan", "historical unqualified persisted stages should migrate to their canonical phase-qualified value");
+  writeState(readState());
+  assert(JSON.parse(readFileSync(statePath(), "utf-8")).stage === "plan.before_plan", "historical stage aliases must never be persisted again");
+
+  writeState({ ...baseState("commit"), plan: basePlan(), approval: { time: "old", note: "old" } });
   // A new plan must never reset a completed or active pipeline implicitly.
   writeState({ ...readState(), phase: "done" as const });
+  const completedStatus = await handleStatus();
+  assert(completedStatus.nextAction.automatic === completedStatus.control.automatic, `done status automation fields must agree: ${JSON.stringify(completedStatus)}`);
+  assert(completedStatus.nextAction.tool === "hy_reset" && completedStatus.control.automatic && !completedStatus.control.stop, `done status should automatically resume required cleanup through hy_reset: ${JSON.stringify(completedStatus)}`);
   const beforeIllegalPlan = JSON.stringify(readState());
   try {
     await handlePlan({ task: "new task before explicit reset", plan: null });
@@ -167,6 +323,9 @@ try {
   writeState({ ...baseState("merge"), branch: "fix/old", prNumber: 123, mergeReceipt });
   const explicitReset = await handleReset();
   assert(explicitReset.next === "plan", "hy_reset should return to plan");
+  assert(explicitReset.phase === "plan" && explicitReset.stage === "plan.before_plan", `hy_reset should expose the canonical before-plan stage: ${JSON.stringify(explicitReset)}`);
+  assert(explicitReset.allowedTools?.includes("hy_read_docs") && explicitReset.nextAction.tool === null, `hy_reset must not invent a document read before the next task exists: ${JSON.stringify(explicitReset)}`);
+  assert(explicitReset.control.reason === "completed" && explicitReset.userAction === null, `hy_reset should end the completed task without creating another user gate: ${JSON.stringify(explicitReset)}`);
   assert(readState().mergeReceipt === null, "hy_reset should clear merge receipt state");
 
   const freshPlan = basePlan();
@@ -199,7 +358,7 @@ try {
   const invalidText = await handleApprove({ approved: "needs changes", note: "ambiguous" });
   assert(invalidText.error?.code === "APPROVAL_DECISION_INVALID", "unknown approval text should return a stable validation error");
   assert(JSON.stringify(readState()) === beforeInvalid, "unknown approval text must leave workflow state byte-equivalent");
-  assert(invalidText.userAction === null && invalidText.nextAction.tool === "hy_approve", "agent should repair an invalid enum without asking again");
+  assert(invalidText.userAction === null && invalidText.nextAction.tool === null && invalidText.control.reason === "repair_required", "agent should repair an invalid enum without asking again or emitting an incomplete call");
 
   const booleanInput = await handleApprove({ approved: true as any, note: "boolean is invalid" });
   assert(booleanInput.error?.code === "APPROVAL_DECISION_INVALID", "boolean approved input should be invalid without crashing");
@@ -261,6 +420,8 @@ try {
   } catch (error) {
     assertErrorCode(error, "WORKFLOW_STATE_CORRUPT");
   }
+  const corruptReset = await handleReset();
+  assert(corruptReset.phase === "plan" && readState().phase === "plan", `hy_reset should replace unreadable external state without touching project files: ${JSON.stringify(corruptReset)}`);
 
   run("git checkout -b fix/expected", root);
   writeFileSync(join(root, "README.md"), "verified\n");

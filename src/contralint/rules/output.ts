@@ -10,7 +10,8 @@ import {
   RECOVERY_FIELDS,
   USER_ACTION_FIELDS,
 } from "../../output/contract.js";
-import { exists, readText } from "../files.js";
+import { TOOL_RECOVERY_STRATEGIES } from "../../output/control.js";
+import { exists, readText, walkFiles } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const OUTPUT_DOCS = [
@@ -97,6 +98,28 @@ export function checkOutputContracts(context: ContractRuleContext): ContractFind
   addMissingTokenFindings(findings, "output", "amend_required", DISPLAY_FIELDS, docs, "docs/output.md", "Display docs");
   addMissingTokenFindings(findings, "output", "hard_fail", RECOVERY_FIELDS, source, "src/output/envelope.ts", "Recovery source");
   addMissingTokenFindings(findings, "output", "amend_required", RECOVERY_FIELDS, docs, "docs/output.md", "Recovery docs");
+  addMissingTokenFindings(findings, "output", "hard_fail", TOOL_RECOVERY_STRATEGIES, controlSource, "src/output/control.ts", "Recovery strategy source");
+  addMissingTokenFindings(findings, "output", "amend_required", TOOL_RECOVERY_STRATEGIES, docs, "docs/output.md", "Recovery strategy docs");
+  const recoveryEmitterFiles = [
+    "src/bootstrap.ts",
+    "src/config.ts",
+    ...walkFiles(context.root, "src/tools", file => file.endsWith(".ts")),
+  ];
+  const recoveryObjectPattern = /\brecovery:\s*(?:ok\s*\?\s*undefined\s*:\s*)?\{/g;
+  for (const file of recoveryEmitterFiles) {
+    const emitterSource = readText(context.root, file);
+    for (const match of emitterSource.matchAll(recoveryObjectPattern)) {
+      const snippet = emitterSource.slice(match.index, match.index + 240);
+      if (!snippet.includes("strategy:")) {
+        findings.push({
+          rule: "output",
+          severity: "hard_fail",
+          message: "Public recovery object omits the required strategy discriminator.",
+          file,
+        });
+      }
+    }
+  }
   addMissingTokenFindings(findings, "output", "hard_fail", PAGINATION_FIELDS, source, "src/output/envelope.ts", "Pagination source");
   addMissingTokenFindings(findings, "output", "amend_required", PAGINATION_FIELDS, docs, "docs/output.md", "Pagination docs");
   addMissingTokenFindings(findings, "output", "hard_fail", META_FIELDS, source, "src/output/envelope.ts", "Meta source");

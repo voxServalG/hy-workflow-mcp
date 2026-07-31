@@ -10,11 +10,14 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 const unattended = parseSetupArgs(["--yes", "--clients", "codex"], "setup");
-assert(!unattended.options.acceptArtifactChanges && !unattended.options.acceptCiCommands, "--yes must never imply acceptance of artifact or detected CI changes");
+assert(!unattended.options.syncProjectArtifacts && !unattended.options.acceptArtifactChanges && !unattended.options.acceptCiCommands, "--yes must never imply project sync or acceptance of artifact/CI changes");
+const explicitSync = parseSetupArgs(["--sync-project-artifacts", "--accept-artifact-changes"], "setup");
+assert(explicitSync.errors.length === 0 && explicitSync.options.syncProjectArtifacts && explicitSync.options.acceptArtifactChanges, "project artifact sync intent must be parsed independently from acceptance");
 const exactReview = parseSetupArgs(["--review-artifact", `hy-workflow.json:${"a".repeat(64)}:${"b".repeat(64)}`], "setup");
 assert(exactReview.errors.length === 0 && exactReview.options.reviewedArtifactChanges?.[0]?.beforeHash === "a".repeat(64), "artifact review token must preserve exact before/after hashes");
 assert(parseSetupArgs(["--review-artifact", "hy-workflow.json:latest:any"], "setup").errors.length === 1, "artifact review token must reject symbolic or malformed hashes");
 assert(!setupHelp().includes("deployment mode") && !setupHelp().includes("--local") && !setupHelp().includes("--shared"), "setup must expose one shared artifact contract, not a deployment-mode choice");
+assert(setupHelp().includes("--sync-project-artifacts"), "setup help must expose artifact sync as an independent operation intent");
 
 if (process.platform !== "win32" && fs.existsSync("/usr/bin/script")) {
   const root = makeGitProject("hy-tui-safety-");

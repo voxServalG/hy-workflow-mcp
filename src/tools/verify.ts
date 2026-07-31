@@ -1,25 +1,62 @@
-import { amendmentDecisionId, computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, documentReadHealth } from "../state.js";
+import { amendmentDecisionId, approvalMatchesPlan, computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, documentReadHealth } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { runAllChecksAsync } from "../checks-async.js";
 import { implementationDigest } from "./sync_docs.js";
-import { toolResult, type ToolResult } from "./_base.js";
+import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
 import { applyAmendment, isNonMaterialScopeNarrowing, writeScopeLock } from "./amend_plan.js";
 import { validatePlanScopePaths } from "../plan_validation.js";
 
 export async function handleVerify(): Promise<ToolResult> {
   let state = readState();
   assertPhase(state, "edit", "verify");
+  const currentStage = state.stage ?? (state.phase === "verify" ? "verify.run" : "edit.implementation");
 
-  if (!state.plan) return toolResult("verify", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
+  if (!state.plan) {
+    return invalidWorkflowStateResult(
+      state,
+      "VERIFY_PLAN_MISSING",
+      "Workflow state reached verification without an active PlanDoc.",
+      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+    );
+  }
   const plan = state.plan;
+  if (!approvalMatchesPlan(state.approval, plan)) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      error: {
+        type: "workflow_state",
+        subtype: "approval_missing",
+        code: "VERIFY_APPROVAL_PLAN_MISMATCH",
+        message: "The current PlanDoc is not bound to a valid approval.",
+        hint: "Reset the invalid workflow state and create a new PlanDoc decision before verification.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset", instruction: "Reset the invalid approval state before replanning." },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure", instruction: "Verification cannot mint or replace a missing PlanDoc approval." },
+    });
+  }
 
   const root = projectRoot();
+  const scopePathErrors = validatePlanScopePaths(root, plan, "verify");
+  if (scopePathErrors.length) {
+    return invalidWorkflowStateResult(
+      state,
+      "VERIFY_SCOPE_INVALID",
+      `Stored PlanDoc scope contains invalid paths: ${scopePathErrors.join("; ")}`,
+      "Reset the invalid workflow state and create a new PlanDoc containing only paths authoritative for this project.",
+    );
+  }
   const currentImplementationDigest = implementationDigest(root, plan, buildImplementationManifest(root));
   const health = documentReadHealth(state, currentImplementationDigest);
   if (!health.okForVerify) {
     const blocked = health.blockedBy;
     return toolResult("edit", {
       phase: state.phase,
+      stage: currentStage,
       error: blocked?.reason ?? "after_edit document audit and hy_sync_docs must be current before hy_verify.",
       documentReadHealth: health,
       hint: blocked?.tool === "hy_sync_docs"
@@ -112,11 +149,7 @@ export async function handleVerify(): Promise<ToolResult> {
         hint: "Show the suggested amendment to the user. If approved, call hy_amend_plan, then rerun hy_verify. Do not reset to plan for amendable scope drift.",
         allowedTools: ["hy_amend_plan", "hy_verify", "hy_status"],
         blockedTools: ["hy_commit", "hy_merge"],
-        recovery: {
-          tool: "hy_amend_plan",
-          instruction: "Apply the pending plan amendment only after explicit user approval, then rerun hy_verify.",
-        },
-        nextAction: { tool: "hy_amend_plan", phase: "verify", stage: "verify.amendment", automatic: false },
+        nextAction: { tool: null, phase: "verify", stage: "verify.amendment", automatic: false },
         control: { automatic: false, stop: true, reason: "approval_required" },
         userAction: {
           kind: "approval",
@@ -150,6 +183,7 @@ export async function handleVerify(): Promise<ToolResult> {
       allowedTools: ["hy_edit", "hy_verify", "hy_exam_plan", "hy_status"],
       blockedTools: ["hy_commit", "hy_merge"],
       recovery: {
+        strategy: "repair_and_retry",
         tool: "hy_edit",
         instruction: "Fix failed checks, then rerun hy_verify.",
         byLayer: {
@@ -187,8 +221,8 @@ export async function handleVerify(): Promise<ToolResult> {
     hint: "Verification passed. Call hy_commit next to create the PR; do not edit files without rerunning hy_verify.",
     allowedTools: ["hy_commit", "hy_status"],
     blockedTools: ["hy_merge"],
-    nextAction: { tool: "hy_commit", phase: "commit", stage: "commit.prepare", automatic: true },
-    control: { automatic: true, stop: false, reason: "automatic" },
+    nextAction: { tool: null, phase: "commit", stage: "commit.prepare", automatic: false },
+    control: { automatic: false, stop: true, reason: "information_required" },
     userAction: null,
     message: `All ${report.total} checks passed. Ready to commit.`,
   });

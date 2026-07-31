@@ -47,6 +47,12 @@ function exists(root: string, file: string): boolean {
   return fs.existsSync(path.join(root, file));
 }
 
+function markProjectAuthority(root: string): void {
+  const source = projectPaths(root).config;
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, JSON.stringify(projectRuntimeConfigSource(), null, 2) + "\n", "utf-8");
+}
+
 function schemaAllowsRuleValue(schema: any, rule: string, value: Record<string, unknown>): boolean {
   const ruleSchema = schema.$defs.ruleMap.properties[rule];
   if (!ruleSchema?.$ref?.startsWith("#/$defs/")) return false;
@@ -184,15 +190,15 @@ assert(JSON.stringify({
 }) === before, "dry-run must not write files");
 
 ensureConfigDefaults(root);
-assert(exists(root, "hy-workflow.json"), "default config must write the shared project config");
-assert(readJson(root, "hy-workflow.json").project.baseBranch === dry.suggestion.baseBranch, "setup defaults must use read-only project detection rather than legacy injected config");
-assert(readJson(root, "hy-workflow.json").project.docsDir === "docs", "setup defaults must write the detected docsDir");
-assert(readJson(root, "hy-workflow.json").codelint.lintDirs[0] === "src", "setup defaults must write shared codelint settings");
-assert(readJson(root, "hy-workflow.json").doclint.maxLinesError === 500, "setup defaults must use the canonical document hard threshold");
-assert(Object.keys(readJson(root, "hy-workflow.json").docsGardener.catalogs).length === 0, "setup defaults must not import historical injected catalogs");
-assert(!fs.existsSync(projectPaths(root).config), "new setup must not create a user-local project config");
+assert(!exists(root, "hy-workflow.json"), "authority-free config defaults must not create a project file");
+const externalDefaults = JSON.parse(fs.readFileSync(projectPaths(root).config, "utf-8"));
+assert(externalDefaults.project.baseBranch === dry.suggestion.baseBranch, "config defaults must use read-only project detection rather than legacy injected config");
+assert(externalDefaults.project.docsDir === "docs", "config defaults must write the detected docsDir externally");
+assert(externalDefaults.codelint.lintDirs[0] === "src", "config defaults must write shared codelint settings externally");
+assert(externalDefaults.doclint.maxLinesError === 500, "config defaults must use the canonical document hard threshold");
+assert(Object.keys(externalDefaults.docsGardener.catalogs).length === 0, "config defaults must not import historical injected catalogs");
 assert(readJson(root, "codelint.json").codeExt === ".py", "setup defaults must not overwrite existing legacy codelint");
-assert(readJson(root, "hy-workflow.json").$schema === PROJECT_CONFIG_SCHEMA_URL && readJson(root, "hy-workflow.json").version === 1, "new project config must declare its schema and version");
+assert(externalDefaults.$schema === PROJECT_CONFIG_SCHEMA_URL && externalDefaults.version === 1, "new external config must declare its schema and version");
 
 const check = checkConfig(root);
 assert(check.ok, `Python config should be consistent: ${check.issues.join(", ")}`);
@@ -226,13 +232,13 @@ assert(!drift.display.body.includes("Config drift"), "ignored historical injecti
 const mismatchRoot = tempRoot();
 fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ codeExt: ".ts", codeDirs: ["src"] }, null, 2) + "\n", "utf-8");
 const mismatch = checkConfig(mismatchRoot);
-assert(!mismatch.ok, "missing unified config should need confirmation");
-assert(mismatch.requires_user === true && mismatch.stop_here === true, "mismatch should stop with user confirmation");
+assert(mismatch.ok, "authority-free config check should use detected defaults without consulting legacy files");
+assert(mismatch.requires_user === false && mismatch.stop_here === false, "authority-free detection should not add a user gate");
 assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include the detected Python extension in a platform-neutral form");
-assert(mismatch.issues.some(issue => issue.startsWith("Missing project config:")), "missing project config should be reported");
+assert(mismatch.issues.length === 0, "missing unselected project config should not be reported");
 const mismatchCli = runConfigCli(["--check", "--json"], mismatchRoot);
-assert(mismatchCli.exitCode === 1, "config CLI should exit nonzero when --check emits ok false");
-assert(JSON.parse(mismatchCli.stdout).ok === false, "config CLI should preserve the ok false envelope");
+assert(mismatchCli.exitCode === 0, "config CLI should pass using detected authority");
+assert(JSON.parse(mismatchCli.stdout).ok === true, "config CLI should preserve the detected ok envelope");
 assert(!fs.existsSync(projectPaths(mismatchRoot).config), "config check failure must not establish an external authority marker");
 
 const unsafeRoot = tempRoot();
@@ -240,6 +246,7 @@ fs.writeFileSync(path.join(unsafeRoot, "hy-workflow.json"), JSON.stringify({
   project: { baseBranch: "dev;touch${IFS}/tmp/x", codeExt: ".py", codeDirs: ["src"], docsDir: "docs" },
   codelint: { lintDirs: ["src"] },
 }, null, 2) + "\n", "utf-8");
+markProjectAuthority(unsafeRoot);
 const unsafe = checkConfig(unsafeRoot);
 assert(!unsafe.ok, "unsafe baseBranch should fail config check");
 assert(unsafe.issues.some(issue => issue.includes("project.baseBranch is not a safe Git branch name")), "unsafe baseBranch should be reported");
@@ -250,6 +257,7 @@ assert(!portable.includes("touch${IFS}"), "suggested commands must not echo unsa
 
 const malformedRoot = tempRoot();
 fs.writeFileSync(path.join(malformedRoot, "hy-workflow.json"), "{ bad json\n", "utf-8");
+markProjectAuthority(malformedRoot);
 const malformed = checkConfig(malformedRoot);
 assert(!malformed.ok, "malformed unified config should fail config check");
 assert(malformed.issues.some(issue => issue.includes("hy-workflow.json is not valid config JSON")), "malformed unified config should be a structured issue");
@@ -262,6 +270,7 @@ fs.writeFileSync(path.join(invalidTypesRoot, "hy-workflow.json"), JSON.stringify
   codelint: { lintDirs: "src", maxLines: "500" },
   doclint: { maxLines: "200" },
 }, null, 2) + "\n", "utf-8");
+markProjectAuthority(invalidTypesRoot);
 const invalidTypes = checkConfig(invalidTypesRoot);
 assert(!invalidTypes.ok, "invalid unified config field types should fail config check");
 assert(invalidTypes.issues.some(issue => issue.includes("project.baseBranch must be a string")), "numeric baseBranch should be reported");
@@ -329,7 +338,7 @@ fs.writeFileSync(legacyLocalPath, JSON.stringify({
 }, null, 2) + "\n", "utf-8");
 const legacyLocalBefore = fs.readFileSync(legacyLocalPath, "utf-8");
 const legacyLocalCheck = checkConfig(legacyLocalRoot);
-assert(!legacyLocalCheck.ok, "project config check remains separate from an existing external runtime authority");
+assert(legacyLocalCheck.ok, "config check must validate the selected complete external authority");
 assert(readUnifiedConfig(legacyLocalRoot) === null, "project config reader must not reinterpret external runtime state as a project file");
 const legacyResolution = resolveRuntimeConfig(legacyLocalRoot);
 assert(legacyResolution.authority.kind === "external" && legacyResolution.issues.length === 0, "raw external config must remain the authority for an installed legacy deployment");
@@ -339,9 +348,11 @@ assert(requireRuntimeConfig(legacyLocalRoot).project.baseBranch === "main", "run
 assert(!exists(legacyLocalRoot, "hy-workflow.json"), "legacy runtime resolution must not create a project config");
 assert(fs.readFileSync(legacyLocalPath, "utf-8") === legacyLocalBefore, "legacy runtime resolution must not rewrite external config");
 const explicitLegacyReplacement = runConfigCli(["--apply", "--json", "--base-branch", "release/new"], legacyLocalRoot);
-assert(explicitLegacyReplacement.exitCode === 0, `explicit config apply should replace legacy external authority: ${explicitLegacyReplacement.stdout}`);
-assert(JSON.stringify(JSON.parse(fs.readFileSync(legacyLocalPath, "utf-8"))) === JSON.stringify(projectRuntimeConfigSource()), "successful explicit apply must replace a legacy full/mode external config with the exact project marker");
-assert(requireRuntimeConfig(legacyLocalRoot).project.baseBranch === "release/new", "explicit authority replacement must make the new root config immediately authoritative");
+assert(explicitLegacyReplacement.exitCode === 0, `explicit config apply should update the complete external authority: ${explicitLegacyReplacement.stdout}`);
+const updatedLegacyExternal = JSON.parse(fs.readFileSync(legacyLocalPath, "utf-8"));
+assert(updatedLegacyExternal.project.baseBranch === "release/new" && updatedLegacyExternal.keep.owner === "user", "successful explicit apply must update the full external config while preserving unknown fields");
+assert(!exists(legacyLocalRoot, "hy-workflow.json"), "external config apply must not create a project authority file");
+assert(requireRuntimeConfig(legacyLocalRoot).project.baseBranch === "release/new", "updated external authority must become effective immediately");
 
 const missingRuntimeRoot = tempRoot();
 fs.writeFileSync(path.join(missingRuntimeRoot, "codelint.json"), JSON.stringify({
@@ -369,14 +380,13 @@ const incompleteRuntimeResolution = resolveRuntimeConfig(incompleteRuntimeRoot);
 assert(incompleteRuntimeResolution.authority.kind === "legacy-detected" && incompleteRuntimeResolution.issues.length === 0, "unmarked historical root config must be ignored rather than block runtime");
 assert(requireRuntimeConfig(incompleteRuntimeRoot).project.codeExt === ".py", "ignored historical root must be replaced by detected runtime parameters");
 const incompleteRuntimeCheck = checkConfig(incompleteRuntimeRoot);
-assert(!incompleteRuntimeCheck.ok, "config check must reject root config with runtime-required fields missing");
-assert(incompleteRuntimeCheck.issues.some(issue => issue.includes("project.codeExt is required at runtime")), "config check should expose missing project.codeExt");
-assert(incompleteRuntimeCheck.issues.some(issue => issue.includes("codelint.lintDirs is required at runtime")), "config check should expose missing codelint.lintDirs");
-assert(incompleteRuntimeCheck.suggestedCommand === "hy-workflow config --apply --json", "incomplete root config recovery must preserve existing choices instead of applying detected defaults wholesale");
+assert(incompleteRuntimeCheck.ok && incompleteRuntimeCheck.issues.length === 0, "config check must ignore an unselected incomplete root injection");
+const incompleteRootBefore = fs.readFileSync(path.join(incompleteRuntimeRoot, "hy-workflow.json"), "utf-8");
 const incompleteRuntimeApply = runConfigCli(["--apply", "--json"], incompleteRuntimeRoot);
-assert(incompleteRuntimeApply.exitCode === 0, `preserve-first recovery should complete: ${incompleteRuntimeApply.stdout}`);
-const recoveredIncompleteRuntime = readJson(incompleteRuntimeRoot, "hy-workflow.json");
-assert(recoveredIncompleteRuntime.project.baseBranch === "main", "preserve-first recovery must retain the existing baseBranch");
+assert(incompleteRuntimeApply.exitCode === 0, `external config apply should complete: ${incompleteRuntimeApply.stdout}`);
+assert(fs.readFileSync(path.join(incompleteRuntimeRoot, "hy-workflow.json"), "utf-8") === incompleteRootBefore, "config apply must preserve the unselected incomplete root injection byte-for-byte");
+const recoveredIncompleteRuntime = JSON.parse(fs.readFileSync(projectPaths(incompleteRuntimeRoot).config, "utf-8"));
+assert(recoveredIncompleteRuntime.project.baseBranch === "dev", "external config apply must use detected project facts instead of the orphan root injection");
 assert(recoveredIncompleteRuntime.project.codeExt && recoveredIncompleteRuntime.project.codeDirs.length > 0 && recoveredIncompleteRuntime.codelint.lintDirs.length > 0, "preserve-first recovery must fill every runtime-required field");
 
 const missingBaseBranchRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n" });
@@ -398,6 +408,7 @@ fs.writeFileSync(path.join(primaryPrecedenceRoot, "codelint.json"), JSON.stringi
 }, null, 2) + "\n", "utf-8");
 fs.writeFileSync(path.join(primaryPrecedenceRoot, "doclint.json"), JSON.stringify({ maxLines: 19 }, null, 2) + "\n", "utf-8");
 fs.writeFileSync(path.join(primaryPrecedenceRoot, "docs-gardener.json"), JSON.stringify({ catalogs: { stale: ["wrong"] } }, null, 2) + "\n", "utf-8");
+markProjectAuthority(primaryPrecedenceRoot);
 const primaryCandidate = ensureConfigDefaults(primaryPrecedenceRoot, { dryRun: true });
 assert(primaryCandidate.ok, `valid root config should ignore stale compatibility values: ${primaryCandidate.issues.join(", ")}`);
 assert(primaryCandidate.candidate?.project.baseBranch === "dev" && primaryCandidate.candidate?.codelint.lintDirs.join(",") === "src", "root config defaults must not be backfilled from stale compatibility fields");
@@ -414,6 +425,7 @@ fs.writeFileSync(path.join(malformedCompatRoot, "hy-workflow.json"), JSON.string
 }, null, 2) + "\n", "utf-8");
 const malformedCompatText = "{ invalid compatibility json\n";
 fs.writeFileSync(path.join(malformedCompatRoot, "codelint.json"), malformedCompatText, "utf-8");
+markProjectAuthority(malformedCompatRoot);
 const malformedCompatSetup = ensureConfigDefaults(malformedCompatRoot);
 assert(malformedCompatSetup.ok, `valid primary config should not be blocked by malformed compatibility JSON: ${malformedCompatSetup.issues.join(", ")}`);
 assert(fs.readFileSync(path.join(malformedCompatRoot, "codelint.json"), "utf-8") === malformedCompatText, "setup config must not rewrite malformed compatibility artifacts when root config is valid");
@@ -551,20 +563,20 @@ const parsed = JSON.parse(cli.stdout);
 assert(cli.exitCode === 0, "config CLI should exit 0");
 assert(parsed.ok === true, "config CLI should emit ok envelope");
 assert(parsed.display?.title, "config CLI should emit display title");
-assert(exists(cliRoot, "hy-workflow.json"), "default config CLI should write the shared project config");
-assert(readJson(cliRoot, "hy-workflow.json").project.codeExt === ".py", "config CLI should write project settings to hy-workflow.json");
-if (process.platform !== "win32") assert((fs.statSync(path.join(cliRoot, "hy-workflow.json")).mode & 0o777) === 0o644, "new team config must use a commit-friendly 0644 mode");
-assert(JSON.stringify(JSON.parse(fs.readFileSync(projectPaths(cliRoot).config, "utf-8"))) === JSON.stringify(projectRuntimeConfigSource()), "successful config apply must atomically establish the exact external project-authority marker");
+assert(!exists(cliRoot, "hy-workflow.json"), "authority-free config CLI must not create a project config");
+const cliExternal = JSON.parse(fs.readFileSync(projectPaths(cliRoot).config, "utf-8"));
+assert(cliExternal.project.codeExt === ".py", "config CLI should write project settings to external state");
+if (process.platform !== "win32") assert((fs.statSync(projectPaths(cliRoot).config).mode & 0o777) === 0o600, "new external config must use a private 0600 mode");
 assert(!exists(cliRoot, "codelint.json"), "config CLI should not write root codelint compatibility file");
 assert(!exists(cliRoot, "doclint.json"), "config CLI should not write root doclint compatibility file");
-assert(readJson(cliRoot, "hy-workflow.json").codelint.maxLinesWarning === 300 && readJson(cliRoot, "hy-workflow.json").codelint.maxLinesError === 500, "new config must write explicit code warning and error thresholds");
-assert(readJson(cliRoot, "hy-workflow.json").doclint.maxLinesWarning === 200 && readJson(cliRoot, "hy-workflow.json").doclint.maxLinesError === 500, "new config must write explicit docs warning and error thresholds");
+assert(cliExternal.codelint.maxLinesWarning === 300 && cliExternal.codelint.maxLinesError === 500, "new config must write explicit code warning and error thresholds");
+assert(cliExternal.doclint.maxLinesWarning === 200 && cliExternal.doclint.maxLinesError === 500, "new config must write explicit docs warning and error thresholds");
 requireRuntimeConfig(cliRoot);
 assert(!exists(cliRoot, "codelint.json") && !exists(cliRoot, "doclint.json") && !exists(cliRoot, "docs-gardener.json"), "runtime config reads must not materialize compatibility files");
 
 const help = runConfigCli(["--help"]);
 assert(help.stdout.includes("hy-workflow config --check --json"), "help should explain config command");
-assert(help.stdout.includes("Project config is stored in hy-workflow.json"), "help should document the single shared config location");
+assert(help.stdout.includes("stored externally unless an exact new marker or CI signal selects hy-workflow.json"), "help should document explicit configuration authority");
 assert(!help.stdout.includes("--print-managed-rules"), "normal help must not advertise the historical AGENTS rule injection command");
 const retiredRules = runConfigCli(["--print-managed-rules", "--json"], tempRoot());
 const retiredRulesPayload = JSON.parse(retiredRules.stdout);
@@ -591,7 +603,8 @@ assert(!invalidExplicitPayload.suggestedCommand.includes("--docs-dir docs"), "re
 fs.mkdirSync(path.join(noDocsRoot, "guide"));
 fs.writeFileSync(path.join(noDocsRoot, "guide", "index.md"), "# Guide\n", "utf-8");
 const explicitDocs = runConfigCli(["--apply", "--json", "--docs-dir", "guide"], noDocsRoot);
-assert(explicitDocs.exitCode === 0 && readJson(noDocsRoot, "hy-workflow.json").project.docsDir === "guide", "an explicit existing docsDir should recover setup");
+assert(explicitDocs.exitCode === 0 && JSON.parse(fs.readFileSync(projectPaths(noDocsRoot).config, "utf-8")).project.docsDir === "guide", "an explicit existing docsDir should recover external config");
+assert(!exists(noDocsRoot, "hy-workflow.json"), "docs recovery must not create project authority without an exact marker");
 
 const caseRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-real-case-"));
 fs.mkdirSync(path.join(caseRoot, "Src"), { recursive: true });
@@ -631,6 +644,7 @@ if (process.platform !== "win32") {
     project: { baseBranch: "main", codeExt: ".py", codeDirs: ["src"], docsDir: "docs" },
     codelint: { lintDirs: ["src"] },
   }, null, 2) + "\n");
+  markProjectAuthority(escapeRoot);
   const escapedDocs = checkConfig(escapeRoot);
   assert(!escapedDocs.ok && escapedDocs.issues.some(issue => issue.includes("project.docsDir")), "docsDir symlink escaping the project must fail closed");
 
@@ -640,10 +654,10 @@ if (process.platform !== "win32") {
   fs.writeFileSync(outsideConfig, outsideContent);
   fs.symlinkSync(outsideConfig, path.join(linkedConfigRoot, "hy-workflow.json"));
   const linkedConfigCheck = checkConfig(linkedConfigRoot);
-  assert(!linkedConfigCheck.ok && linkedConfigCheck.issues.some(issue => issue.includes("normal file inside the project")), "root config symlink must be rejected");
+  assert(linkedConfigCheck.ok && linkedConfigCheck.issues.length === 0, "unselected root config symlink must be ignored without being opened");
   const linkedConfigApply = runConfigCli(["--apply-suggested", "--json"], linkedConfigRoot);
-  assert(linkedConfigApply.exitCode === 1, "config apply must not follow a root config symlink");
-  assert(fs.readFileSync(outsideConfig, "utf-8") === outsideContent, "rejected config apply must not modify the symlink target");
+  assert(linkedConfigApply.exitCode === 0, "config apply must use external state instead of following an orphan root symlink");
+  assert(fs.readFileSync(outsideConfig, "utf-8") === outsideContent, "config apply must not read or modify the orphan symlink target");
 
 }
 
@@ -658,6 +672,7 @@ fs.writeFileSync(path.join(customDocsRoot, "hy-workflow.json"), JSON.stringify({
   doclint: { maxLines: 149 },
   docsGardener: { catalogs: { custom: ["hy_init"] } },
 }, null, 2) + "\n", "utf-8");
+markProjectAuthority(customDocsRoot);
 const customDocsCheck = checkConfig(customDocsRoot);
 assert(!customDocsCheck.ok, "a missing custom docsDir should require recovery");
 assert(customDocsCheck.suggestedCommand === "hy-workflow config --apply --json --docs-dir existing-docs-dir", "existing config recovery should only request docsDir and preserve every other field");

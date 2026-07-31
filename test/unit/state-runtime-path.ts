@@ -119,7 +119,13 @@ try {
   run("git reset -- .hy/workflow.json", root);
   run("rm -f .hy/workflow.json .hy/scope.json", root);
 
-  const editState = { ...baseState(), phase: "branch" as const, branch: "fix/runtime", plan: basePlan() };
+  const editState = {
+    ...baseState(),
+    phase: "branch" as const,
+    branch: "fix/runtime",
+    plan: basePlan(),
+    approval: { time: "historical", note: "approved" },
+  };
   writeState(editState);
   await handleEdit();
   const runtimeScopePath = scopePath();

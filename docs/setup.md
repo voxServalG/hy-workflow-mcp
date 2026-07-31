@@ -32,7 +32,11 @@ A fresh setup has one small repository contract:
 
 Setup does not create or update `AGENTS.md`. It also does not create `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, `codelint.json`, `doclint.json`, or `docs-gardener.json` in the project.
 
-Review the two new files and commit them through a focused repository change. If either path already contains different content during a genuinely fresh install, setup shows the exact change and requires exact review before replacing it. This review protects an existing project file; it is not an upgrade gate for previously installed projects.
+“Fresh” means that both target paths are absent. Setup creates the two files directly and requires no artifact-review flag or approval; review and commit them later through an ordinary focused repository change. If either path already exists and there is no exact new external deployment, ordinary setup checks only that the path exists: it does not open, parse, diff, or hash either artifact. Setup leaves both paths untouched, configures user-scope clients, stores a complete external configuration, and records an external-only deployment with no project-file evidence. The project therefore starts working without deciding whether the existing bytes are old, current, or malformed.
+
+Replacing or adopting those occupied paths is a separate explicit artifact-sync operation, not an upgrade step. The caller must pass the independent intent flag `--sync-project-artifacts`, `--accept-artifact-changes`, and one complete `--review-artifact` before/after SHA-256 tuple for every occupied target. Only that complete request authorizes setup to open and verify the named files. A bare accept/review input never selects this path. Ordinary `--dry-run` emits no orphan content, diff, or hash and cannot manufacture the review tuples.
+
+Setup JSON makes this choice visible. `projectFileDisposition` reports `fresh`, `managed`, `explicit-sync`, `external-only`, or `legacy-inert`; `configAuthority` reports `project`, `external`, or `preserved`. An external-only success message says the project is ready using complete external configuration rather than presenting untouched legacy files as a failure.
 
 Deployment identity, workflow state, approvals, scope locks, DocsGraph cache, and MCP client ownership stay under the operating-system user roots:
 
@@ -90,12 +94,12 @@ Because the workflow installs an exact npm package on the runner, npm network av
 ```bash
 hy-workflow setup --yes --clients codex,claude,opencode --json
 hy-workflow setup --yes --clients codex --dry-run --json
-hy-workflow setup --yes --clients codex --accept-artifact-changes --review-artifact 'hy-workflow.json:<before>:<after>' --json
+hy-workflow setup --yes --clients codex --sync-project-artifacts --accept-artifact-changes --review-artifact "hy-workflow.json:<before>:<after>" --json
 hy-workflow setup --yes --clients codex --force-client-overwrite codex --json
 hy-workflow unset --yes --clients all --remove-global --json
 ```
 
-Non-interactive setup requires `--yes` and explicit `--clients`. `--dry-run` emits one JSON envelope and makes no change. Exact `--review-artifact` hashes apply only when a fresh installation must replace an existing target path; stale hashes fail closed.
+Non-interactive setup requires `--yes` and explicit `--clients`. `--dry-run` emits one JSON envelope and makes no change. On an external-only orphan path, that envelope contains no artifact hashes or diffs. Exact `--review-artifact` hashes belong to the separately requested `--sync-project-artifacts` operation; the tuple set must cover every occupied target and stale hashes fail closed.
 
 `--force-client-overwrite` applies only to the hy-workflow-owned user-level MCP definition. The deprecated `--migrate-legacy-clients` flag remains accepted for command compatibility but does not scan, back up, move, or delete project files.
 

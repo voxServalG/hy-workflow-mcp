@@ -1,12 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isRuntimeIgnoredArtifact, isWorkflowAuthorityExcludedArtifact } from "./policy/artifacts.js";
 import type { PlanDoc, PlanScopeAmendment } from "./state.js";
 
 function hasProjectPathMarkers(root: string): boolean {
-  return ["hy-workflow.json", "package.json", "src", "docs"].some(file => fs.existsSync(path.join(root, file)));
+  return ["package.json", "src", "docs"].some(file => fs.existsSync(path.join(root, file)));
 }
 
-export type ScopeValidationMode = "plan" | "amendment";
+export type ScopeValidationMode = "plan" | "amendment" | "verify";
 
 export type PlanValidationResult =
   | { ok: true; plan: PlanDoc }
@@ -167,16 +168,40 @@ function normalizeProjectRelativePath(root: string, field: string, file: string,
 
 export function validatePlanScopePaths(root: string, plan: PlanDoc, mode: ScopeValidationMode = "plan"): string[] {
   const errors: string[] = [];
-  const enforceExistence = hasProjectPathMarkers(root);
+  const enforceExistence = mode !== "verify" && hasProjectPathMarkers(root);
+  const rejectExcluded = (
+    field: "scope.changes" | "scope.new_files" | "scope.delete",
+    file: string,
+    normalized: string,
+  ): boolean => {
+    if (isWorkflowAuthorityExcludedArtifact(normalized)) {
+      errors.push(error(
+        field,
+        `${file} is permanently outside hy-workflow authority; legacy ignored and local/runtime artifacts cannot be declared in PlanDoc scope`,
+      ));
+      return true;
+    }
+    if (isRuntimeIgnoredArtifact(root, normalized)) {
+      errors.push(error(
+        field,
+        `${file} is not authoritative for this project; new project artifacts require the exact external minimal-v1 deployment marker`,
+      ));
+      return true;
+    }
+    return false;
+  };
   const requireExisting = (field: "scope.changes" | "scope.delete", file: string) => {
     const normalized = normalizeProjectRelativePath(root, field, file, errors);
     if (!normalized) return;
+    if (rejectExcluded(field, file, normalized)) return;
     if (enforceExistence && !fs.existsSync(path.join(root, normalized))) {
       errors.push(error(field, `${file} does not exist`));
     }
   };
   const allowPlanned = (field: "scope.new_files", file: string) => {
-    normalizeProjectRelativePath(root, field, file, errors);
+    const normalized = normalizeProjectRelativePath(root, field, file, errors);
+    if (!normalized) return;
+    rejectExcluded(field, file, normalized);
   };
 
   for (const file of plan.scope.changes) requireExisting("scope.changes", file);

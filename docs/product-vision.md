@@ -25,18 +25,22 @@ The product should not become a large platform with many overlapping tools. The 
 The ideal first-time experience is:
 
 1. Install from README without reading all docs.
-2. Run setup, review the client configuration plus the two small project files (`hy-workflow.json` and `.github/workflows/hy-workflow.yml`), then commit those files through a focused PR.
+2. Run setup. With both target paths absent, it creates exactly two small project files (`hy-workflow.json` and `.github/workflows/hy-workflow.yml`) without a separate artifact-review prompt; commit them later through an ordinary focused PR.
 3. Restart the MCP client.
 4. Ask the agent to call `hy_status`.
 5. See the current phase, why it is there, what action is allowed next, what action is forbidden, and how to recover.
 
 An upgrade is different from a first install. Updating the package must not make an existing user review or repair old repository injections. Old config files, generated workflow content, managed prompt blocks, local state directories, project client files, and compatibility lint files remain untouched and are ignored by hy-workflow. Existing external stage, approval, scope, and worktree state continue unchanged.
 
+If either fresh target path is already occupied, setup does not guess whether its bytes are old or current. Ordinary setup leaves both paths untouched and uses complete external configuration. Reading or replacing occupied targets is allowed only through the separate explicit artifact-sync command with acceptance and exact before/after review tuples for every occupied path; it is never part of install or upgrade readiness.
+
 “Ignored by hy-workflow” has a clear boundary: a third party may still act on a tracked file. GitHub can continue to run an old committed Actions workflow until the team removes or disables it in a normal repository change. Optional cleanup must be separate from upgrade readiness.
 
 ### Project Parameters, Central Policy
 
 Projects should own values such as source paths, base branch, profile choice, thresholds, scoped overrides, and time-bounded exceptions. The package should own rule meaning, validation, precedence, and immutable safety boundaries. Generated code and prompt injection are not configuration authorities.
+
+Runtime must select configuration deterministically: a complete external config is authoritative, an exact external marker or clean-runner signal may authorize the new root config, and otherwise read-only project detection supplies frozen legacy-compatible defaults. File presence, old mode fields, or approximate markers never grant authority.
 
 Policy resolution must be explainable. A user should be able to ask for one rule and one file and receive the effective value plus the ordered sources that produced it. New quality rules should enter as advisory or warning where compatibility requires it; an upgrade must not unexpectedly block an old project. Scan integrity, project identity, evidence freshness, and scope/path boundaries remain non-disableable safety rules.
 
@@ -131,7 +135,7 @@ Important recipe areas:
 - code change;
 - verify failure;
 - CI red;
-- fresh-install artifact review;
+- explicit occupied-target artifact synchronization;
 - seamless upgrade and optional legacy cleanup;
 - promotion;
 - reset and recovery.

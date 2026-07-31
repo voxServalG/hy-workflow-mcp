@@ -33,4 +33,4 @@ release pressure 通过已安装 tarball 运行统一 lint，要求报告 schema
 
 ## Verify integration
 
-baseline 和 pressure 都是长命令。PlanDoc 应把它们列入 tests/entry points，但执行时使用异步 verify-as-oracle：hy_exam_plan 获取带 nonce 的精确命令，agent 在 MCP 外执行并收集退出码与 stdout tail，再用 hy_exam_submit 阅卷。不要把长 acceptance 塞进同步 hy_verify；两个 verify 路径成功后生成等价 verifyHash；异步阅卷还必须原子持久化 implementation manifest、manifest hash 和 implementation digest，hy_commit 才能消费该证据。
+baseline 和 pressure 都是长命令。PlanDoc 应把它们列入 tests/entry points，但执行时使用异步 verify-as-oracle：hy_exam_plan 获取绑定精确 planHash、完整实现指纹和 nonce 的命令清单，agent 在 MCP 外逐条执行并收集退出码与 stdout tail，再把完整结果集交给 hy_exam_submit。不要把长 acceptance 塞进同步 hy_verify；两个路径成功后都会持久化相同的 canonical evidence，也就是 implementation manifest 与 verified implementation digest。兼容输出或 PR 标签中仍叫 verifyHash 的值只是该 digest 的别名，不是独立状态 gate。异步阅卷还会复核当前审批、文档证据、本地 scope 与 no_new_external 边界；任何失败都会回到 edit，修复后必须刷新 after_edit、sync_docs 并领取新试卷，不能局部补交原试卷。

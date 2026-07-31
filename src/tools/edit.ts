@@ -1,5 +1,5 @@
-import { readState, writeState, transition, assertPhase, scopePath } from "../state.js";
-import { toolResult, type ToolResult } from "./_base.js";
+import { approvalMatchesPlan, readState, writeState, transition, assertPhase, scopePath } from "../state.js";
+import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -11,7 +11,43 @@ export async function handleEdit(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "branch", "edit", "verify"); // can re-enter from verify (fix cycle)
 
-  if (!state.plan) return toolResult("edit", { error: "No plan", allowedTools: ["hy_status"] });
+  if (!state.plan) {
+    return invalidWorkflowStateResult(
+      state,
+      "EDIT_PLAN_MISSING",
+      "Workflow state reached edit without an active PlanDoc.",
+      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+    );
+  }
+  if (!approvalMatchesPlan(state.approval, state.plan)) {
+    return invalidWorkflowStateResult(
+      state,
+      "EDIT_APPROVAL_PLAN_MISMATCH",
+      "Workflow state cannot lock edit scope without an approval bound to the active PlanDoc.",
+      "Reset the invalid workflow state before creating a new approved PlanDoc.",
+    );
+  }
+  if (!state.branch) {
+    if (state.phase === "branch") {
+      const stage = state.stage ?? "branch.create";
+      return toolResult(state.phase, {
+        phase: state.phase,
+        stage,
+        error: "Create the approved workflow branch before locking edit scope.",
+        hint: "Call hy_branch with a safe category and topic, then continue automatically to hy_edit.",
+        allowedTools: ["hy_branch", "hy_status"],
+        nextAction: { tool: null, phase: state.phase, stage, automatic: false },
+        control: { automatic: false, stop: true, reason: "information_required" },
+        userAction: null,
+      });
+    }
+    return invalidWorkflowStateResult(
+      state,
+      "EDIT_BRANCH_MISSING",
+      "Workflow state reached edit without an active workflow branch.",
+      "Reset the impossible workflow state before starting a new approved task.",
+    );
+  }
 
   // Lock scope in git-private storage so workflow metadata stays out of the worktree.
   const scopeJson = {
@@ -31,7 +67,7 @@ export async function handleEdit(): Promise<ToolResult> {
   next.stage = "edit.implementation";
   writeState(next);
 
-  return toolResult("verify", {
+  return toolResult("edit", {
     phase: "edit",
     stage: "edit.implementation",
     status: "ready",
@@ -45,8 +81,8 @@ export async function handleEdit(): Promise<ToolResult> {
     hint: "Use standard file editing tools only within plan.scope. When implementation edits are complete, run hy_read_docs with stage after_edit, then hy_sync_docs, then hy_verify.",
     allowedTools: ["hy_read_docs", "hy_edit", "hy_status"],
     blockedTools: ["hy_commit", "hy_merge"],
-    nextAction: { tool: "hy_read_docs", arguments: { stage: "after_edit" }, phase: "edit", stage: "after_edit", automatic: true },
-    control: { automatic: true, stop: false, reason: "automatic" },
+    nextAction: { tool: null, phase: "edit", stage: "edit.implementation", automatic: false },
+    control: { automatic: false, stop: true, reason: "external_action_required" },
     userAction: null,
     message: `Scope locked. Edit files within plan.scope: ${state.plan.scope.changes.join(", ")}. When done, run hy_read_docs(after_edit), then hy_sync_docs, then hy_verify.`,
   });

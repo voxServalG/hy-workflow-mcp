@@ -11,6 +11,7 @@ The public package `@voxstudio/hy-workflow` exposes one bin: `hy-workflow`. Runn
 - `hy-workflow unset`
 - `hy-workflow setup --yes --clients codex,claude,opencode --json`
 - `hy-workflow setup --yes --clients codex --json`
+- `hy-workflow setup --yes --clients codex --sync-project-artifacts --accept-artifact-changes --review-artifact <file:before:after> --json`
 - `hy-workflow setup --yes --clients codex --force-client-overwrite codex --json`
 - `hy-workflow unset --yes --clients all --remove-global --json`
 - `hy-workflow config --check --json`
@@ -19,13 +20,15 @@ The public package `@voxstudio/hy-workflow` exposes one bin: `hy-workflow`. Runn
 - `hy-workflow lint --json`
 - `hy-workflow lint-contract`
 
-`setup`/`unset` share one Node engine. Fresh setup creates exactly two repository artifacts: `hy-workflow.json` and a small exact-version `.github/workflows/hy-workflow.yml`. It never injects or migrates `AGENTS.md` or project client files. Deployment, state, cache, and client ownership stay external.
+`setup`/`unset` share one Node engine. Fresh setup creates exactly two repository artifacts: `hy-workflow.json` and a small exact-version `.github/workflows/hy-workflow.yml`. It never injects or migrates `AGENTS.md` or project client files. Deployment, state, cache, and client ownership stay external. If either new target is already occupied without an exact deployment, ordinary setup leaves both untouched and selects complete external configuration instead. Reading those occupied targets requires the separate `--sync-project-artifacts` intent together with acceptance and complete exact review tuples; it is never inferred from ordinary setup or upgrade flags.
+
+With `--json`, setup and unset failures use canonical `setup.apply` or `setup.unset` stages plus typed `nextAction`, `control`, `userAction`, and `recovery`. Recovery distinguishes `wait_and_retry` from `repair_and_retry` and preserves the complete CLI argv in `arguments`, so an agent can retry the same noninteractive operation without inventing flags or asking for another approval.
 
 ## Config safety
 
-`hy-workflow config --check --json` validates root config and evidence from Git-tracked files, manifests, multi-extension source directories and origin/current/conventional refs. `package.json` alone is not TypeScript evidence; material mixed/unknown/low-confidence Git inference requires explicit values. Optional `ci.commands` must be a non-empty bounded single-line string array and is preserved as a manual team choice.
+`hy-workflow config --check --json` validates only the selected authority: a complete external config, an exactly authorized root config, or detected project facts with frozen compatible defaults. It never opens an unselected root `hy-workflow.json`. Project evidence comes from Git-tracked files, manifests, multi-extension source directories and origin/current/conventional refs. `package.json` alone is not TypeScript evidence; material mixed/unknown/low-confidence Git inference requires explicit values. Optional `ci.commands` must be a non-empty bounded single-line string array and is preserved as a manual team choice.
 
-`config --apply` preserves existing configuration and changes only explicitly supplied fields; it is the recovery command for replacing an invalid or missing `project.docsDir`. `config --apply-suggested` intentionally applies the detected project and lint defaults. Both validate before writing root `hy-workflow.json`. Malformed JSON, invalid field types, unsafe branch/path characters, unknown flags, missing values, or a docsDir that cannot be resolved to an existing directory return a structured nonzero result without writing. Suggested shell commands quote dynamic values and never recommend a command known to fail the same validation.
+`config --apply` preserves the selected configuration and changes only explicitly supplied fields; it is the recovery command for replacing an invalid or missing `project.docsDir`. `config --apply-suggested` intentionally applies the detected project and lint defaults. With an exact project marker or CI signal they update root `hy-workflow.json`; otherwise they update complete external configuration and leave any orphan root file untouched. Malformed selected JSON, invalid field types, unsafe branch/path characters, unknown flags, missing values, or a docsDir that cannot be resolved to an existing directory return a structured nonzero result without writing. Suggested shell commands quote dynamic values and never recommend a command known to fail the same validation.
 
 Root `codelint.json`, `doclint.json`, and `docs-gardener.json` are not read, hashed, validated, migrated, or used as drift inputs by setup, config, or lint. They remain untouched and non-authoritative.
 
@@ -43,7 +46,7 @@ The MCP surface is canonical in `src/commands/catalog.ts` and registered by `src
 
 Contract lint checks that README, tool docs, server registration, and tests agree on this surface.
 
-Ordinary development preserves the complete documentation sequence: `hy_status -> hy_read_docs(before_plan) -> hy_plan -> hy_read_docs(before_approve) -> hy_approve -> hy_branch -> hy_edit -> hy_read_docs(after_edit) -> hy_sync_docs -> hy_verify -> hy_commit -> hy_merge -> hy_reset`. The exam path substitutes `hy_exam_plan -> hy_exam_submit` for `hy_verify`.
+Ordinary development preserves this sequence: `hy_status -> hy_read_docs(before_plan) -> hy_plan -> [one user decision] hy_approve -> hy_read_docs(before_approve) -> hy_approve(automatic resume, or agent continue/replan on drift) -> hy_branch -> hy_edit -> [code edits] -> hy_read_docs(after_edit) -> [declared doc edits] -> hy_sync_docs -> hy_verify -> hy_commit -> hy_merge -> hy_reset`. The first `hy_approve` persists the exact human decision. No drift replays it automatically; drift stops only for the agent to choose `auditDecision=continue` when intent remains unchanged or `auditDecision=replan` when a fresh PlanDoc is required. The same PlanDoc is never sent back for another human approval. `hy_edit` and `after_edit` stop for real file editing, while `hy_sync_docs` records completed documentation evidence and automatically routes verification. The exam path substitutes `hy_exam_plan -> hy_exam_submit` for `hy_verify`.
 
 ## Long verification commands
 

@@ -5,8 +5,8 @@ import {
   DEFAULT_STAGE_BY_PHASE,
   PHASES,
   VALID_TRANSITIONS,
+  canonicalWorkflowStage,
   isPhase,
-  isWorkflowStage,
   type Phase,
   type WorkflowStage,
 } from "./runtime/state-machine.js";
@@ -217,6 +217,13 @@ export interface Approval {
   }>;
 }
 
+export interface PendingPlanApproval {
+  time: string;
+  note: string;
+  decisionId: string;
+  planHash: string;
+}
+
 export interface WorkflowState {
   version: "1";
   phase: Phase;
@@ -226,6 +233,8 @@ export interface WorkflowState {
   prNumber: number | null;
   plan: PlanDoc | null;
   approval: Approval | null;
+  /** One explicit user approval waiting only for the automatic before_approve audit. */
+  pendingApproval?: PendingPlanApproval | null;
   // deprecated — kept optional for reading historical state.json, no longer written
   verifyHash?: string | null;
   verifiedManifestHash?: string | null;
@@ -352,6 +361,7 @@ function initialState(): WorkflowState {
     prNumber: null,
     plan: null,
     approval: null,
+    pendingApproval: null,
     verifiedImplementationDigest: null,
     pendingAmendment: null,
     implementationManifest: null,
@@ -359,6 +369,10 @@ function initialState(): WorkflowState {
     syncDocs: null,
     mergeReceipt: null,
   };
+}
+
+export function createInitialWorkflowState(): WorkflowState {
+  return initialState();
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -382,6 +396,84 @@ function normalizeMergeReceipt(value: unknown, file: string): MergeReceipt | nul
   return receipt;
 }
 
+function isPlanHash(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{12}$/.test(value);
+}
+
+function hasValidApprovalAuditChain(value: unknown, decisionId: string, planHash: string): boolean {
+  const match = /^plan:([a-f0-9]{12})$/.exec(decisionId);
+  if (!match) return false;
+  const audit = value === undefined ? [] : value;
+  if (!Array.isArray(audit)) return false;
+  let current = match[1];
+  for (const item of audit) {
+    if (!isObject(item)
+        || typeof item.time !== "string" || !item.time.trim()
+        || item.kind !== "non_material_scope_narrowing"
+        || typeof item.amendmentDecisionId !== "string" || !item.amendmentDecisionId.trim()
+        || !isPlanHash(item.previousPlanHash)
+        || !isPlanHash(item.planHash)
+        || item.previousPlanHash !== current) {
+      return false;
+    }
+    current = item.planHash;
+  }
+  return current === planHash;
+}
+
+function hasValidApprovalCore(value: unknown): value is Approval {
+  if (!isObject(value) || typeof value.time !== "string" || !value.time.trim() || typeof value.note !== "string") return false;
+  const hasDecisionId = value.decisionId !== undefined;
+  const hasPlanHash = value.planHash !== undefined;
+  if (hasDecisionId !== hasPlanHash) return false;
+  if (!hasDecisionId && !hasPlanHash) {
+    return value.audit === undefined && value.supersedesDecisionId === undefined;
+  }
+  if (typeof value.decisionId !== "string" || !isPlanHash(value.planHash)) return false;
+  if (!hasValidApprovalAuditChain(value.audit, value.decisionId, value.planHash)) return false;
+  if (value.supersedesDecisionId !== undefined && (typeof value.supersedesDecisionId !== "string" || !value.supersedesDecisionId.trim())) return false;
+  return true;
+}
+
+function normalizeApproval(value: unknown, plan: PlanDoc | null, file: string): Approval | null {
+  if (value === null || value === undefined) return null;
+  if (!hasValidApprovalCore(value)) {
+    structuredWorkflowStateError(
+      "WORKFLOW_STATE_INVALID_APPROVAL",
+      `Workflow state has an invalid approval in ${file}.`,
+      { file },
+    );
+  }
+  const approval = { ...value } as Approval;
+  if (approval.planHash === undefined && plan) {
+    const planHash = computePlanHash(plan);
+    if (planHash) {
+      approval.planHash = planHash;
+      approval.decisionId = approval.decisionId ?? `plan:${planHash}`;
+    }
+  }
+  return approval;
+}
+
+function normalizePendingApproval(value: unknown, plan: PlanDoc | null, file: string): PendingPlanApproval | null {
+  if (value === null || value === undefined) return null;
+  const planHash = computePlanHash(plan);
+  if (!isObject(value)
+      || typeof value.time !== "string" || !value.time.trim()
+      || typeof value.note !== "string"
+      || !isPlanHash(value.planHash)
+      || value.decisionId !== `plan:${value.planHash}`
+      || !planHash
+      || value.planHash !== planHash) {
+    structuredWorkflowStateError(
+      "WORKFLOW_STATE_INVALID_PENDING_APPROVAL",
+      `Workflow state has an invalid pending approval in ${file}.`,
+      { file },
+    );
+  }
+  return { ...value } as unknown as PendingPlanApproval;
+}
+
 function normalizeState(raw: unknown, file: string): WorkflowState {
   if (!isObject(raw)) {
     structuredWorkflowStateError("WORKFLOW_STATE_INVALID", `Workflow state is not an object: ${file}.`, { file });
@@ -392,16 +484,19 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
     structuredWorkflowStateError("WORKFLOW_STATE_INVALID_PHASE", `Workflow state has an invalid phase in ${file}.`, { file, phase });
   }
 
+  const plan = (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null;
+
   return {
     ...initialState(),
     ...raw,
     version: "1",
     phase,
-    stage: isWorkflowStage(raw.stage) ? raw.stage : DEFAULT_STAGE_BY_PHASE[phase],
+    stage: canonicalWorkflowStage(phase, raw.stage),
     branch: normalizeNullableString(raw.branch),
     prNumber: normalizeNullablePrNumber(raw.prNumber, file),
-    plan: (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null,
-    approval: (isObject(raw.approval) ? raw.approval : null) as Approval | null,
+    plan,
+    approval: normalizeApproval(raw.approval, plan, file),
+    pendingApproval: normalizePendingApproval(raw.pendingApproval, plan, file),
     verifyHash: normalizeNullableString(raw.verifyHash),
     verifiedImplementationDigest: normalizeNullableString(raw.verifiedImplementationDigest),
     verifiedManifestHash: normalizeNullableString(raw.verifiedManifestHash),
@@ -431,7 +526,7 @@ export function readState(): WorkflowState {
 export function writeState(state: WorkflowState): void {
   atomicWriteJson(statePath(), {
     ...state,
-    stage: isWorkflowStage(state.stage) ? state.stage : DEFAULT_STAGE_BY_PHASE[state.phase],
+    stage: canonicalWorkflowStage(state.phase, state.stage),
   });
 }
 
@@ -518,11 +613,25 @@ export function amendmentDecisionId(plan: PlanDoc | null, amendment: PendingPlan
 
 export function approvalMatchesPlan(approval: Approval | null, plan: PlanDoc | null): boolean {
   if (!approval || !plan) return false;
+  if (!hasValidApprovalCore(approval)) return false;
   const planHash = computePlanHash(plan);
   if (!planHash) return false;
   // Historical approvals predate planHash. They remain valid for the already
   // persisted PlanDoc so upgrading an active project does not interrupt it.
   return approval.planHash === undefined || approval.planHash === planHash;
+}
+
+export function pendingApprovalMatchesPlan(pending: PendingPlanApproval | null | undefined, plan: PlanDoc | null): boolean {
+  if (!pending || !plan) return false;
+  const planHash = computePlanHash(plan);
+  return Boolean(
+    planHash
+    && typeof pending.time === "string" && pending.time.trim()
+    && typeof pending.note === "string"
+    && isPlanHash(pending.planHash)
+    && pending.planHash === planHash
+    && pending.decisionId === `plan:${planHash}`,
+  );
 }
 
 export function createPlanApproval(plan: PlanDoc, note = "", previous?: Approval | null): Approval {
@@ -545,6 +654,9 @@ export function rebindApprovalForNonMaterialNarrowing(
   nextPlan: PlanDoc,
   amendmentId: string,
 ): Approval {
+  if (!approvalMatchesPlan(approval, previousPlan)) {
+    throw new StateError("Cannot rebind a scope narrowing without an approval bound to the previous PlanDoc.");
+  }
   const previousPlanHash = computePlanHash(previousPlan)!;
   const planHash = computePlanHash(nextPlan)!;
   const decisionId = approval?.decisionId ?? `plan:${previousPlanHash}`;

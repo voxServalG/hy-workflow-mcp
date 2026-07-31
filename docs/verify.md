@@ -1,6 +1,6 @@
 # Verify Pipeline
 
-`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks.ts:runAllChecks` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。setup 固定部署的 GitHub Actions workflow 承担强制 doclint、codelint 和项目 CI。全部通过后计算 verifyHash，转换到 `commit`；失败则退回 `edit`。
+`hy_verify` 先确认当前 PlanDoc 已完成 `hy_read_docs(after_edit)` 与 `hy_sync_docs`，再调用 `src/checks-async.ts:runAllChecksAsync` 执行 **本地任务 gate（compile, scope, boundary, platform, smoke, tests）**。setup 固定部署的 GitHub Actions workflow 承担强制 doclint、codelint 和项目 CI。全部通过后持久化 `implementationManifest` 与 `verifiedImplementationDigest`，转换到 `commit`；失败则退回 `edit`。
 
 ## 层级
 
@@ -31,7 +31,7 @@ Layer 7: tests
 
 ## Command budget and cleanup
 
-Short commands run through a synchronous cross-platform supervisor; commands expected to exceed 60 seconds use the asynchronous exam path. Ordinary commands receive 90 seconds, `npm pack` receives 5 minutes, and the normal unit/e2e/contract/Windows/verify suites receive 20 minutes. Long acceptance commands are issued by `hy_exam_plan`, executed outside the MCP request with their declared timeout, and graded by `hy_exam_submit`. Async compile checks derive language and source paths from `project.codeExt` plus `project.codeDirs`, matching synchronous verify; they never concatenate `boundary.entry_points` into a compiler command. A timeout is reported explicitly instead of as an unknown exit. Before returning, the supervisor terminates the complete detached process group on POSIX or uses `taskkill /T /F` on Windows, so a timed-out npm shell cannot leave descendants mutating `dist/` or holding the worktree. Structured compile invocations such as Python `py_compile` use executable plus argv rather than shell quoting.
+The `hy_verify` fast path awaits short commands through an asynchronous cross-platform supervisor inside one MCP request; commands expected to exceed 60 seconds use the external two-step exam path. Ordinary commands receive 90 seconds, `npm pack` receives 5 minutes, and the normal unit/e2e/contract/Windows/verify suites receive 20 minutes. Long acceptance commands are issued by `hy_exam_plan`, executed outside the MCP request with their declared timeout, and graded by `hy_exam_submit`. Async compile checks derive language and source paths from `project.codeExt` plus `project.codeDirs`, matching the one-request verify path; they never concatenate `boundary.entry_points` into a compiler command. A timeout is reported explicitly instead of as an unknown exit. Before returning, the supervisor terminates the complete detached process group on POSIX or uses `taskkill /T /F` on Windows, so a timed-out npm shell cannot leave descendants mutating `dist/` or holding the worktree. Structured compile invocations such as Python `py_compile` use executable plus argv rather than shell quoting.
 
 ## CI evidence gate
 
@@ -41,7 +41,7 @@ setup 负责生成 workflow，但不修改 GitHub 管理配置。仓库管理员
 
 ## 判定逻辑
 
-`src/checks.ts:runAllChecks`
+`src/checks-async.ts:runAllChecksAsync`
 
 ```typescript
 allPassed = 所有 hard 检查都通过
@@ -115,9 +115,13 @@ interface VerifyReport {
 }
 ```
 
-## verifyHash
+## Implementation evidence 与 verifyHash 兼容别名
 
-全部通过后，`src/state.ts:computeVerifyHash` 对 PlanDoc 的 task + scope + boundary + rubrics 字段做 SHA256，取前 12 位 hex。同步与异步成功路径都把此哈希连同 verifiedManifestHash、verifiedImplementationDigest 和 implementationManifest 写入状态；当前 `hy_commit` 检查 verifyHash 是否存在，确保成功执行过 `hy_verify`。
+同步与异步成功路径都持久化完整 `implementationManifest`，并用 manifest 中的当前路径和文件内容计算 `verifiedImplementationDigest`。该 manifest 会覆盖工作区和索引中的真实实现差异，包括未跟踪文件。`hy_commit` 以这两个字段作为正式 gate：提交前重新构造 manifest、重新计算 digest，并要求路径集合和内容都与验证时完全一致。
+
+工具成功输出以及 PR metadata 中名为 `verifyHash` 的值只是 `verifiedImplementationDigest` 的兼容别名，便于旧调用方和既有 PR 展示继续工作。持久化的 `WorkflowState.verifyHash` 与 `verifiedManifestHash` 是可空的旧兼容字段，不参与当前 commit gate；新的成功路径也不靠写入这两个字段放行。
+
+异步试卷额外绑定精确 `planHash` 与出题时的完整实现指纹。`hy_exam_submit` 必须收到每一项结果，并校验 nonce、命令、退出码和输出约束，同时要求实现指纹未变、审批与文档证据仍有效，并在本地重新执行 scope 与 `no_new_external` 边界检查。任一失败都返回 edit；修复后必须刷新 `after_edit` 与 `sync_docs` 证据并重新调用 `hy_exam_plan`，不能在原试卷上只补交失败项。
 
 ## 配置依赖
 

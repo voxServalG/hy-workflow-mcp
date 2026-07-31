@@ -23,7 +23,7 @@ Every result has typed additive `phase`, `stage`, `status`, `nextAction`, `contr
 - `stop_here`: the agent must stop automatic progress in the current turn.
 - `allowedTools`: tools the agent may call next.
 - `blockedTools`: tools the agent must not call next.
-- `recovery`: targeted repair guidance with `tool`, `command`, `instruction`, and `byLayer`.
+- `recovery`: a discriminated recovery action. Required `strategy` is one of `retry`, `repair_and_retry`, `wait_and_retry`, `replan`, `reset`, or `external_action`; additive compatibility fields remain `tool`, executable `arguments`, `command`, `instruction`, and `byLayer`.
 - `checks`: verification or CI check records.
 - `findings`: lint, audit, or review findings.
 - `pagination`: paged result state with `has_more`, `page_token`, and `next_page_token`.
@@ -37,3 +37,5 @@ Failures return `ok: false`, preserve the current `phase` and suggested `next`, 
 ## Result Behavior
 
 Only `userAction.kind: "approval"` means ask the human to approve. Recovery, `requires_user`, `stop_here`, CI wait, `review_failure`, configuration, authentication, permissions, and external action retain distinct meanings and must not be rewritten as approval. Agents obey `control`, route by `nextAction`, render `display`/`summary`, preserve recovery and diagnostic details, and use legacy `next` only for compatibility.
+
+Recovery routing is explicit: `retry` invokes the named tool without a repair prerequisite; `repair_and_retry` first applies the supplied repair; `wait_and_retry` waits for an external condition; `replan` changes the approved plan or amendment; `reset` deliberately abandons the current workflow through `hy_reset`; and `external_action` requires work outside the MCP pipeline. Agents must route by `strategy`, not infer behavior from prose in `instruction`.

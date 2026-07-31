@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { executeSetup } from "../../src/setup/operations.js";
 import type { ClientAdapter, ClientServerSnapshot, McpDefinition, ServerName, SetupOptions } from "../../src/setup/types.js";
-import { AGENTS_CLOSE, AGENTS_OPEN } from "../../src/setup/agents-rules.js";
 import { makeGitProject, useRuntimeHome } from "../helpers/runtime-home.js";
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -28,10 +27,18 @@ assert(!fs.existsSync(path.join(freshRoot, "AGENTS.md")), "fresh setup must not 
 
 useRuntimeHome("hy-agents-existing-runtime-");
 const existingRoot = makeGitProject("hy-agents-existing-");
-const existing = `${AGENTS_OPEN}\n<!-- hy-workflow-rules-version: 2020.01.01 -->\nold injected rules\n${AGENTS_CLOSE}\nteam-owned instructions\n`;
-fs.writeFileSync(path.join(existingRoot, "AGENTS.md"), existing);
-const result = await executeSetup(existingRoot, options, [new Client()]);
-assert(result.ok && !result.projectFilesChanged.includes("AGENTS.md"), "setup must not report an existing AGENTS.md as managed");
-assert(fs.readFileSync(path.join(existingRoot, "AGENTS.md"), "utf-8") === existing, "setup must not read-rewrite or migrate an existing AGENTS.md block");
+const agentsPath = path.join(existingRoot, "AGENTS.md");
+const arbitraryAgents = Buffer.from("# Team-owned instructions\narbitrary bytes and syntax: { [ ( ???\n", "utf-8");
+fs.writeFileSync(agentsPath, arbitraryAgents);
+fs.chmodSync(agentsPath, 0o000);
+let result;
+try {
+  result = await executeSetup(existingRoot, options, [new Client()]);
+  assert((fs.statSync(agentsPath).mode & 0o777) === 0, "setup must not change permissions on an unreadable AGENTS.md");
+} finally {
+  fs.chmodSync(agentsPath, 0o644);
+}
+assert(result?.ok && !result.projectFilesChanged.includes("AGENTS.md"), "setup must not read or report an arbitrary unreadable AGENTS.md as managed");
+assert(fs.readFileSync(agentsPath).equals(arbitraryAgents), "setup must preserve arbitrary AGENTS.md bytes exactly");
 
-console.log("setup-agents-migration: AGENTS injection and migration are retired");
+console.log("setup-agents-migration: arbitrary unreadable AGENTS.md stays untouched");

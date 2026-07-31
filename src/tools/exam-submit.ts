@@ -1,7 +1,10 @@
-import { readState, writeState, assertPhase } from "./_base.js";
-import { projectRoot, transition } from "../state.js";
+import { invalidWorkflowStateResult, readState, writeState, assertPhase } from "./_base.js";
+import { approvalMatchesPlan, documentReadHealth, projectRoot, transition } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import { submitExam, type ExamResult } from "../verify-exam.js";
+import { buildImplementationManifest } from "../checks.js";
+import { implementationDigest } from "./sync_docs.js";
+import { validatePlanScopePaths } from "../plan_validation.js";
 
 export const inputSchema = {
   type: "object",
@@ -37,10 +40,60 @@ interface Args {
 export async function handleExamSubmit(args: Args): Promise<ToolResult> {
   let state = readState();
   assertPhase(state, "edit", "verify");
+  const currentStage = state.stage ?? (state.phase === "verify" ? "verify.run" : "edit.implementation");
 
-  if (!state.plan) return toolResult("verify", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
+  if (!state.plan) {
+    return invalidWorkflowStateResult(
+      state,
+      "EXAM_SUBMIT_PLAN_MISSING",
+      "Workflow state reached asynchronous verification submission without an active PlanDoc.",
+      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
+    );
+  }
+  if (!approvalMatchesPlan(state.approval, state.plan)) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      error: {
+        type: "workflow_state",
+        subtype: "approval_missing",
+        code: "EXAM_APPROVAL_PLAN_MISMATCH",
+        message: "The current PlanDoc is not bound to a valid approval.",
+        hint: "Reset the invalid workflow state before submitting exam results.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset", instruction: "Reset the invalid approval state before replanning." },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure", instruction: "Submitted results cannot replace a missing PlanDoc approval." },
+    });
+  }
 
   const root = projectRoot();
+  const scopeErrors = validatePlanScopePaths(root, state.plan, "verify");
+  if (scopeErrors.length) {
+    return invalidWorkflowStateResult(
+      state,
+      "EXAM_SCOPE_INVALID",
+      `Stored PlanDoc scope contains invalid paths: ${scopeErrors.join("; ")}`,
+      "Reset the invalid workflow state and create a new PlanDoc containing only paths authoritative for this project.",
+    );
+  }
+  const manifest = buildImplementationManifest(root);
+  const currentImplementationDigest = implementationDigest(root, state.plan, manifest);
+  const health = documentReadHealth(state, currentImplementationDigest);
+  if (!health.okForVerify) {
+    const blocked = health.blockedBy;
+    return toolResult("edit", {
+      phase: state.phase,
+      stage: currentStage,
+      error: blocked?.reason ?? "after_edit document audit and hy_sync_docs must be current before hy_exam_submit.",
+      documentReadHealth: health,
+      allowedTools: [blocked?.tool ?? "hy_read_docs", "hy_status"],
+      blockedTools: ["hy_exam_submit", "hy_commit", "hy_merge"],
+    });
+  }
   state = transition(state, "verify");
   state.stage = "verify.run";
   writeState(state);
@@ -54,18 +107,19 @@ export async function handleExamSubmit(args: Args): Promise<ToolResult> {
       stage: "edit.implementation",
       status: "failed",
       failedChecks: outcome.failedChecks,
+      examId: args.examId,
       recovery: {
-        nextAction: "fix_then_resubmit",
-        resubmitExamId: args.examId,
-        hint: "Fix the failed checks, re-run them via Bash with the same exam, and call hy_exam_submit again. Passed checks do not need to be re-submitted.",
+        strategy: "repair_and_retry",
+        tool: "hy_edit",
+        instruction: "Re-enter edit, fix the failed checks, refresh after_edit and sync_docs evidence, then issue a new hy_exam_plan. A changed worktree invalidates this exam fingerprint.",
       },
       display: {
         title: `${outcome.failedChecks?.length ?? 0} checks failed`,
         body: (outcome.failedChecks ?? []).map(f => `- ${f.id}: ${f.reason} — ${f.message}`).join("\n"),
       },
-      allowedTools: ["hy_exam_submit", "hy_status"],
+      allowedTools: ["hy_edit", "hy_status"],
       blockedTools: ["hy_commit", "hy_merge"],
-      nextAction: { tool: "hy_exam_submit", phase: "edit", stage: "verify.run", automatic: true },
+      nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
       control: { automatic: true, stop: false, reason: "repair_required" },
       userAction: null,
     });
@@ -89,8 +143,8 @@ export async function handleExamSubmit(args: Args): Promise<ToolResult> {
       body: `All ${args.results.length} submitted checks passed. Ready to hy_commit.`,
     },
     allowedTools: ["hy_commit", "hy_status"],
-    nextAction: { tool: "hy_commit", phase: "commit", stage: "commit.prepare", automatic: true },
-    control: { automatic: true, stop: false, reason: "automatic" },
+    nextAction: { tool: null, phase: "commit", stage: "commit.prepare", automatic: false },
+    control: { automatic: false, stop: true, reason: "information_required" },
     userAction: null,
   });
 }

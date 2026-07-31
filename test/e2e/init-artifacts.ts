@@ -83,6 +83,9 @@ try {
   process.chdir(newRoot);
   const result = await handleInit();
   assert(result.next === "plan", `hy_init should advance to plan: ${JSON.stringify(result)}`);
+  assert(result.phase === "plan" && result.stage === "plan.before_plan", `hy_init should emit the canonical before-plan stage: ${JSON.stringify(result)}`);
+  assert(result.allowedTools?.includes("hy_read_docs") && result.nextAction.tool === null, `hy_init must not invent an executable document read before a task exists: ${JSON.stringify(result)}`);
+  assert(result.control.reason === "information_required" && result.userAction?.kind === "provide_information", `hy_init should request task information without inventing an approval: ${JSON.stringify(result)}`);
   assert(result.projectFilesChanged?.length === 0, "hy_init must report zero project changes");
   assert(result.configAuthority?.kind === "project", "new minimal deployment must report project config authority");
 } finally {

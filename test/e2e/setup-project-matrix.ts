@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { checkConfig, defaultSuggestion, ensureConfigDefaults } from "../../src/config.js";
+import { projectPaths } from "../../src/runtime/user-paths.js";
+import { useRuntimeHome } from "../helpers/runtime-home.js";
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
@@ -26,6 +28,8 @@ function fixture(branch: string, files: Record<string, string>): string {
   git(root, ["commit", "-m", "fixture"]);
   return root;
 }
+
+useRuntimeHome("hy-project-matrix-runtime-");
 
 const matrix: Array<{
   name: string;
@@ -114,7 +118,10 @@ for (const item of matrix) {
   const applied = ensureConfigDefaults(item.root);
   assert(applied.ok, `${item.name}: unambiguous project suggestion should apply: ${applied.issues.join("; ")}`);
   assert(checkConfig(item.root).ok, `${item.name}: generated config should remain valid`);
-  const config = JSON.parse(fs.readFileSync(path.join(item.root, "hy-workflow.json"), "utf-8"));
+  assert(!fs.existsSync(path.join(item.root, "hy-workflow.json")), `${item.name}: config helper must not inject a root config without exact project authority`);
+  const externalConfig = projectPaths(item.root).config;
+  assert(applied.source === externalConfig && fs.existsSync(externalConfig), `${item.name}: config helper must write the identity-scoped external config`);
+  const config = JSON.parse(fs.readFileSync(externalConfig, "utf-8"));
   assert(config.ci === undefined, `${item.name}: CI candidates require setup/user confirmation and must not be silently persisted`);
 }
 

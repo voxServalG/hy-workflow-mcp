@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { checkSetupStamp } from "../../src/bootstrap.js";
-import { projectRuntimeConfigSource, resolveRuntimeConfig, RUNTIME_CONFIG_SOURCE_ENV } from "../../src/config.js";
+import { checkConfig, projectRuntimeConfigSource, resolveRuntimeConfig, runConfigCli, RUNTIME_CONFIG_SOURCE_ENV } from "../../src/config.js";
 import { readDeployment, writeDeployment } from "../../src/runtime/deployment.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { executeSetup } from "../../src/setup/operations.js";
@@ -57,6 +57,63 @@ for (const [relative, content] of legacyFiles) {
 }
 git(root, ["add", "."]);
 git(root, ["commit", "-m", "legacy project"]);
+
+const orphanRoot = path.join(sandbox, "orphan-project");
+fs.mkdirSync(orphanRoot, { recursive: true });
+git(orphanRoot, ["init", "-b", "main"]);
+git(orphanRoot, ["config", "user.email", "test@example.com"]);
+git(orphanRoot, ["config", "user.name", "hy test"]);
+for (const directory of ["src", "docs", ".github/workflows"]) fs.mkdirSync(path.join(orphanRoot, directory), { recursive: true });
+fs.writeFileSync(path.join(orphanRoot, "src", "main.ts"), "export const orphan = true;\n");
+fs.writeFileSync(path.join(orphanRoot, "docs", "README.md"), "# Orphan fixture\n");
+const orphanArtifacts = new Map<string, string>([
+  ["hy-workflow.json", "{ invalid orphan config must never be opened\n"],
+  [".github/workflows/hy-workflow.yml", "name: unreadable orphan workflow\non: [push]\n"],
+]);
+for (const [relative, content] of orphanArtifacts) fs.writeFileSync(path.join(orphanRoot, relative), content);
+git(orphanRoot, ["add", "."]);
+git(orphanRoot, ["commit", "-m", "orphan legacy injections"]);
+const orphanBeforeStatus = git(orphanRoot, ["status", "--porcelain"]);
+const orphanUnreadable = [...orphanArtifacts.keys()].map(relative => path.join(orphanRoot, relative));
+if (process.platform !== "win32") for (const file of orphanUnreadable) fs.chmodSync(file, 0o000);
+try {
+  const orphanResolution = resolveRuntimeConfig(orphanRoot);
+  assert(orphanResolution.authority.kind === "legacy-detected" && orphanResolution.issues.length === 0, "orphan root config must not become runtime authority");
+  const orphanCheck = checkConfig(orphanRoot);
+  assert(orphanCheck.ok && orphanCheck.source?.includes("read-only project detection"), "public config check must use detected authority without opening orphan root config");
+  const cliCheck = runConfigCli(["--check", "--json"], orphanRoot);
+  assert(cliCheck.exitCode === 0, `public config CLI check must ignore unreadable orphan config: ${cliCheck.stdout}`);
+  const cliApply = runConfigCli(["--apply", "--json", "--base-branch", "main"], orphanRoot);
+  assert(cliApply.exitCode === 0, `public config apply must write external state without opening orphan config: ${cliApply.stdout}`);
+  const orphanExternal = JSON.parse(fs.readFileSync(projectPaths(orphanRoot).config, "utf-8"));
+  assert(orphanExternal.project?.baseBranch === "main" && orphanExternal.schema !== "hy-workflow.runtime-config-source.v1", "orphan config apply must persist a full external config rather than a project-source marker");
+
+  const orphanOptions: SetupOptions = {
+    action: "setup",
+    mode: "shared",
+    clients: [],
+    language: "en",
+    yes: true,
+    dryRun: false,
+    json: true,
+    removeGlobal: false,
+  };
+  const orphanPreview = await executeSetup(orphanRoot, { ...orphanOptions, dryRun: true }, []);
+  assert(orphanPreview.artifactChanges?.length === 0 && orphanPreview.projectFilesChanged.length === 0, "orphan setup preview must not manufacture hashes or diffs");
+  const orphanSetup = await executeSetup(orphanRoot, orphanOptions, []);
+  const orphanDeployment = readDeployment(orphanRoot);
+  assert(orphanSetup.ok && orphanSetup.projectFilesChanged.length === 0, "ordinary orphan setup must succeed without a project artifact gate");
+  assert(orphanSetup.projectFileDisposition === "external-only" && orphanSetup.configAuthority === "external", "orphan setup result must explain its external-only authority instead of hiding the branch");
+  assert(orphanSetup.message.includes("ready using complete external config"), "external-only success must tell the user the project is ready");
+  assert(orphanDeployment?.schemaVersion === "3" && !orphanDeployment.projectContract && orphanDeployment.projectFiles.length === 0, "orphan setup must record an external-only inert deployment");
+  assert(Object.keys(orphanDeployment?.artifacts ?? {}).length === 0, "orphan deployment must not record hashes for ignored project artifacts");
+} finally {
+  if (process.platform !== "win32") for (const file of orphanUnreadable) fs.chmodSync(file, 0o644);
+}
+for (const [relative, content] of orphanArtifacts) {
+  assert(fs.readFileSync(path.join(orphanRoot, relative), "utf-8") === content, `orphan setup touched ${relative}`);
+}
+assert(git(orphanRoot, ["status", "--porcelain"]) === orphanBeforeStatus, "orphan config/setup paths must not dirty the worktree");
 
 writeDeployment(root, {
   setupVersion: "2026.01.01.0",

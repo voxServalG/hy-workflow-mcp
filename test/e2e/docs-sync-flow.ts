@@ -112,8 +112,11 @@ try {
   }
 
   const afterEdit = await handleReadDocs({ stage: "after_edit" });
-  if (afterEdit.phase !== "edit" || afterEdit.stage !== "after_edit") {
+  if (afterEdit.phase !== "edit" || afterEdit.stage !== "edit.after_edit") {
     throw new Error(`after_edit should stay in edit, got ${JSON.stringify(afterEdit)}`);
+  }
+  if (afterEdit.nextAction.tool !== null || afterEdit.control.reason !== "external_action_required" || !afterEdit.control.stop) {
+    throw new Error(`after_edit must stop until declared documentation edits are actually complete: ${JSON.stringify(afterEdit)}`);
   }
   // Check graph-driven fields in after_edit
   if (!afterEdit.snapshot?.docsGraphDigest) {
@@ -139,6 +142,9 @@ try {
   if (synced.phase !== "edit" || !synced.synced) {
     throw new Error(`hy_sync_docs should keep edit phase and mark synced, got ${JSON.stringify(synced)}`);
   }
+  if (synced.nextAction.tool !== "hy_verify" || !synced.nextAction.automatic || synced.control.stop) {
+    throw new Error(`hy_sync_docs may route automatically only after recording already-completed documentation edits: ${JSON.stringify(synced)}`);
+  }
   if (!readState().syncDocs?.allowedDocs.includes("README.md")) {
     throw new Error("hy_sync_docs should record README.md as an allowed sync file");
   }
@@ -153,8 +159,16 @@ try {
   }
 
   const syncedState = readState();
-  const changedPlan = { ...plan, discussion: `${plan.discussion} Changed after after_edit.` };
-  writeState({ ...syncedState, phase: "edit", plan: changedPlan });
+  writeState({
+    ...syncedState,
+    phase: "edit",
+    documentReads: {
+      ...(syncedState.documentReads ?? {}),
+      afterEdit: syncedState.documentReads?.afterEdit
+        ? { ...syncedState.documentReads.afterEdit, planHash: "000000000000" }
+        : null,
+    },
+  });
   const staleAfterEdit = await handleVerify();
   if (!(staleAfterEdit.error?.message ?? String(staleAfterEdit.error)).includes("after_edit plan hash does not match")) {
     throw new Error(`hy_verify should reject stale after_edit audit, got ${JSON.stringify(staleAfterEdit)}`);
@@ -181,7 +195,7 @@ try {
   writeState(editState(deletePlan));
   unlinkSync(join(root, "docs", "usage.md"));
   const deleteAfterEdit = await handleReadDocs({ stage: "after_edit" });
-  if (deleteAfterEdit.phase !== "edit" || deleteAfterEdit.stage !== "after_edit") {
+  if (deleteAfterEdit.phase !== "edit" || deleteAfterEdit.stage !== "edit.after_edit") {
     throw new Error(`after_edit should run for deleted docs, got ${JSON.stringify(deleteAfterEdit)}`);
   }
   const deleteSynced = await handleSyncDocs();
