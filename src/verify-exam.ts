@@ -4,7 +4,15 @@ import path from "node:path";
 import { projectPaths } from "./runtime/user-paths.js";
 import { requireRuntimeConfig } from "./config.js";
 import { normalizeCodeExt, PYTHON_CODE_EXTS } from "./code_ext.js";
-import type { CheckItem, ImplementationManifest, PlanDoc, WorkflowState } from "./state.js";
+import type {
+  ActiveExam,
+  ActiveExamCheck,
+  ActiveExamCheckLayer,
+  CheckItem,
+  ImplementationManifest,
+  PlanDoc,
+  WorkflowState,
+} from "./state.js";
 import { computeImplementationDigest, computePlanHash } from "./state.js";
 import { buildImplementationManifest, CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs, findPython, runBoundaryCheck, runScopeCheck } from "./checks.js";
 
@@ -18,38 +26,9 @@ function parsePythonVersionRequirement(value: string): [number, number, number] 
 
 // ── Types ─────────────────────────────────────────────────────
 
-export type ExamCheckLayer = "compile" | "scope" | "boundary" | "platform" | "smoke" | "tests";
-
-export interface ExamCheck {
-  id: string;
-  layer: ExamCheckLayer;
-  /** Exact command string the agent must run verbatim. */
-  command: string;
-  cwd?: string;
-  /** Milliseconds the agent should allow this command to run before considering it hung. */
-  timeoutMs: number;
-  /** Expected exit code, default 0. */
-  expectExitCode: number;
-  /** Nonce binding this check to a specific exam, anti-replay. */
-  nonce: string;
-  /** stdout MUST contain this regex (or substring) to pass. */
-  mustContain?: string;
-  /** stdout MUST NOT contain this regex. */
-  mustNotContain?: string;
-}
-
-export interface ExamManifest {
-  examId: string;
-  issuedAt: string;
-  expiresAt: string;
-  /** Full implementation digest at issue time; includes tracked and untracked scope content. */
-  scopeFingerprint: string;
-  /** Exact PlanDoc hash whose commands and policy gates were issued. */
-  planHash: string;
-  /** Exam-level nonce (in addition to per-check nonces). */
-  nonce: string;
-  checks: ExamCheck[];
-}
+export type ExamCheckLayer = ActiveExamCheckLayer;
+export type ExamCheck = ActiveExamCheck;
+export type ExamManifest = ActiveExam;
 
 export interface ExamResult {
   id: string;

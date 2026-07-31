@@ -39,7 +39,7 @@ assert(invalid.errors.some(item => item.message.includes("syntax error")), `synt
       codelint: { lintDirs: ["src"], maxLinesWarning: 300, maxLinesError: 500 },
     },
   });
-  assert(result.findings.some(item => item.rule === "C004"), `Python dependency cycle must be detected: ${JSON.stringify(result.findings)}`);
+  assert(!result.findings.some(item => item.rule === "C003" || item.rule === "C004"), `Python scanning must not execute retired dependency lint: ${JSON.stringify(result.findings)}`);
   assert(!result.findings.some(item => item.rule === "C005"), `valid Python must not fail reliability: ${JSON.stringify(result.findings)}`);
 }
 

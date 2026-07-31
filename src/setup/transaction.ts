@@ -45,7 +45,26 @@ type TransactionJournal = {
   directoryResources?: DirectoryRemoval[];
 };
 
-type LockOwner = { pid: number; host: string; createdAt: string; transactionId: string };
+type LockOwner = {
+  pid: number;
+  host: string;
+  createdAt: string;
+  transactionId: string;
+  token: string;
+};
+
+type LockObservation = {
+  owner: LockOwner | null;
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
+  mtimeMs: number;
+};
+
+type ReclaimMarker = { token: string };
+
+const OWNERLESS_LOCK_GRACE_MS = 60_000;
+const RECLAIM_MARKER = ".reclaim.json";
 
 function hash(value: Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -79,8 +98,162 @@ function processAlive(owner: LockOwner): boolean {
 }
 
 function readOwner(file: string): LockOwner | null {
-  try { return JSON.parse(fs.readFileSync(file, "utf-8")) as LockOwner; }
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    if (!Number.isInteger(value.pid) || Number(value.pid) <= 0
+      || typeof value.host !== "string" || !value.host
+      || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
+      || typeof value.transactionId !== "string" || !value.transactionId
+      || typeof value.token !== "string" || !/^[0-9a-f-]{36}$/i.test(value.token)) return null;
+    return {
+      pid: Number(value.pid),
+      host: value.host,
+      createdAt: value.createdAt,
+      transactionId: value.transactionId,
+      token: value.token,
+    };
+  }
   catch { return null; }
+}
+
+function sameOwner(left: LockOwner | null, right: LockOwner | null): boolean {
+  if (!left || !right) return left === right;
+  return left.pid === right.pid
+    && left.host === right.host
+    && left.createdAt === right.createdAt
+    && left.transactionId === right.transactionId
+    && left.token === right.token;
+}
+
+function observeLock(lock: string): LockObservation | null {
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(lock); }
+  catch (error: any) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new SetupFailure(
+      "lock_busy",
+      "SETUP_LOCK_BUSY",
+      `Setup lock path is not a safe directory: ${lock}`,
+      "Preserve the path and run hy-workflow doctor --offline --json before retrying.",
+      { lock },
+      true,
+    );
+  }
+  return {
+    owner: readOwner(path.join(lock, "owner.json")),
+    dev: stat.dev,
+    ino: stat.ino,
+    birthtimeMs: stat.birthtimeMs,
+    mtimeMs: stat.mtimeMs,
+  };
+}
+
+function sameLock(left: LockObservation, right: LockObservation | null): boolean {
+  if (!right) return false;
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.birthtimeMs === right.birthtimeMs
+    && sameOwner(left.owner, right.owner);
+}
+
+function markerOwned(file: string, token: string): boolean {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf-8")) as Partial<ReclaimMarker>;
+    return value.token === token;
+  } catch {
+    return false;
+  }
+}
+
+function releaseMarker(file: string, token: string): void {
+  if (markerOwned(file, token)) fs.rmSync(file, { force: true });
+}
+
+function restoreUnexpectedTombstone(lock: string, tombstone: string): boolean {
+  if (fs.existsSync(lock)) return false;
+  try {
+    fs.renameSync(tombstone, lock);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseLock(lock: string, expected: LockOwner): void {
+  const current = readOwner(path.join(lock, "owner.json"));
+  if (!sameOwner(current, expected)) return;
+
+  const tombstone = `${lock}.release-${randomUUID()}`;
+  try { fs.renameSync(lock, tombstone); }
+  catch (error: any) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+
+  const moved = readOwner(path.join(tombstone, "owner.json"));
+  if (sameOwner(moved, expected)) {
+    fs.rmSync(tombstone, { recursive: true, force: true });
+    return;
+  }
+  restoreUnexpectedTombstone(lock, tombstone);
+}
+
+async function reclaimStaleLock(lock: string, observed: LockObservation): Promise<boolean> {
+  await internalSetupTestHooks().afterSetupLockStaleObserved?.(lock);
+
+  const token = randomUUID();
+  const marker = path.join(lock, RECLAIM_MARKER);
+  try {
+    fs.writeFileSync(marker, `${JSON.stringify({ token } satisfies ReclaimMarker)}\n`, {
+      encoding: "utf-8",
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error: any) {
+    if (error?.code === "EEXIST" || error?.code === "ENOENT") return false;
+    throw error;
+  }
+
+  let moved = false;
+  let tombstone = "";
+  try {
+    // Creating the marker serializes reclaimers. Re-check both the directory
+    // identity and owner after claiming it so an observation of an older lock
+    // can never be applied to a replacement lock.
+    if (!sameLock(observed, observeLock(lock))) return false;
+
+    tombstone = `${lock}.stale-${randomUUID()}`;
+    try { fs.renameSync(lock, tombstone); }
+    catch (error: any) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+    moved = true;
+
+    const movedObservation = observeLock(tombstone);
+    if (!sameLock(observed, movedObservation) || !markerOwned(path.join(tombstone, RECLAIM_MARKER), token)) {
+      if (restoreUnexpectedTombstone(lock, tombstone)) moved = false;
+      throw new SetupFailure(
+        "lock_busy",
+        "SETUP_LOCK_BUSY",
+        "The setup lock changed while stale-lock recovery was claiming it.",
+        "Wait for the current operation to finish, then retry setup.",
+        { lock, tombstone },
+        true,
+      );
+    }
+
+    // Only the unique tombstone is removed. The shared lock path is never
+    // deleted after a stale observation, so a newly published owner survives.
+    fs.rmSync(tombstone, { recursive: true, force: true });
+    moved = false;
+    return true;
+  } finally {
+    if (!moved) releaseMarker(path.join(lock, RECLAIM_MARKER), token);
+  }
 }
 
 function rollbackDirectoryCandidates(root: string, paths: ProjectPaths): string[] {
@@ -119,47 +292,51 @@ async function acquire(root: string, transactionId: string, waitMs = 30_000): Pr
   ensureParent(lock);
   const deadline = Date.now() + waitMs;
   for (;;) {
-    let created = false;
     try {
       fs.mkdirSync(lock);
-      created = true;
+      const owner: LockOwner = {
+        pid: process.pid,
+        host: os.hostname(),
+        createdAt: new Date().toISOString(),
+        transactionId,
+        token: randomUUID(),
+      };
       const ownerDelay = Number(internalSetupTestHooks().ownerDelayMs ?? 0);
       if (Number.isFinite(ownerDelay) && ownerDelay > 0) await new Promise(resolve => setTimeout(resolve, ownerDelay));
-      atomicWriteJson(path.join(lock, "owner.json"), { pid: process.pid, host: os.hostname(), createdAt: new Date().toISOString(), transactionId });
-      return () => {
-        const owner = readOwner(path.join(lock, "owner.json"));
-        if (!owner || owner.transactionId === transactionId) fs.rmSync(lock, { recursive: true, force: true });
-      };
+      fs.writeFileSync(path.join(lock, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, {
+        encoding: "utf-8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      return () => releaseLock(lock, owner);
     } catch (error: any) {
-      if (created) {
-        fs.rmSync(lock, { recursive: true, force: true });
-        throw error;
-      }
       if (error?.code !== "EEXIST") throw error;
-      const owner = readOwner(path.join(lock, "owner.json"));
-      let age = 0;
-      if (owner && Number.isFinite(Date.parse(owner.createdAt))) age = Date.now() - Date.parse(owner.createdAt);
-      else {
-        try { age = Date.now() - fs.statSync(lock).mtimeMs; }
-        catch { age = 0; }
-      }
+      const observed = observeLock(lock);
+      if (!observed) continue;
+      const owner = observed.owner;
+      const age = owner ? Date.now() - Date.parse(owner.createdAt) : Date.now() - observed.mtimeMs;
       // A complete same-host owner record lets us prove the process is gone and
       // reclaim immediately. The grace period is only for mkdir -> owner.json,
       // where another live process may still be publishing its ownership.
-      if ((owner && !processAlive(owner)) || (!owner && age > 60_000)) {
-        fs.rmSync(lock, { recursive: true, force: true });
-        continue;
+      if ((owner && !processAlive(owner)) || (!owner && age > OWNERLESS_LOCK_GRACE_MS)) {
+        if (await reclaimStaleLock(lock, observed)) continue;
       }
+      const current = observeLock(lock);
+      if (!current) continue;
       if (Date.now() >= deadline) {
+        const currentOwner = current.owner;
         throw new SetupFailure(
           "lock_busy",
           "SETUP_LOCK_BUSY",
           "Another hy-workflow setup transaction is still active.",
           "Wait for it to finish, or run hy-workflow doctor --offline --json if the owner process no longer exists.",
-          { lock, owner },
+          { lock, owner: currentOwner },
           true,
         );
       }
+      // A reclaimer may have replaced the observed lock while this attempt was
+      // waiting. Re-enter the loop and inspect the current owner afresh.
+      if (!sameLock(observed, current)) continue;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }

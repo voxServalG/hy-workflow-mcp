@@ -1,9 +1,11 @@
 import { readPackageJson, npmPackDryRun, parseNpmPackEntries, parseNpmPackFiles } from "../../src/npm/package.js";
 import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
+import { CONFIG_CLI_SCHEMA, CONFIG_CLI_VERSION } from "../../src/config-output.js";
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SKILL_PATHS } from "../../src/skills/catalog.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -11,33 +13,42 @@ function assert(condition: boolean, message: string): void {
 
 const pkg = readPackageJson(process.cwd());
 
-const expectedFixtureFiles = ["dist/server.js", "templates/hy-workflow.yml"];
+const expectedFixtureFiles = ["dist/main.js", "skills/hy-init/SKILL.md", "templates/hy-workflow.yml"];
 const npm10FixtureFiles = parseNpmPackFiles([{ files: expectedFixtureFiles.map(path => ({ path })) }]);
 const npm12FixtureFiles = parseNpmPackFiles({
   "@voxstudio/hy-workflow": { files: expectedFixtureFiles.map(path => ({ path })) },
 });
 const malformedFixtureFiles = parseNpmPackFiles({
-  "@voxstudio/hy-workflow": { files: [{ path: "dist/server.js" }, { path: "" }, {}, "invalid"] },
+  "@voxstudio/hy-workflow": { files: [{ path: "dist/main.js" }, { path: "" }, {}, "invalid"] },
   metadata: null,
 });
 assert(npm10FixtureFiles.join(",") === expectedFixtureFiles.join(","), "npm 10 array-shaped pack JSON must be parsed");
 assert(npm12FixtureFiles.join(",") === expectedFixtureFiles.join(","), "npm 12 package-keyed pack JSON must be parsed");
-assert(malformedFixtureFiles.join(",") === "dist/server.js", "malformed pack entries must be ignored");
+assert(malformedFixtureFiles.join(",") === "dist/main.js", "malformed pack entries must be ignored");
 assert(parseNpmPackEntries([{ filename: "fixture.tgz" }])[0]?.filename === "fixture.tgz", "pack metadata entries must be preserved");
 
 assert(pkg.name === "@voxstudio/hy-workflow", "package.json name must be @voxstudio/hy-workflow");
 assert(pkg.publishConfig?.access === "public", "scoped package must publish with public access");
 assert(typeof pkg.repository !== "string" && pkg.repository?.url === "git+https://github.com/voxServalG/hy-workflow-mcp.git", "repository URL must match the public GitHub source");
 assert(pkg.engines?.node === ">=18", "package must declare Node.js >=18");
+const licenseText = readFileSync("LICENSE", "utf8");
+assert(licenseText.startsWith("MIT License\n") && licenseText.includes("Copyright (c) 2026 Haiyi Gu"), "LICENSE must contain the declared MIT grant and holder");
+assert(licenseText.includes("Permission is hereby granted") && licenseText.includes('THE SOFTWARE IS PROVIDED "AS IS"'), "LICENSE must contain the complete canonical MIT terms");
 
-// bin and main point at dist/server.js
-assert(pkg.main === "dist/server.js", "package.json main must be dist/server.js");
-assert(pkg.bin?.["hy-workflow"] === "dist/server.js", "hy-workflow bin must point at dist/server.js");
-const serverPath = join(process.cwd(), "dist", "server.js");
+// bin and main point at the CLI-only entrypoint
+assert(pkg.main === "dist/main.js", "package.json main must be dist/main.js");
+assert(pkg.bin?.["hy-workflow"] === "dist/main.js", "hy-workflow bin must point at dist/main.js");
+for (const value of [pkg.main, ...Object.values(pkg.bin ?? {}), ...Object.values(pkg.scripts ?? {})]) {
+  assert(typeof value !== "string" || (!value.includes("dist/server.js") && !value.includes("src/server.ts")), "package entrypoints and scripts must not start MCP");
+}
+const bootstrapSource = readFileSync("src/bootstrap.ts", "utf8");
+assert(!bootstrapSource.includes("docs-gardener@latest") && !bootstrapSource.includes("INSTALL_COMMAND"), "compiled declarations must not expose the obsolete combined MCP-era installer");
+const serverPath = join(process.cwd(), "dist", "main.js");
 const nonGitDirectory = mkdtempSync(join(tmpdir(), "hy-version-"));
 assert(execFileSync(process.execPath, [serverPath, "--version"], { cwd: nonGitDirectory, encoding: "utf8" }).trim() === pkg.version, "CLI --version must work outside a Git project and match package.json");
-assert(execSync("node dist/server.js --help", { cwd: process.cwd(), encoding: "utf8" }).includes("hy-workflow setup"), "CLI help must expose the bundled setup command");
-assert(execSync("node dist/server.js --help", { cwd: process.cwd(), encoding: "utf8" }).includes("hy-workflow lint --json"), "CLI help must expose the built-in lint command");
+const help = execFileSync(process.execPath, [serverPath, "--help"], { cwd: process.cwd(), encoding: "utf8" });
+assert(help.includes("hy-workflow helper") && help.includes("hy-workflow setup"), "CLI help must expose helper and its setup compatibility alias");
+assert(help.includes("hy-workflow lint --json") && help.includes("hy-workflow.cli.v1"), "CLI help must expose built-in lint and the workflow envelope");
 
 // publishing builds dist, but installing the registry package never compiles locally
 assert(pkg.scripts?.clean === "node scripts/clean-dist.mjs", "clean must use the cross-platform Node dist cleaner");
@@ -49,7 +60,7 @@ for (const lifecycle of ["prepare", "install", "postinstall"]) {
 }
 
 // files include compiled runtime, docs, shared templates, and README; platform scripts are gone
-const requiredFiles = ["dist", "docs", "schemas", "templates", "README.md"];
+const requiredFiles = ["dist", "docs", "schemas", "templates", "skills", "LICENSE", "README.md"];
 for (const file of requiredFiles) {
   assert(pkg.files?.includes(file) === true, `package.json files must include ${file}`);
 }
@@ -60,9 +71,10 @@ for (const script of requiredScripts) {
   assert(typeof pkg.scripts?.[script] === "string", `Missing required npm script: ${script}`);
 }
 const windowsSmoke = readFileSync("scripts/windows-smoke.mjs", "utf8");
-for (const token of ["npm pack", "@voxstudio/docs-gardener@1.0.0-next.0", "installed lint", "installed setup", "repeated installed setup", "installed unset", "projectFilesChanged", "codelint.json"]) {
+for (const token of ["npm pack", "test/unit/skills-cli.ts", "installed skills list", "installed skills read", "hy-workflow.skills.v1", "installed lint", "installed helper", "projectFilesChanged", "codelint.json"]) {
   assert(windowsSmoke.includes(token), `Windows smoke is missing installed-package lifecycle evidence: ${token}`);
 }
+assert(!windowsSmoke.includes("dist/server.js") && !windowsSmoke.includes("Start MCP"), "Windows smoke must exercise the CLI-only package entrypoint");
 assert(windowsSmoke.includes("process.env.npm_execpath") && windowsSmoke.includes("const npmCommand = process.execPath") && windowsSmoke.includes("npmCommandPrefix"), "Windows smoke must invoke npm-cli.js through the native Node executable and structured argv");
 assert(!windowsSmoke.includes('"npm.cmd"'), "Windows smoke must not pass npm.cmd to the shell-free structured supervisor");
 
@@ -74,8 +86,14 @@ assert(trackedDist.length === 0, `dist files must not be tracked by git, found $
 // npm pack dry-run must exclude source, test, and local artifacts
 const forbidden = [".hy/", ".opencode/", ".codex/", "test/", "src/", "codelint.json", "doclint.json", "docs-gardener.json"];
 const packFiles = npmPackDryRun(process.cwd());
-assert(packFiles.includes("dist/server.js"), "npm pack must include the compiled CLI entrypoint");
-assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must include the default setup workflow template");
+const packedResidue = packFiles.filter(file => /\.(?:orig|rej)$/.test(file));
+assert(packedResidue.length === 0, `npm pack must exclude patch residue: ${packedResidue.join(", ")}`);
+assert(packFiles.includes("dist/main.js"), "npm pack must include the compiled CLI entrypoint");
+assert(!packFiles.includes("dist/server.js"), "npm pack must exclude the removed MCP server entrypoint");
+assert(packFiles.includes("LICENSE"), "npm pack must include the declared MIT license text");
+assert(packFiles.includes("templates/hy-workflow.yml"), "npm pack must preserve the optional least-privilege workflow template");
+const packedSkills = packFiles.filter(file => /^skills\/[^/]+\/SKILL\.md$/.test(file)).sort();
+assert(JSON.stringify(packedSkills) === JSON.stringify([...SKILL_PATHS].sort()), "npm pack must include exactly the 12 canonical stage Skills");
 for (const module of ["code.mjs", "docs.mjs", "fs.mjs", "index.mjs", "markdown.mjs", "python.mjs", "rust.mjs"]) {
   assert(packFiles.includes(`templates/lint/${module}`), `npm pack must include templates/lint/${module}`);
 }
@@ -90,7 +108,13 @@ const managedRules = spawnSync(process.execPath, [serverPath, "config", "--print
 assert(managedRules.status === 1, "removed --print-managed-rules option must exit 1");
 const managedRulesEnvelope = JSON.parse(managedRules.stdout);
 assert(managedRulesEnvelope.ok === false && typeof managedRulesEnvelope.error === "object", "removed --print-managed-rules option must return a typed error envelope");
+assert(managedRulesEnvelope.schema === CONFIG_CLI_SCHEMA && managedRulesEnvelope.version === CONFIG_CLI_VERSION, "installed config failures must use the versioned config envelope");
 assert(["UNKNOWN_OPTION", "INVALID_ARGUMENTS"].includes(managedRulesEnvelope.error.code), "removed --print-managed-rules option must return the normal unknown-option or invalid-arguments code");
+assert(JSON.stringify(managedRulesEnvelope.recovery?.argv) === JSON.stringify(["hy-workflow", "config", "--help"]), "installed config failures must preserve exact shell-free recovery argv");
+for (const key of ["display", "hint", "requires_user", "stop_here", "allowedTools", "suggestedCommand"]) {
+  assert(!(key in managedRulesEnvelope), `installed config output must not expose legacy Agent presentation field ${key}`);
+}
+assert(!("hint" in managedRulesEnvelope.error) && !("instruction" in managedRulesEnvelope.recovery), "installed config output must not contain nested prompt or instruction fields");
 assert(!packFiles.includes("setup") && !packFiles.includes("setup.ps1"), "npm pack must not include removed platform installers");
 for (const file of packFiles) {
   for (const prefix of forbidden) {
@@ -142,31 +166,38 @@ assert(matrix.repositories.find((repo: any) => repo.id === "flask")?.expected?.d
 const runner = readFileSync("test/acceptance/runner.ts", "utf8");
 const harness = readFileSync("test/acceptance/harness.ts", "utf8");
 const scenarios = readFileSync("test/acceptance/scenarios.ts", "utf8");
-const failpointChild = readFileSync("test/acceptance/setup-failpoint-child.mjs", "utf8");
 assert(runner.includes("skipped: []") && runner.includes("expectedScenarios"), "release acceptance must forbid skips");
-assert(runner.includes('process.argv.indexOf("--package-archive")') && runner.includes("packAndInstall(workspace, matrix.companionPackage, packageArchive)"), "acceptance runner must accept and consume an explicit release tarball");
+assert(runner.includes('process.argv.indexOf("--package-archive")') && runner.includes("packAndInstall(workspace, packageArchive)"), "acceptance runner must accept and consume an explicit release tarball");
 assert(runner.includes("abortAcceptance(error)") && runner.includes("await mainPromise"), "acceptance total timeout must abort future work and await main settlement before reporting");
-assert(harness.includes('run("npm", ["pack"') && harness.includes('"install", "--global", archive, companionPackage'), "acceptance must test the locally packed distribution with the exact companion package");
-assert(harness.includes("const installAttempts = 2") && harness.includes('"--fetch-timeout=60000"') && harness.includes("isolated npm package installation failed"), "acceptance must use bounded retries for the exact registry companion package");
+assert(harness.includes('run("npm", ["pack"') && harness.includes('"install", "--global", archive, "--no-audit"') && !harness.includes("companionPackage"), "acceptance must install only the canonical local CLI+Skills tarball");
+assert(harness.includes("const installAttempts = 2") && harness.includes('"--fetch-timeout=60000"') && harness.includes("isolated npm package installation failed"), "acceptance must use bounded retries for the canonical tarball");
 assert(harness.includes("assertAcceptanceActive()") && harness.includes('spawn("taskkill", ["/PID"'), "acceptance must reject post-timeout spawns and terminate Windows process trees");
 assert(harness.includes("pathToFileURL") && harness.includes('run("git", ["cat-file", "-e"') && harness.includes("repo.mirrorEnv"), "acceptance mirrors must be local directories pinned to the contracted commit and fetched through file URLs");
 assert(harness.includes("GIT_TERMINAL_PROMPT") && harness.includes("CODEX_HOME"), "acceptance must isolate credentials and client state");
 assert(harness.includes("npm_config_userconfig") && harness.includes("SSH_AUTH_SOCK") && harness.includes("NPM_TOKEN"), "acceptance must use an empty isolated npm config and reject inherited credentials");
 assert(harness.includes('"/usr/bin:/bin:/usr/local/bin"'), "Linux acceptance must prefer the OS runtime toolchain over mutable /usr/local overrides");
-assert(harness.includes("message.result?.isError") && harness.includes("substantive document facts"), "acceptance must reject MCP error/empty documentation responses");
-assert(scenarios.includes("isolatedUserStateFingerprint") && scenarios.includes("failpoint left isolated HOME or client state changes"), "every transaction failpoint must restore isolated user state exactly");
-assert(scenarios.includes('"SETUP_LOCK_BUSY"') && scenarios.includes("retryableContention") && scenarios.includes("postContentionRecovery"), "32-way setup pressure must accept only structured retryable lock contention and prove post-contention convergence");
-assert(scenarios.includes("setup-failpoint-child.mjs") && !scenarios.includes("HY_WORKFLOW_TEST_FAIL_AT"), "acceptance failpoints must use a test-only child instead of a production environment bypass");
-assert(scenarios.includes('freshPreviewEnvelope.projectFilesChanged.sort().join(",") === ".github/workflows/hy-workflow.yml,hy-workflow.json"'), "fresh setup preview must encode exactly the two-artifact project boundary");
-assert(scenarios.includes('"fresh-clone setup must not create AGENTS.md"'), "fresh setup must prove AGENTS.md is not created");
-assert(scenarios.includes('previewEnvelope.artifactChanges?.some((change: any) => change?.requiresAcceptance)') && scenarios.includes('...(artifactReviewArgs.length ? ["--accept-artifact-changes", ...artifactReviewArgs] : [])'), "repository setup must consume exact dry-run artifact reviews only when acceptance is required");
+assert(harness.includes("hy-workflow.cli.v1") && harness.includes("read-docs") && harness.includes("substantive document facts"), "acceptance must reject failed or empty CLI documentation envelopes");
+const retiredServerArchivePaths = harness.match(/package\/dist\/server\.js/g) ?? [];
+assert(
+  harness.includes("cliDocsBaseline")
+    && !harness.includes("mcpDocsBaseline")
+    && !harness.includes("message.result?.isError")
+    && retiredServerArchivePaths.length === 1
+    && harness.includes('if (listing.includes("package/dist/server.js")) throw new Error'),
+  "acceptance harness must use the CLI documentation baseline and reference the retired MCP server only in its negative archive guard",
+);
+const helperFaultEvidence = scenarios.includes("helperFaultChild")
+  || scenarios.includes("beforeManifestWrite") && scenarios.includes("afterMutation")
+  || scenarios.includes("helper projector atomic rollback");
+assert(scenarios.includes("isolatedUserStateFingerprint") && helperFaultEvidence, "helper projector fault pressure must prove atomic rollback of isolated user state");
+assert(scenarios.includes("\"HELPER_SKILL_BUSY\"") && scenarios.includes("retryableContention") && scenarios.includes("postContentionRecovery") && scenarios.includes("[\"helper\", \"install\""), "helper install contention must accept only structured retryable Skill-lock contention and prove post-contention convergence");
+assert(scenarios.includes("run(\"hy-workflow\", [\"helper\", \"install\"") && scenarios.includes("projectFilesChanged") && scenarios.includes("length === 0"), "fresh installed helper acceptance must prove zero project-file writes");
 for (const removedToken of ["TestOwnedMigration", "MANAGED_RULES_BLOCK", "verifyStaleManagedAgentsAutoMigration", "verifyCodexProjectShadowBoundary", "migrateCodexProjectSectionsExplicitly", "verifyLegacyShadowBoundary", "managedAgentsOriginal", "codexProjectMigration", "--ci-command", "--accept-ci-commands", "ciConfirmationRequired", "--print-managed-rules"]) {
   assert(!scenarios.includes(removedToken), `release scenarios must not contain removed setup behavior: ${removedToken}`);
 }
-assert(failpointChild.includes("internal-setup-test-hooks") && failpointChild.includes("dist/setup-cli.js") && failpointChild.includes("runSetupCli"), "test-only failpoint child must inject the process-local hook before calling the installed tarball CLI");
 assert(scenarios.includes("runRepositoryLintPressure") && scenarios.includes("assertCompatibilityUnchanged") && scenarios.includes("lintPressure"), "every pinned repository must execute real doclint/codelint pressure scans and preserve compatibility bytes");
 assert(scenarios.includes('run("hy-workflow", ["lint", "--json"]') && !scenarios.includes("prepareLintPressurePackages"), "release pressure must call the installed built-in lint command without third-party preparation");
-assert(scenarios.includes("summary.notApplicableRules") && scenarios.includes("DEPENDENCY_SCANNER_EXTENSIONS"), "acceptance must enforce the declared built-in scanner applicability matrix");
+assert(scenarios.includes('summary.notConfiguredRules.includes("C003")') && scenarios.includes('summary.notApplicableRules.includes("C004")') && scenarios.includes("PARSER_SCANNER_EXTENSIONS"), "acceptance must enforce the retired dependency slots and parser applicability matrix");
 for (const forbiddenToken of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "npx --yes --package"]) {
   assert(!scenarios.includes(forbiddenToken), `release pressure must not contain ${forbiddenToken}`);
 }

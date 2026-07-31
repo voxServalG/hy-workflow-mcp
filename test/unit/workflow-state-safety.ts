@@ -6,7 +6,7 @@ import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
 import { isWorktreeClean } from "../../src/git.js";
 import { MINIMAL_PROJECT_CONTRACT, writeDeployment } from "../../src/runtime/deployment.js";
-import { acquireMergeLock, approvalMatchesPlan, computeImplementationDigest, computePlanHash, readState, statePath, writeState } from "../../src/state.js";
+import { acquireMergeLock, approvalMatchesPlan, computeImplementationDigest, computePlanHash, planDecisionId, readState, statePath, transition, writeState } from "../../src/state.js";
 import { handleApprove } from "../../src/tools/approve.js";
 import { handleCommit } from "../../src/tools/commit.js";
 import { handlePlan } from "../../src/tools/plan.js";
@@ -253,14 +253,15 @@ try {
     documentReads: {
       afterEdit: {
         stage: "after_edit",
-        purpose: "status recovery",
         time: new Date().toISOString(),
         task: historicalPlan.task,
         planHash: historicalPlanHash,
         docsDir: "docs",
         digest: "after-edit-status",
         files: [],
-        findings: [],
+        docsGraphDigest: "status-recovery-graph",
+        entryPoints: [],
+        traversalRoots: [],
         implementationFiles: [],
         implementationDigest: "status-digest",
       },
@@ -335,14 +336,12 @@ try {
     documentReads: {
       beforePlan: {
         stage: "before_plan",
-        purpose: "state reset regression",
         time: new Date().toISOString(),
         task: freshPlan.task,
         planHash: null,
         docsDir: "docs",
         digest: "state-reset-baseline",
         files: [],
-        findings: [],
         docsGraphDigest: "state-reset-graph",
         entryPoints: [],
         traversalRoots: [],
@@ -354,6 +353,7 @@ try {
   assert(readState().mergeReceipt === null, "writing a new PlanDoc should clear merge receipt state");
 
   writeState({ ...baseState("approve"), plan: basePlan(), approval: { time: "old", note: "old" } });
+  const approvalDecisionId = planDecisionId(readState().plan)!;
   const beforeInvalid = JSON.stringify(readState());
   const invalidText = await handleApprove({ approved: "needs changes", note: "ambiguous" });
   assert(invalidText.error?.code === "APPROVAL_DECISION_INVALID", "unknown approval text should return a stable validation error");
@@ -364,7 +364,12 @@ try {
   assert(booleanInput.error?.code === "APPROVAL_DECISION_INVALID", "boolean approved input should be invalid without crashing");
   assert(JSON.stringify(readState()) === beforeInvalid, "boolean approval input must not reject or mutate the plan");
 
-  const rejected = await handleApprove({ approved: "reject", note: "needs changes" });
+  const staleDecision = await handleApprove({ approved: "reject", note: "stale", decisionId: "plan:000000000000" });
+  assert(staleDecision.error?.code === "APPROVAL_DECISION_ID_MISMATCH", "stale approval identity should fail closed");
+  assert(staleDecision.userAction?.decisionId === approvalDecisionId, "stale approval should expose the current decision identity");
+  assert(JSON.stringify(readState()) === beforeInvalid, "stale approval identity must leave workflow state byte-equivalent");
+
+  const rejected = await handleApprove({ approved: "reject", note: "needs changes", decisionId: approvalDecisionId });
   assert(rejected.approved === false, "explicit reject should report approved false");
   assert(readState().phase === "plan", "explicit reject should return to plan");
   assert(readState().approval === null, "explicit reject should clear stale approval");
@@ -411,6 +416,34 @@ try {
     throw new Error("mismatched downstream snapshot receipt should fail");
   } catch (error) {
     assertErrorCode(error, "WORKFLOW_STATE_INVALID_MERGE_RECEIPT");
+  }
+
+  const intentPlan = basePlan();
+  const validCommitIntentState: WorkflowState = {
+    ...baseState("commit"),
+    branch: "fix/expected",
+    plan: intentPlan,
+    approval: { time: "intent", note: "approved" },
+    verifiedImplementationDigest: "a".repeat(12),
+    commitIntent: {
+      title: "fix: persisted intent",
+      body: "body",
+      planHash: computePlanHash(intentPlan)!,
+      implementationDigest: "a".repeat(12),
+    },
+  };
+  writeState(validCommitIntentState);
+  assert(readState().commitIntent?.title === "fix: persisted intent", "a valid commit intent must survive a cross-session state reload");
+  assert(transition(readState(), "edit").commitIntent === null, "leaving commit phase must clear the bound commit intent");
+  writeState({
+    ...validCommitIntentState,
+    commitIntent: { ...validCommitIntentState.commitIntent!, implementationDigest: "b".repeat(12) },
+  });
+  try {
+    readState();
+    throw new Error("commit intent with a mismatched implementation digest should fail");
+  } catch (error) {
+    assertErrorCode(error, "WORKFLOW_STATE_INVALID_COMMIT_INTENT");
   }
 
   writeFileSync(statePath(), "{not json\n");

@@ -154,6 +154,7 @@ export function validateToolCallArguments(tool: string, value: Record<string, un
     if (!(["approve", "reject", "revise"] as unknown[]).includes(args.approved)) {
       routeError(`${tool} arguments.approved must be approve, reject, or revise.`);
     }
+    requireNonEmptyString(args, "decisionId", tool);
     return;
   }
 
@@ -220,10 +221,7 @@ function validateNextAction(input: ContractInput, nextAction: ToolNextAction, co
 function defaultUserAction(input: ContractInput): ToolUserAction | null {
   if (input.userAction !== undefined) return input.userAction;
   if (!input.requires_user) return null;
-  return {
-    kind: "review_failure",
-    instruction: "Review the displayed failure and recovery guidance.",
-  };
+  return { kind: "review_failure" };
 }
 
 function defaultControl(

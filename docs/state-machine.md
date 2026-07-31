@@ -1,224 +1,149 @@
 # State Machine
 
-工作流状态机定义在 `src/runtime/state-machine.ts` 中。每个 Phase 的合法转换由 `VALID_TRANSITIONS` 硬编码，禁止跳 Phase。
+The CLI preserves the workflow kernel's existing phases and fine-grained stages. Skills have the same names as the human-visible phases where possible, but a Skill never owns state. It reads a current CLI envelope and follows only its exact route.
 
-## Phase 定义
+## Phases and stages
 
-| # | Phase | 含义 |
-|---|-------|------|
-| 1 | `init` | 等待 `hy_init` 验证外置 deployment identity、精确选中的配置、base ref 与文档事实 readiness；不检查项目 artifact |
-| 2 | `plan` | 任务规划，先由 agent 自动执行 `hy_read_docs(before_plan)` 建立文档事实基线，再生成 PlanDoc |
-| 3 | `approve` | 用户审视 PlanDoc 并只决定一次；首次 `hy_approve` 保存原决定，自动完成 `hy_read_docs(before_approve)` 后以相同参数续跑，不再次询问 |
-| 4 | `branch` | 创建 git 分支，等待 LLM 调用 `hy_branch` |
-| 5 | `edit` | `hy_edit` 锁定 scope 后停止；LLM 用标准文件工具完成代码，`after_edit` 审计后再完成已声明文档编辑，最后记录同步证据 |
-| 6 | `verify` | 本地任务 gate（compile/scope/boundary/platform/smoke/tests），通过则进 commit |
-| 7 | `commit` | 粗粒度持久化 phase；`commit.prepare`、`commit.publish`、`commit.ci` 是可恢复 stage |
-| 8 | `merge` | 粗粒度持久化 phase；`merge.reconcile` 与 `merge.sync` 复用既有审批并按 receipt 恢复 |
-| — | `done` | 合入与下游同步已完成；唯一自动后续动作是 `hy_reset` 清理任务状态 |
+| Phase | Stages | Primary Skill | Purpose |
+|---|---|---|---|
+| `init` | `init.ready` | `hy-init` | Validate external readiness and collect local project cognition. |
+| `plan` | `plan.before_plan`, `plan.compose`, `plan.review` | `hy-read-docs`, `hy-plan` | Ground and compile one PlanDoc. |
+| `approve` | `approve.before_approve`, `approve.decision` | `hy-approve`, `hy-read-docs` | Bind one human decision and audit current facts. |
+| `branch` | `branch.create` | `hy-branch` | Create the approved implementation branch. |
+| `edit` | `edit.scope`, `edit.implementation`, `edit.after_edit`, `edit.sync_docs` | `hy-edit`, `hy-read-docs`, `hy-sync-docs` | Lock scope, implement and bind documentation evidence. |
+| `verify` | `verify.run`, `verify.amendment` | `hy-verify` | Prove the implementation or review scope amendment. |
+| `commit` | `commit.prepare`, `commit.publish`, `commit.ci` | `hy-commit` | Create the exact commit, publish/reuse the PR and observe CI. |
+| `merge` | `merge.reconcile`, `merge.sync` | `hy-merge` | Reconcile the merge outcome and synchronize downstream branches. |
+| `done` | `done.completed` | `hy-reset` | Preserve terminal evidence until reset. |
 
-## VALID_TRANSITIONS
+Workflow status is one of `ready`, `running`, `passed`, `warning`, `pending`, `blocked`, `failed`, `completed`, or the compatibility value `amend_required`. Status describes the current condition; it never grants permission by itself. Permission comes from `route.allowed`, `route.blocked` and the exact route action.
 
-定义在 `src/runtime/state-machine.ts` 的 `VALID_TRANSITIONS`。每个 Phase 可转移到自身（原地不动）或以下目标：
+## Normal route
 
-```
-init     → init, plan, done
-plan     → plan, approve, done
-approve  → approve, branch, plan
-branch   → branch, edit, done
-edit     → edit, verify, commit, done
-verify   → verify, edit, commit, done
-commit   → commit, edit, merge, done
-merge    → merge, done
-done     → done
-```
-
-首次初始化只在 deployment 或项目尚未初始化时执行：
-```
-hy_init → hy_read_docs(before_plan) → hy_plan
-```
-
-后续每个开发任务的完整关键路径：
-```
-hy_status -> hy_read_docs(before_plan) -> hy_plan -> [用户决定] hy_approve -> hy_read_docs(before_approve) -> hy_approve(自动续跑) -> hy_branch -> hy_edit -> [代码编辑] -> hy_read_docs(after_edit) -> [文档编辑] -> hy_sync_docs -> hy_verify -> hy_commit -> hy_merge -> hy_reset
-```
-
-长时验证可用 `hy_exam_plan -> hy_exam_submit` 替代 `hy_verify`。`phase` 是持久化粗粒度状态，`stage` 是当前 phase 内的步骤；CI 由 `hy_commit` 的 `commit.ci` 执行和重试，下游同步由 `hy_merge` 的 `merge.sync` 执行和恢复。
-
-`stage` 只允许以下带 phase 前缀的规范值：`init.ready`；`plan.before_plan`、`plan.compose`、`plan.review`；`approve.before_approve`、`approve.decision`；`branch.create`；`edit.scope`、`edit.implementation`、`edit.after_edit`、`edit.sync_docs`；`verify.run`、`verify.amendment`；`commit.prepare`、`commit.publish`、`commit.ci`；`merge.reconcile`、`merge.sync`；`done.completed`。每个值只属于一个 phase，外置 state 写入和所有工具 envelope 都必须保持 `phase` 与 `stage` 同属一组。
-
-`before_plan`、`before_approve`、`after_edit` 只是 `hy_read_docs` 的输入选择器和 `DocumentReadSnapshot.stage` 值，不是 `WorkflowStage`。历史外置 state 中这三个无前缀值会在读取时映射为对应规范值，之后只写回规范值；新响应不会再返回无前缀 stage。
-
-`nextAction.phase` 与 `nextAction.stage` 描述下一工具执行时的目标位置，不是当前 envelope 的位置。例如 `hy_sync_docs` 返回当前 `phase: edit` / `stage: edit.sync_docs`，同时返回目标 `phase: verify` / `stage: verify.run`。`nextAction.automatic` 与 `control.automatic` 必须一致；`control.stop: true` 时两者都不得允许自动继续。`done` 状态会自动路由到 `hy_reset`，reset 完成后才以停止的 `completed` 控制结束本次任务。
-
-结果规范化会在运行时拒绝 phase/stage 不匹配、不可达 phase、`allowedTools` 之外的工具、缺少必填参数的 `hy_read_docs`，以及彼此矛盾的 automatic/stop。没有具体用户任务时，init/reset/status 不会把占位文本伪装成可执行参数；`nextAction.tool` 保持 null，并用非 approval 的 information/completed 控制说明下一步。已有具体 task 的恢复才会发出完整可执行的 `hy_read_docs(before_plan)` 参数。
-
-`hy_status` 按持久化 stage 与 gate evidence 恢复精确下一步：已完成的 `plan.before_plan` 进入 `plan.compose`；`approve.decision` 等待唯一一次人工决定，已持久化 `pendingApproval` 的 `approve.before_approve` 自动恢复文档审计和原决定续跑；编辑链在 `edit.implementation` 与 `edit.after_edit` 分别停止等待真实代码和文档编辑，只有 `hy_sync_docs` 记录证据后才自动进入 `verify.run`。升级前已经存在、但尚无 `planHash` 的 Approval 继续绑定其同一份持久化 PlanDoc；即使恢复点仍在 `approve`，status 也直接路由到 `branch.create`，不会补做文档 gate 或制造第二次批准。
-
-失败或驳回分支：
-```
-hy_approve 驳回 → plan
-hy_verify 失败 → edit → hy_edit → [修复代码] → hy_read_docs(after_edit) → [修复文档] → hy_sync_docs → hy_verify
-commit.ci 检查失败 → edit → hy_edit → [修复代码] → hy_read_docs(after_edit) → [修复文档] → hy_sync_docs → hy_verify → hy_commit
-commit.ci 无 checks 或仅 skipped/neutral → commit（CI_CHECKS_REQUIRED，阻止 hy_merge）
-commit.ci pending 或 API 异常 → commit（等待后重试 hy_commit，不进入 edit，也不请求审批）
-hy_commit 在 push/PR API 失败 → commit（仅当完整验证快照、持久化 recovery record 与 HEAD 全部一致时复用，不创建空提交）
-hy_merge 结果未知 → merge（先 reconcile；无法确认时返回 PR_MERGE_OUTCOME_UNCONFIRMED）
-hy_merge 已确认合入但同步未完成 → merge（POST_MERGE_SYNC_INCOMPLETE；重试只恢复同步，不再次执行 merge mutation）
+```text
+init.ready
+  -> plan.before_plan
+  -> plan.compose
+  -> plan.review
+  -> approve.before_approve / approve.decision
+  -> branch.create
+  -> edit.scope
+  -> edit.implementation
+  -> edit.after_edit
+  -> edit.sync_docs
+  -> verify.run [-> verify.amendment -> edit.implementation]
+  -> commit.prepare
+  -> commit.publish
+  -> commit.ci
+  -> merge.reconcile
+  -> merge.sync
+  -> done.completed
+  -> reset -> plan.before_plan
 ```
 
-## 文档读取 gate
+The public command sequence is:
 
-`hy_read_docs` 不新增状态机 phase，而是在 `plan`、`approve` 和 `edit` phase 内运行。`before_approve` 的调用和原决定续跑是自动的；`after_edit` 完成后会停止，让 agent 先完成已声明的文档编辑。
-
-每次返回是 task-ranked 有界页：最多 12 files、48,000 chars、单文件 12,000 chars并带 token estimate；`pagination.nextCursor` 读取后续页。DocsGraph 全量 digest/link index 位于用户 cache，workflow state 的 `documentReads` 只保存 path/size/SHA/truncation/budget/pagination/digest，不保存返回 excerpts。空/无实质事实、过期 `hy-workflow-rules-version` 或零相关事实直接阻断对应 phase。
-
-- `before_plan`: 运行于 `plan` phase，记录用户 task 并写入 `documentReads.beforePlan`。`hy_plan` 缺少 baseline 时拒绝执行；baseline task 与 PlanDoc task 文案不一致时只给 warning，不阻断同一任务的自然改写。
-- `before_approve`: 只在首次 `hy_approve` 已为当前 PlanDoc hash 持久化 `pendingApproval` 后运行于 `approve` phase，写入 `documentReads.beforeApprove`。无漂移时 `nextAction` 自动用原 `approved` 与 `note` 续跑 `hy_approve`，不得再次询问用户。如果文档 digest 或全量 DocsGraph digest 相对 `before_plan` 变化，snapshot 记录 `changedSinceBaseline: true` 并以 `review_required` 停止，但 `userAction` 仍为 null。Agent 判断意图、scope、验证和风险仍无实质变化时调用 `hy_approve(auditDecision="continue")`；否则调用 `auditDecision="replan"`，工具清除未应用的批准并自动刷新 `before_plan`。只有随后生成的新 PlanDoc 才请求新的用户批准。
-- `after_edit`: 正常运行于 `edit` phase；从 `verify` 修复路径调用时先规范地回到 `edit`，再以 `edit.after_edit` 绑定当前 PlanDoc hash 和实现 diff digest，写入 `documentReads.afterEdit`。工具随后停止，等待 agent 完成 PlanDoc 已声明的文档或共享模板编辑；编辑完成后调用 `hy_sync_docs` 记录证据并自动路由验证。`hy_verify` 缺少 current 审计或同步证据时拒绝执行。
-
-`documentReadHealth` 从 metadata 派生每个 gate 的 `missing/current/stale`。PlanDoc hash、实现 digest 或全量 DocsGraph digest 不匹配时，旧下游读取不能复用；before_plan task 文案不一致仅诊断。`hy_status` 显示阻塞和下一工具，`hy_plan` 清空 downstream gate，避免新计划继承旧审计。
-
-这些文档 gate 永远不要求用户审核。用户只审核 `hy_plan` 生成或因实质任务意图、scope、风险变化而重新生成的 PlanDoc；第一次 `hy_approve` 已经是这次 PlanDoc 的完整人工决定，`before_approve` 后的续跑不是第二次批准。`hy_plan` 进入 approve 前会拒绝 malformed PlanDoc、空 scope、越出项目根目录的任何 scope 路径，以及不存在的 `scope.changes` / `scope.delete` 路径；计划创建的文件必须放在 `scope.new_files`，可以在审批时尚不存在，但路径仍必须位于项目根内。`hy_amend_plan` 纯缩小 scope 时保留既有决定；增加任何 target 或新增 delete 都属于实质变化，必须生成新的批准。
-
-## 状态持久化
-
-状态文件位于 OS 用户 state 的 `projects/<project-id>/workflow.json`；project id 由规范化项目根、Git common dir 和 origin remote 计算。
-
-```typescript
-interface WorkflowState {
-  version: "1";
-  phase: Phase;
-  branch: string | null;
-  prNumber: number | null;
-  plan: PlanDoc | null;
-  approval: Approval | null;
-  pendingApproval?: PendingPlanApproval | null;
-  verifyHash?: string | null;                    // legacy compatibility only
-  verifiedImplementationDigest?: string | null; // canonical commit digest
-  verifiedManifestHash?: string | null;          // legacy compatibility only
-  pendingAmendment?: PendingPlanAmendment | null;
-  implementationManifest?: ImplementationManifest | null;
-  documentReads?: DocumentReads | null;
-  syncDocs?: SyncDocsRecord | null;
-  mergeReceipt?: MergeReceipt | null;
-}
+```text
+init
+status
+read-docs -> plan
+approve -> read-docs -> approve continuation or replan
+branch -> edit
+[normal file edits] -> read-docs -> [declared documentation edits] -> sync-docs
+verify | exam-plan + exam-submit | amend-plan
+commit
+merge
+reset
 ```
 
-- `readState()`: 只读取 OS 用户 state；没有状态时返回 `phase: init`
-- `writeState()`: 原子写入用户 state 并自动创建父目录
-- `projectRoot()`: 向上查找 `.git`，找不到则报 `PROJECT_ROOT_NOT_FOUND`，不会在非 Git 目录创建伪 `.git/hy-workflow` 状态
+There is no separate public `ci` command: `commit` owns `commit.ci`. There is no separate public `chain` command: `merge` owns `merge.sync`.
 
-## 状态守卫
+## Route authority
 
-- `assertPhase(state, ...expected)`: 当前 Phase 不在期望列表中时抛 `StateError`
-- `transition(state, to)`: 转换不在 VALID_TRANSITIONS 中时抛 `StateError`
-- 所有工具 handler 都在入口处调用 `assertPhase`，确保按序执行
+Every CLI response contains:
 
-## Canonical implementation evidence 与 verifyHash 兼容字段
+- the current `phase`, `stage` and `status`;
+- `route.allowed` and `route.blocked` command names;
+- `route.action.command` and exact `route.action.argv` when an executable next action exists;
+- `route.control`, including whether execution must stop;
+- a structured `route.userAction` when a person or external action is required;
+- structured recovery facts when the normal route cannot continue.
 
-`hy_verify` 通过后写入当前 `implementationManifest`，并从该 manifest 的路径集合和文件内容计算 `verifiedImplementationDigest`。异步路径只有在完整试卷证据全部通过后才写入相同两项。`hy_commit` 以这两项作为正式 gate：它还会确认当前 Git 分支等于 `state.branch`，重新构造 manifest 并重新计算 digest；路径或内容任何一项不匹配都会停在 commit phase，要求重新执行 `hy_read_docs(after_edit)`、`hy_sync_docs` 和相应 verify 路径。
+A Skill calls `status` unless the immediately previous envelope routes its exact command and is still current. It must not reconstruct a route from this document, conversation history or private files. When `route.control.stop` is true, an `automatic` action is not permission to ignore the stop reason.
 
-工具成功输出以及 commit/PR body 顶层 `verifyHash` 标签都把 `verifiedImplementationDigest` 作为兼容别名。持久化的 `WorkflowState.verifyHash` 与 `verifiedManifestHash` 是可空旧兼容字段，不是当前 gate，也不需要由新的成功路径盖章。PR body 仍从当前 `WorkflowState.plan` 序列化完整 PlanDoc JSON，并额外写入 `planHash` 与兼容 `verifyHash` 标签。如果 `hy_amend_plan` 修改过 scope，必须重新验证后才能进入 commit，因此 PR body 记录的是 amended 后重新验证过的当前 PlanDoc 快照。CI、merge 和 reset 不会再改写 PR body。`hy_reset` 会清空 plan、approval、branch、PR、canonical implementation evidence、旧兼容字段、pending amendment、document reads、syncDocs 和 `mergeReceipt` 等派生状态，避免新计划继承旧运行态；不可重试的 receipt/identity/ref 漂移必须由用户审查后 reset，工具不会自动丢弃证据。
+## Initialization
 
-`hy_commit` commit 后再次核对路径集合和内容摘要，把 commit OID、verified implementation digest、branch、baseBranch 与带 host 的 repository 写入 recovery state，再用该 commit OID 的精确 refspec 推送。origin fetch/push URL 必须解析为同一 repository；PR 操作忽略 `GH_REPO` 与 `GH_HOST`，并查询 repository/base/head/headRefOid 精确匹配的 OPEN PR：唯一匹配直接复用，零匹配才调用 `gh pr create`，多匹配、旧 OID、查询失败、JSON 异常或上下文不精确匹配均 fail closed。create 成功也要 post-lookup 确认；命令失败但远端已接收时，只有 exact post-lookup 才可恢复。
+`init` is idempotent with respect to an already active workflow. In `init` or `plan`, it validates deployment/config readiness, collects local cognition, writes only external state and routes to `plan.before_plan`. In a later phase it leaves the workflow unchanged and routes to status rather than restarting it.
 
-若 push、PR 或 CI 步骤失败，状态保持 `commit` 且 recovery record 已在任何远端副作用前落盘。下一次 `hy_commit` 仍先验证 branch、implementation manifest 与 verified implementation digest；仅在这些证据、base/repository、recovery record 与当前 clean `HEAD` 全部一致时恢复对应 stage。缺少记录或插入空提交都会 fail closed。`commit.ci` 每次查询同时比较 PR tuple；`hy_merge` 再比较一次并传 `--match-head-commit`。复用不会覆盖既有 PR body；新建时才写入本次生成的 PlanDoc body。
+Missing or unsafe external deployment blocks planning. `init` never starts an installer, writes the worktree, writes `.git`, contacts an external knowledge service or fetches remote history.
 
-`hy_merge` 把 immutable PR identity（repository、PR number、base、head 与 verified head OID）和 mutable lifecycle 分开保存。第一次 mutation 前写入 attempted receipt；`executePrMerge` 是唯一允许执行 `gh pr merge` 的函数，而且同一 receipt 不会重试该 mutation。命令成功、失败或结果未知后，`reconcileMerge` 都先用 GitHub postcondition 判断远端是否已合入，再决定是否进入 confirmed receipt 与同步阶段。
+## Planning and one approval
 
-GitHub lifecycle 证据不可用时，`fetchRemoteBaseEvidence` 对目标 base 执行 **fresh-fetch ancestry**，把 immutable `baseOid` 与 `isAncestor` 结果写入证据。这个 **read-only Git fallback** 只能在 verified head 已是该 `baseOid` 祖先时返回 `already_integrated` 和 `evidence: "git"`；它绝不直接 merge，也绝不 push base。若两类证据都不能确认合入，返回 `PR_MERGE_OUTCOME_UNCONFIRMED` 并保持 merge phase。
+`read-docs` at `before_plan` binds the current task to local documentation facts. `plan` validates and stores the PlanDoc, then stops for a human decision.
 
-正常 attempted receipt 中的 stacked candidates 必须是受管 agent branches，并排除 base/head。snapshot 时每个候选都必须同时满足 verified head 是候选祖先、fresh `preparedBaseOid` 是候选祖先，以及 local OID 等于 remote OID。legacy 状态没有 receipt、但 fresh Git ancestry 已确认合入时，只重建 agent-prefix、verified-head ancestry 和 local=remote 共同证明的 stack；unrelated branch 忽略，真实 stack ref 漂移以 `POST_MERGE_SYNC_INCOMPLETE` 的 `detail.operation: "downstream snapshot"` 停止。
+The `approve` flow has one human gate:
 
-confirmed receipt 在首次同步前 fresh fetch base，要求当前 remote base 同时包含 verified OID 与确认时的 base OID，然后把该 tip 固定为 `syncBaseOid`；后续恢复要求 remote tip 仍与该 pin 完全相等。违反任一条件都以 retryable `POST_MERGE_SYNC_INCOMPLETE` 的 `detail.operation: "sync base ancestry"` fail closed。每个 downstream 进度按 `pending → rebasing → rebased → pushed` 落盘；`rebasing` 先于副作用持久化，通过 **detached staging** 从 recorded local OID 对 pinned `syncBaseOid` rebase，再持久化 `resultOid`。只有 `git update-ref` 的 old-OID **compare-and-swap** 成功后才改变 local branch，随后以 recorded remote OID 执行 exact `force-with-lease`。local ref、remote ref 或 base ancestry 任一漂移都不会被覆盖。重试只恢复未完成同步，成功后 `hy_merge` 直接进入 `done`。
+1. The user explicitly says approve, reject or revise for the displayed PlanDoc.
+2. The Skill submits that exact decision once.
+3. If current `before_approve` evidence is missing, CLI persists the pending decision and routes the documentation audit.
+4. No material drift means the same decision may continue automatically.
+5. Material drift requires a routed `continue` or `replan` judgment from the Skill. This is an evidence-alignment decision, not a second human approval.
+6. A changed PlanDoc must return to a new human decision.
 
-`hy_merge` 进入 reconciliation 和本地同步前取得 project-specific merge operation lock。lock 保存 owner pid/host/time/token；活 owner 导致 retryable `MERGE_LOCK_BUSY`，同 host dead owner 可安全回收，退出时按 token best-effort release。lock 不新增 phase，也不替代 receipt；它只阻止共享同一本地状态根和工作树的 MCP 进程并发操作，不提供跨主机强一致。
+Approval cannot be inferred from task wording, a previous task, silence or a generic request to continue.
 
-receipt 恢复覆盖完成状态写入后的普通 MCP 工具或进程中断。它不宣称在机器断电、内核崩溃或没有文件/目录 `fsync` 的情况下也具备 durable transaction 语义。
+## Editing and documentation
 
-## ToolResult envelope
+`branch` creates an approved `{category}/{topic}` branch. `edit` writes the scope lock outside the project and stops at `edit.implementation`. Only then does the Agent use normal file tools. Those file tools are not replaced by the CLI; enforcement occurs when current worktree paths and content are compared with the locked scope and evidence gates.
 
-字段契约定义在 `src/output/contract.ts`，运行时 helper 和 TypeScript shape 定义在 `src/output/envelope.ts`。`next` 是兼容字段，权威路由由 `nextAction`、`control` 和 `userAction` 表达。`hy_edit` 返回 `phase: "edit"`、`stage: "edit.implementation"`、空 `nextAction.tool` 和 `control.stop: true`，明确等待真实编辑；`hy_sync_docs` 才在当前 `edit.sync_docs` envelope 中返回自动目标 `verify.run`。
+After implementation, `read-docs(after_edit)` audits the diff and binds its digest. The Agent then makes only documentation changes already declared in PlanDoc scope. `sync-docs` records and validates evidence; it does not write documentation.
 
-```typescript
-interface ToolResult {
-  ok: boolean;
-  phase: Phase;
-  stage: string;
-  status: string;
-  nextAction: { tool: string | null; arguments?: unknown; phase: Phase; stage: string; automatic: boolean };
-  control: { automatic: boolean; stop: boolean; reason: string };
-  userAction: { kind: string; decisionId?: string; prompt?: string; instruction?: string; options?: string[] } | null;
-  next: Phase; // legacy
-  data?: unknown;
-  error?: {
-    type: string;
-    subtype: string;
-    code?: string;
-    message: string;
-    hint?: string;
-    detail?: unknown;
-    cause?: string;
-    retryable?: boolean;
-    risk?: unknown;
-    permission_violations?: unknown[];
-    missing_scopes?: string[];
-    console_url?: string;
-    request_id?: string;
-    trace_id?: string;
-  };
-  display?: { title?: string; body?: string; files?: string[]; urls?: string[] };
-  summary?: string;
-  hint?: string;
-  requires_user?: boolean;
-  stop_here?: boolean;
-  allowedTools?: string[];
-  blockedTools?: string[];
-  recovery?: {
-    strategy: "retry" | "repair_and_retry" | "wait_and_retry" | "replan" | "reset" | "external_action";
-    tool?: string;
-    arguments?: Record<string, unknown>;
-    command?: string;
-    instruction?: string;
-    byLayer?: Record<string, string>;
-  };
-  checks?: unknown[];
-  findings?: unknown[];
-  pagination?: { has_more?: boolean; page_token?: string; next_page_token?: string };
-  meta?: { command?: string; cwd?: string; identity?: string; format?: string; version?: string; request_id?: string; trace_id?: string; duration_ms?: number };
-  _notice?: { update?: { message?: string; command?: string; current_version?: string; latest_version?: string } };
-}
+If necessary work is outside scope, the Agent stops. It must follow the routed amendment path rather than editing first and asking forgiveness later.
+
+## Verification
+
+`verify` is the synchronous path for the issued check suite. `exam-plan` and `exam-submit` are the asynchronous path for long checks. Both paths bind the exact PlanDoc, scope, implementation fingerprint, commands and expected exits, and both produce the same canonical implementation manifest and verified digest on success.
+
+Failures return to edit and invalidate evidence affected by the repair. A scope amendment enters `verify.amendment`; material expansion requires an explicit decision bound to the revised scope. Pure narrowing may preserve the original approval when the CLI says it is safe.
+
+Small, Medium and Large are selected semantically by the Skill, while CLI is completeness authority. Passing Small checks never cancels a required Medium or Large check.
+
+## Commit and CI
+
+`commit` is a resumable three-stage command:
+
+- `commit.prepare` checks current branch, scope, manifest and digest, then creates or recovers an exact commit identity;
+- `commit.publish` pushes the exact object ID and creates or reuses only a PR with matching repository/base/head/OID identity;
+- `commit.ci` observes structured checks and stays pending, returns to edit on failure, or advances to merge when required evidence is green.
+
+The recovery record prevents a retry from creating another commit after a partial failure. A successful new verification supersedes an older commit-recovery record. Missing checks, skipped-only checks or neutral-only checks are not green when CI evidence is required.
+
+## Merge and synchronization
+
+`merge` persists an attempted receipt before its single remote merge mutation. A retry first reconciles the GitHub postcondition and, when necessary, uses **fresh-fetch ancestry** as a **read-only Git fallback**. That fallback can prove integration but cannot merge or push the base. It never repeats a mutation merely because the previous process returned an error.
+
+After integration is confirmed, `merge.sync` updates only downstream branches proven by the recorded stack identity. Rebase results are computed in **detached staging**; local refs use **compare-and-swap** and remote updates use exact force-with-lease. Drift stops the workflow with recovery evidence rather than overwriting another actor's work.
+
+Only a completed reconciliation and synchronization route to `done.completed`. `reset` then removes workflow-derived task state and returns to planning; it does not uninstall Skills or delete project files.
+
+## Valid phase transitions
+
+The kernel allows the following phase-level transitions, including same-phase retries:
+
+```text
+init    -> init | plan | done
+plan    -> plan | approve | done
+approve -> approve | branch | plan
+branch  -> branch | edit | done
+edit    -> edit | verify | commit | done
+verify  -> verify | edit | commit | done
+commit  -> commit | edit | merge | done
+merge   -> merge | done
+done    -> done
 ```
 
-## PlanDoc 结构
+This table is descriptive, not callable authorization. The current envelope can expose a narrower route.
 
-```typescript
-interface PlanDoc {
-  task: string;
-  // 所有路径必须在项目根内；changes/delete 必须已存在；new_files 可以尚不存在。
-  scope: { changes: string[]; new_files: string[]; delete: string[] };
-  boundary: { dependency_dag: string; entry_points: string[]; no_new_external: boolean };
-  verify: { platform: {...}; smoke: CheckItem[]; tests: CheckItem[] };
-  risks: string[];
-  discussion: string;
-  branch: string | null;        // runtime
-  verify_hash: string | null;   // runtime
-  pr_number: number | null;     // runtime
-}
-```
+## Promotion exception
 
-## workflow.json
-
-状态持久化在 OS 用户 state，不写工作树或 Git 私有目录，因此不会进入 PR diff、污染 checkout 或改变 `git status`。
-
-`hy_edit` 额外写入同一 project state 目录的 `scope.json` 锁定当前 scope。仍要求真实 Git worktree 来计算稳定身份；非 Git 目录会结构化失败。
-
-## Related
-
-- [Architecture](./architecture.md)
-- [Tools Reference](./tools.md)
-- [Verify Pipeline](./verify.md)
-
-## Async verify transition
-
-hy_exam_plan keeps the workflow in verify while issuing a two-hour exam bound to the exact planHash and a complete implementation fingerprint built from the current manifest and content, including untracked changes. hy_exam_submit moves to commit only after one complete result set, exact nonces and commands, exit codes and output constraints, an unchanged fingerprint, current approval and document evidence, and fresh local scope and no_new_external boundary checks all pass. Any failed evidence returns to edit; after a fix the agent refreshes after_edit and sync_docs evidence and issues a new exam, with no partial resubmission of the old exam. Success persists the same implementationManifest and verifiedImplementationDigest as hy_verify.
+A base-branch to release-branch promotion, such as `dev` to `main`, is a release operation rather than an empty development task. Do not fabricate a PlanDoc with empty scope. The operator must explicitly authorize the promotion procedure, compare the exact source/target diff, create or reuse the promotion PR, wait for its real CI and merge it. This exception does not permit ordinary code changes to bypass the state machine.

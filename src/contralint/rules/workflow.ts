@@ -1,29 +1,8 @@
+import { CLI_COMMAND_NAMES, COMMAND_CONTRACTS } from "../../commands/catalog.js";
 import { PHASES, VALID_TRANSITIONS } from "../../runtime/state-machine.js";
-import { readText } from "../files.js";
+import { SKILL_CONTRACTS } from "../../skills/catalog.js";
+import { exists, readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
-
-const DOCUMENT_GATE_SEQUENCE = [
-  "hy_status",
-  "hy_read_docs(before_plan)",
-  "hy_plan",
-  "hy_approve",
-  "hy_read_docs(before_approve)",
-  "hy_approve",
-  "hy_branch",
-  "hy_edit",
-  "hy_read_docs(after_edit)",
-  "hy_sync_docs",
-  "hy_verify",
-  "hy_commit",
-  "hy_merge",
-  "hy_reset",
-];
-
-const DOCUMENT_GATE_CONTRACT_FILES = [
-  "src/server.ts",
-  "docs/state-machine.md",
-  "docs/skills/core/SKILL.md",
-];
 
 const MERGE_RECOVERY_SOURCE_TOKENS = [
   "acquireMergeLock",
@@ -52,16 +31,6 @@ const MERGE_RECOVERY_DOC_TOKENS = [
   "compare-and-swap",
 ] as const;
 
-function containsOrderedTokens(text: string, tokens: string[]): boolean {
-  let cursor = 0;
-  for (const token of tokens) {
-    const index = text.indexOf(token, cursor);
-    if (index < 0) return false;
-    cursor = index + token.length;
-  }
-  return true;
-}
-
 export function checkWorkflowContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
   const state = readText(context.root, "src/state.ts");
@@ -72,47 +41,57 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
   }
   for (const phase of PHASES) {
     if (!docs.includes(tick + phase + tick)) {
-      findings.push({ rule: "workflow", severity: "hard_fail", message: "Phase " + phase + " is missing from docs/state-machine.md.", file: "docs/state-machine.md" });
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `Phase ${phase} is missing from docs/state-machine.md.`, file: "docs/state-machine.md" });
     }
   }
   for (const [from, targets] of Object.entries(VALID_TRANSITIONS)) {
     for (const to of targets) {
       if (!docs.includes(from) || !docs.includes(to)) {
-        findings.push({ rule: "workflow", severity: "amend_required", message: "Transition " + from + " -> " + to + " is not clearly documented.", file: "docs/state-machine.md" });
+        findings.push({ rule: "workflow", severity: "amend_required", message: `Transition ${from} -> ${to} is not clearly documented.`, file: "docs/state-machine.md" });
       }
     }
   }
-  for (const file of DOCUMENT_GATE_CONTRACT_FILES) {
-    const text = readText(context.root, file);
-    if (!containsOrderedTokens(text, DOCUMENT_GATE_SEQUENCE)) {
-      findings.push({
-        rule: "workflow",
-        severity: "hard_fail",
-        message: "Public workflow must preserve one user decision through hy_approve -> automatic before_approve audit -> hy_approve resume, then branch/edit/docs/verify -> hy_commit -> hy_merge -> hy_reset.",
-        file,
-        detail: { expected: DOCUMENT_GATE_SEQUENCE },
-      });
+
+  const cliPath = "src/cli/workflow.ts";
+  const mainPath = "src/main.ts";
+  const cli = readText(context.root, cliPath);
+  const main = readText(context.root, mainPath);
+  for (const command of CLI_COMMAND_NAMES) {
+    if (!cli.includes(`"${command}"`)) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `Workflow CLI is missing public command ${command}.`, file: cliPath });
     }
   }
-  for (const file of DOCUMENT_GATE_CONTRACT_FILES) {
-    const text = readText(context.root, file);
-    for (const removed of ["hy_ci", "hy_chain"]) {
-      if (text.includes(removed)) {
-        findings.push({
-          rule: "workflow",
-          severity: "hard_fail",
-          message: `${removed} is a removed public tool; CI and downstream synchronization belong to internal commit.ci and merge.sync stages.`,
-          file,
-        });
-      }
+  for (const removed of ["ci", "chain", "hy_ci", "hy_chain"]) {
+    if (CLI_COMMAND_NAMES.includes(removed as any)) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `${removed} must remain an internal stage rather than a public command.`, file: cliPath });
     }
   }
-  const publicContract = DOCUMENT_GATE_CONTRACT_FILES.map(file => readText(context.root, file)).join("\n");
-  for (const stage of ["commit.ci", "merge.sync"]) {
-    if (!publicContract.includes(stage)) {
-      findings.push({ rule: "workflow", severity: "hard_fail", message: `Public workflow documentation must identify ${stage} as an internal stage.`, file: "docs/state-machine.md" });
+  if (!main.includes("runWorkflowCli") || main.includes("StdioServerTransport") || main.includes("server.connect(")) {
+    findings.push({ rule: "workflow", severity: "hard_fail", message: "Public entrypoint must dispatch the CLI state machine and must not start MCP.", file: mainPath });
+  }
+  if (exists(context.root, "src/server.ts")) {
+    findings.push({ rule: "workflow", severity: "hard_fail", message: "MCP server source must remain removed.", file: "src/server.ts" });
+  }
+
+  for (const contract of COMMAND_CONTRACTS) {
+    if (!contract.phases.length || !contract.stages.length) {
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `Command ${contract.command} has no phase/stage ownership.`, file: "src/commands/catalog.ts" });
     }
   }
+  const skillText = new Map(SKILL_CONTRACTS.map(skill => [skill.name, readText(context.root, skill.path)]));
+  for (const [skillName, tokens] of [
+    ["hy-approve", ["explicit", "approve", "reject", "revise", "approve.before_approve", "approve.decision"]],
+    ["hy-edit", ["edit.scope", "edit.implementation", "read-docs"]],
+    ["hy-verify", ["verify.run", "verify.amendment", "exam-plan", "exam-submit", "amend-plan"]],
+    ["hy-commit", ["commit.prepare", "commit.publish", "commit.ci"]],
+    ["hy-merge", ["merge.reconcile", "merge.sync"]],
+  ] as const) {
+    const text = skillText.get(skillName) ?? "";
+    for (const token of tokens) {
+      if (!text.includes(token)) findings.push({ rule: "workflow", severity: "hard_fail", message: `${skillName} is missing workflow token ${token}.`, file: `skills/${skillName}/SKILL.md` });
+    }
+  }
+
   const mergeSource = [
     readText(context.root, "src/git.ts"),
     readText(context.root, "src/merge-recovery.ts"),
@@ -120,22 +99,12 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
   ].join("\n");
   for (const token of MERGE_RECOVERY_SOURCE_TOKENS) {
     if (!mergeSource.includes(token)) {
-      findings.push({
-        rule: "workflow",
-        severity: "hard_fail",
-        message: `Merge recovery implementation omits ${token}.`,
-        file: "src/git.ts",
-      });
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `Merge recovery implementation omits ${token}.`, file: "src/git.ts" });
     }
   }
   const mergeMutations = mergeSource.match(/\[\s*"pr"\s*,\s*"merge"/g) ?? [];
   if (mergeMutations.length !== 1) {
-    findings.push({
-      rule: "workflow",
-      severity: "hard_fail",
-      message: `Merge recovery must have exactly one gh pr merge mutation site; found ${mergeMutations.length}.`,
-      file: "src/git.ts",
-    });
+    findings.push({ rule: "workflow", severity: "hard_fail", message: `Merge recovery must have exactly one gh pr merge mutation site; found ${mergeMutations.length}.`, file: "src/git.ts" });
   }
   const mergeDocs = [
     readText(context.root, "docs/state-machine.md"),
@@ -144,33 +113,14 @@ export function checkWorkflowContracts(context: ContractRuleContext): ContractFi
   ].join("\n");
   for (const token of MERGE_RECOVERY_DOC_TOKENS) {
     if (!mergeDocs.includes(token)) {
-      findings.push({
-        rule: "workflow",
-        severity: "amend_required",
-        message: `Merge recovery documentation omits ${token}.`,
-        file: "docs/state-machine.md",
-      });
+      findings.push({ rule: "workflow", severity: "amend_required", message: `Merge recovery documentation omits ${token}.`, file: "docs/state-machine.md" });
     }
   }
-  const ci = readText(context.root, "templates/hy-workflow.yml");
-  for (const token of [
-    "__HY_WORKFLOW_PACKAGE_SPEC__",
-    "HY_WORKFLOW_RUNTIME_CONFIG_SOURCE: hy-workflow.runtime-config-source.v1",
-    "hy-workflow lint --json",
-  ]) {
-    if (!ci.includes(token)) {
-      findings.push({ rule: "workflow", severity: "hard_fail", message: "Centralized thin CI contract is missing " + token + ".", file: "templates/hy-workflow.yml" });
-    }
-  }
-  for (const forbidden of ["ci.commands", "__HY_WORKFLOW_LINT_BUNDLE_BASE64__", "No supported project ecosystem detected", "No native verification command detected"]) {
-    if (ci.includes(forbidden)) {
-      findings.push({ rule: "workflow", severity: "hard_fail", message: "Thin CI must not infer native verification or embed lint payloads: " + forbidden + ".", file: "templates/hy-workflow.yml" });
-    }
-  }
+
   const commit = readText(context.root, "src/tools/commit.ts");
   for (const token of ['stage: "commit.ci"', "noChecks", "noEffectiveChecks", "CI_CHECKS_REQUIRED"]) {
     if (!commit.includes(token)) {
-      findings.push({ rule: "workflow", severity: "hard_fail", message: "Internal commit.ci must fail closed without real effective checks: missing " + token + ".", file: "src/tools/commit.ts" });
+      findings.push({ rule: "workflow", severity: "hard_fail", message: `Internal commit.ci must fail closed without real effective checks: missing ${token}.`, file: "src/tools/commit.ts" });
     }
   }
   return findings;

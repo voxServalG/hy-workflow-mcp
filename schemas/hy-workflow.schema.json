@@ -46,6 +46,8 @@
         "tiers": {
           "type": "array",
           "minItems": 1,
+          "deprecated": true,
+          "description": "Compatibility-only legacy field. It is preserved but ignored; dependency/module lint is not provided and C003 remains not_configured.",
           "items": {
             "type": "object",
             "required": ["name", "paths"],
@@ -119,9 +121,7 @@
         "docs.links",
         "docs.structure",
         "docs.max-lines",
-        "code.max-lines",
-        "code.tier-dependency",
-        "code.dependency-cycle"
+        "code.max-lines"
       ]
     },
     "ruleConfig": {
@@ -147,9 +147,7 @@
         "docs.links": { "$ref": "#/$defs/severityRuleConfig" },
         "docs.structure": { "$ref": "#/$defs/severityRuleConfig" },
         "docs.max-lines": { "$ref": "#/$defs/ruleConfig" },
-        "code.max-lines": { "$ref": "#/$defs/ruleConfig" },
-        "code.tier-dependency": { "$ref": "#/$defs/severityRuleConfig" },
-        "code.dependency-cycle": { "$ref": "#/$defs/severityRuleConfig" }
+        "code.max-lines": { "$ref": "#/$defs/ruleConfig" }
       },
       "additionalProperties": false
     }

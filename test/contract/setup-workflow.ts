@@ -1,34 +1,30 @@
-import * as fs from "node:fs";
-import { PACKAGE_NAME, PACKAGE_VERSION } from "../../src/package-meta.js";
-import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
-import { renderWorkflowTemplate } from "../../src/setup/shared.js";
+import { readFileSync } from "node:fs";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-const template = fs.readFileSync("templates/hy-workflow.yml", "utf-8");
-const rendered = renderWorkflowTemplate();
-const exact = `${PACKAGE_NAME}@${PACKAGE_VERSION}`;
+const main = readFileSync("src/main.ts", "utf-8");
+const helperCli = ["cli.ts", "cli-contract.ts", "cli-presentation.ts"]
+  .map(file => readFileSync(`src/helper/${file}`, "utf-8"))
+  .join("\n");
+const helperProject = readFileSync("src/helper/project.ts", "utf-8");
+const publicSetup = main + "\n" + helperCli + "\n" + helperProject;
 
-assert(template !== rendered && rendered.includes(exact), "render must replace one package placeholder with the exact package version");
-assert((template.match(/__HY_WORKFLOW_PACKAGE_SPEC__/g) ?? []).length === 1, "template must contain one exact package placeholder");
-assert(!rendered.includes("__HY_WORKFLOW_PACKAGE_SPEC__"), "rendered workflow must not retain its placeholder");
-assert(template.includes("  pull_request:\n") && template.includes("  workflow_dispatch:\n") && !template.includes("  push:\n"), "thin workflow must use PR/manual triggers only");
-assert(template.includes("permissions:\n  contents: read\n"), "thin workflow must grant only read-only contents permission");
-assert(template.includes(`${RUNTIME_CONFIG_SOURCE_ENV}: ${RUNTIME_CONFIG_SOURCE_SCHEMA}`), "thin workflow must carry the exact new-config authority signal");
-assert(/actions\/checkout@[a-f0-9]{40}/.test(template) && template.includes("persist-credentials: false"), "checkout must be immutable and must not persist credentials");
-assert(Buffer.byteLength(rendered) < 2_000, "rendered workflow must remain small enough for direct review");
-for (const forbidden of [
-  "HY_WORKFLOW_INTERNAL_LINT_BUNDLE",
-  "__HY_WORKFLOW_LINT_BUNDLE_BASE64__",
-  "Run native project CI",
-  "ci.commands",
-  "AGENTS.md",
-  "codelint.json",
-  "doclint.json",
-  "actions/upload-artifact",
-  "contents: write",
-]) assert(!template.includes(forbidden), `thin workflow must not contain ${forbidden}`);
+for (const token of ["runHelperCli", 'argv[0] === "helper"', 'argv[0] === "setup"', '"install"']) {
+  assert(main.includes(token), `public setup compatibility alias is missing ${token}`);
+}
+for (const forbidden of ["runSetupCli", "./setup-cli.js", "StdioServerTransport", "@modelcontextprotocol/sdk"]) {
+  assert(!main.includes(forbidden), `public setup must not enter the legacy setup/MCP path: ${forbidden}`);
+}
+for (const token of ["installHelperSkills", "registerHelperProject", "retireOwnedWorkflowMcp", "projectFilesChanged: []"]) {
+  assert(helperCli.includes(token), `helper install is missing ${token}`);
+}
+for (const token of ["assertHelperResourcesExternal", "assertSafeRuntimeBoundary", "projectFiles: []", "projectFilesChanged: []"]) {
+  assert(helperProject.includes(token), `external-only helper registration is missing ${token}`);
+}
+for (const forbidden of [".github/workflows/hy-workflow.yml", "writeSharedArtifacts", "renderWorkflowTemplate", "SHARED_PROJECT_FILES", "AGENTS.md"]) {
+  assert(!publicSetup.includes(forbidden), `public setup/helper must not inject project artifact ${forbidden}`);
+}
 
-console.log("setup-workflow: thin exact-version policy runner contract passes");
+console.log("setup-workflow: setup aliases helper install with zero project writes and no MCP entrypoint");

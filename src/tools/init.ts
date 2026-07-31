@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { requireRuntimeConfig, resolveRuntimeConfig, type JsonObject } from "../config.js";
-import { checkSetupStamp, SETUP_COMMAND, setupStampPath, setupUpdateRequiredResult } from "../bootstrap.js";
+import { checkSetupStamp, setupStampPath, setupUpdateRequiredResult } from "../bootstrap.js";
 import { isRuntimeIgnoredArtifact } from "../policy/artifacts.js";
 import { projectPaths } from "../runtime/user-paths.js";
 import { assertSafeRuntimeBoundary } from "../runtime/boundary.js";
@@ -11,6 +11,7 @@ import { DEFAULT_STAGE_BY_PHASE } from "../runtime/state-machine.js";
 import { validateBaseBranch } from "../project-profile.js";
 import { isDocumentPath, resolveDocsDir } from "../docs_paths.js";
 import { inspectDocumentation, shouldIgnoreDocumentPath } from "../policy/docs.js";
+import { collectProjectCognition } from "../init-cognition.js";
 
 export const INIT_COMMIT_ARTIFACTS: string[] = [];
 export const INIT_LOCAL_ARTIFACTS: string[] = [];
@@ -20,19 +21,16 @@ export function ensureLocalArtifactIgnores(_root: string): boolean {
   return false;
 }
 
-export function initArtifactGuidance(): { commitArtifacts: string[]; localArtifacts: string[]; trackedLocalArtifacts: string[]; body: string } {
-  const body = [
-    "hy_init changes no project files. Runtime authority, workflow state, scope locks, and DocsGraph cache live in OS user directories.",
-    "Historical repository injections are inert: runtime does not read, hash, migrate, delete, or validate them.",
-    "",
-    "hy-workflow unset removes only external state and owned user-scope client configuration; it never deletes project files.",
-  ].join("\n");
-  return {
-    commitArtifacts: [],
-    localArtifacts: [...INIT_LOCAL_ARTIFACTS],
-    trackedLocalArtifacts: [],
-    body,
-  };
+export type ProjectReadinessIssue = {
+  code: string;
+  message: string;
+  recovery: string;
+};
+
+export type ProjectReadinessIssueFact = Omit<ProjectReadinessIssue, "recovery">;
+
+export function projectReadinessFacts(issues: readonly ProjectReadinessIssue[]): ProjectReadinessIssueFact[] {
+  return issues.map(({ recovery: _recovery, ...facts }) => facts);
 }
 
 function documentationFiles(root: string, docsDir: string): string[] {
@@ -53,9 +51,9 @@ function documentationFiles(root: string, docsDir: string): string[] {
   return files;
 }
 
-export function projectReadinessIssues(root: string, candidate?: JsonObject, options: { forSetup?: boolean } = {}): Array<{ code: string; message: string; recovery: string }> {
+export function projectReadinessIssues(root: string, candidate?: JsonObject, options: { forSetup?: boolean } = {}): ProjectReadinessIssue[] {
   const config = candidate ?? requireRuntimeConfig(root);
-  const issues: Array<{ code: string; message: string; recovery: string }> = [];
+  const issues: ProjectReadinessIssue[] = [];
   const branch = validateBaseBranch(root, config.project.baseBranch as string);
   if (!branch.ok) issues.push({
     code: "BASE_BRANCH_NOT_FOUND",
@@ -96,16 +94,12 @@ function setupMissingResult(missingArtifacts: string[]): ToolResult {
       message: "The external project deployment is missing or unsafe. hy_init never launches the interactive setup TUI.",
       missingArtifacts,
     },
-    display: {
-      title: "Setup required",
-      body: ["Run setup in the project root, then restart the MCP session:", SETUP_COMMAND].join("\n"),
-    },
-    hint: "Stop here and ask the user to run hy-workflow setup. Do not call hy_plan until hy_init succeeds.",
     requires_user: true,
     stop_here: true,
     allowedTools: ["hy_init", "hy_status"],
     blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_merge", "hy_reset"],
-    recovery: { strategy: "external_action", tool: "terminal", instruction: SETUP_COMMAND },
+    recovery: { strategy: "external_action", tool: "terminal" },
+    userAction: { kind: "external_action" },
     missingArtifacts,
   });
 }
@@ -120,8 +114,6 @@ export async function handleInit(): Promise<ToolResult> {
     return toolResult(state.phase, {
       stage,
       status: "ready",
-      message: `Workflow is already active in ${state.phase}; hy_init left it unchanged.`,
-      hint: "Call hy_status and resume the persisted pipeline. Do not initialize or approve again.",
       allowedTools: ["hy_status"],
       nextAction: { tool: "hy_status", phase: state.phase, stage, automatic: true },
       control: { automatic: true, stop: false, reason: "automatic" },
@@ -148,14 +140,12 @@ export async function handleInit(): Promise<ToolResult> {
         subtype: "config_invalid",
         code: error?.code ?? "ROOT_CONFIG_INVALID",
         message: error?.message ?? String(error),
-        hint: error?.hint,
-        issues: error?.detail?.issues,
+        detail: error?.detail,
         retryable: false,
       },
-      display: { title: "Project configuration needs attention", body: error?.message ?? String(error) },
-      hint: error?.hint ?? "Repair the authoritative configuration, then rerun hy_init.",
       requires_user: true,
       stop_here: true,
+      userAction: { kind: "fix_configuration" },
       allowedTools: ["hy_init", "hy_status"],
       blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_amend_plan", "hy_commit", "hy_merge", "hy_reset"],
     });
@@ -165,11 +155,17 @@ export async function handleInit(): Promise<ToolResult> {
   if (readinessIssues.length) {
     const first = readinessIssues[0];
     return toolResult(state.phase, {
-      error: { type: "setup", subtype: "preflight", code: first.code, message: first.message, issues: readinessIssues, retryable: false },
-      display: { title: "Project setup needs attention", body: readinessIssues.map(issue => `- ${issue.message}\n  ${issue.recovery}`).join("\n") },
-      hint: first.recovery,
+      error: {
+        type: "setup",
+        subtype: "preflight",
+        code: first.code,
+        message: first.message,
+        detail: { issues: projectReadinessFacts(readinessIssues) },
+        retryable: false,
+      },
       requires_user: true,
       stop_here: true,
+      userAction: { kind: "fix_configuration" },
       allowedTools: ["hy_init", "hy_status"],
       blockedTools: ["hy_read_docs", "hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_sync_docs", "hy_verify", "hy_commit", "hy_merge", "hy_reset"],
     });
@@ -179,15 +175,10 @@ export async function handleInit(): Promise<ToolResult> {
   next.stage = "plan.before_plan";
   writeState(next);
   const paths = projectPaths(root);
-  const artifactGuidance = initArtifactGuidance();
+  const cognition = collectProjectCognition(root);
   return toolResult("plan", {
     stage: "plan.before_plan",
     status: "ready",
-    display: {
-      title: "Setup ready",
-      body: `External deployment and authoritative runtime configuration verified. hy_init changed no project files.\n\n${artifactGuidance.body}`,
-    },
-    hint: "For a concrete repository change task, call hy_read_docs({ stage: 'before_plan', task }) before hy_plan.",
     allowedTools: ["hy_read_docs", "hy_status"],
     nextAction: {
       tool: null,
@@ -196,16 +187,13 @@ export async function handleInit(): Promise<ToolResult> {
       automatic: false,
     },
     control: { automatic: false, stop: true, reason: "information_required" },
-    userAction: {
-      kind: "provide_information",
-      instruction: "Use the current user development request as hy_read_docs(before_plan).task; ask only when no concrete task exists.",
-    },
+    userAction: { kind: "provide_information" },
     commitArtifacts: [],
     localArtifacts: [paths.configDir, paths.stateDir, paths.cacheDir],
     projectFilesChanged: [],
     requiredSetupArtifacts: [paths.deployment],
     configAuthority,
+    cognition,
     gitignoreChanged: false,
-    message: "External deployment and runtime config authority verified. hy_init changed no project files.",
   });
 }

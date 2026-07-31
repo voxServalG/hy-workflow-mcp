@@ -23,7 +23,7 @@ const ok = toolResult("plan", {
   stop_here: true,
   allowedTools: ["hy_approve"],
   blockedTools: ["hy_commit"],
-  recovery: { strategy: "repair_and_retry", tool: "hy_plan", arguments: { task: "repair contract", plan: {} }, command: "npm run lint:contract", instruction: "fix contract drift", byLayer: { lint: "sync docs" } },
+  recovery: { strategy: "repair_and_retry", tool: "hy_plan", arguments: { task: "repair contract", plan: {} }, command: "npm run lint:contract" },
   checks: [{ name: "contract", status: "passed" }],
   findings: [],
   pagination: { has_more: true, page_token: "p1", next_page_token: "p2" },
@@ -60,11 +60,11 @@ const failed = toolResult("edit", {
 });
 assert(failed.ok === false, "error envelope should not be ok");
 assert(failed.error?.type === "scope", "scope error should be classified");
-assert(failed.error?.message.includes("scope drift"), "error message should survive normalization");
+assert(failed.error?.message.includes("scope drift") === true, "error message should survive normalization");
 assert(failed.error?.code === "SCOPE_DRIFT", "error code should survive normalization");
 assert(failed.error?.hint === "return to hy_edit", "error hint should survive normalization");
 assert(failed.error?.request_id === "req-2", "error request_id should survive normalization");
-assert(failed.allowedTools?.includes("hy_edit"), "allowedTools should survive normalization");
+assert(failed.allowedTools?.includes("hy_edit") === true, "allowedTools should survive normalization");
 assert(failed.stage === "edit.implementation" && failed.status === "blocked", "a failure without an explicit executable route should fail closed");
 assert(failed.nextAction.tool === null && failed.control.stop && !failed.control.automatic, "an implicit failure route must never retry with missing arguments");
 assert(failed.next === "edit", "legacy next must remain available");
@@ -86,11 +86,11 @@ assert(approval.next === "approve" && approval.nextAction.automatic === false, "
 
 const recoveryCases = [
   { strategy: "retry", tool: "hy_commit", arguments: { title: "fix: retry", body: "retry body" } },
-  { strategy: "repair_and_retry", tool: "hy_edit", instruction: "repair the implementation", byLayer: { compile: "fix types" } },
-  { strategy: "wait_and_retry", tool: "hy_commit", arguments: { title: "fix: retry", body: "retry body" }, instruction: "wait for CI" },
-  { strategy: "replan", tool: "hy_plan", arguments: { task: "revise", plan: {} }, instruction: "revise the approved plan" },
-  { strategy: "reset", tool: "hy_reset", instruction: "abandon the invalid workflow state" },
-  { strategy: "external_action", tool: "terminal", command: "hy-workflow setup", instruction: "run setup outside MCP" },
+  { strategy: "repair_and_retry", tool: "hy_edit" },
+  { strategy: "wait_and_retry", tool: "hy_commit", arguments: { title: "fix: retry", body: "retry body" } },
+  { strategy: "replan", tool: "hy_plan", arguments: { task: "revise", plan: {} } },
+  { strategy: "reset", tool: "hy_reset" },
+  { strategy: "external_action", tool: "terminal", command: "hy-workflow setup" },
 ] satisfies ToolRecovery[];
 
 assert(
@@ -105,7 +105,6 @@ for (const recovery of recoveryCases) {
 for (const invalid of [
   { tool: "hy_commit", instruction: "missing discriminator" },
   { strategy: "reset", tool: "hy_merge", instruction: "reset routed to the wrong tool" },
-  { strategy: "repair_and_retry", tool: "hy_edit" },
   { strategy: "retry", tool: "hy_commit" },
   { strategy: "retry", tool: "hy_commit", arguments: [] },
 ]) {

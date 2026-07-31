@@ -127,14 +127,12 @@ export interface DocumentReadFile {
 
 export interface DocumentReadSnapshot {
   stage: DocumentReadStage;
-  purpose: string;
   time: string;
   task: string;
   planHash: string | null;
   docsDir: string;
   digest: string;
   files: DocumentReadFile[];
-  findings: string[];
   docsGraphDigest: string;
   entryPoints: string[];
   traversalRoots: string[];
@@ -215,6 +213,8 @@ export interface Approval {
     previousPlanHash: string;
     planHash: string;
   }>;
+  /** Exact commit identity retained only for an unchanged publish retry. */
+  commitRecovery?: unknown;
 }
 
 export interface PendingPlanApproval {
@@ -222,6 +222,39 @@ export interface PendingPlanApproval {
   note: string;
   decisionId: string;
   planHash: string;
+}
+
+export type ActiveExamCheckLayer = "compile" | "scope" | "boundary" | "platform" | "smoke" | "tests";
+
+export interface ActiveExamCheck {
+  id: string;
+  layer: ActiveExamCheckLayer;
+  command: string;
+  cwd?: string;
+  timeoutMs: number;
+  expectExitCode: number;
+  nonce: string;
+  mustContain?: string;
+  mustNotContain?: string;
+}
+
+/** Complete, resumable identity for one asynchronous verification suite. */
+export interface ActiveExam {
+  examId: string;
+  issuedAt: string;
+  expiresAt: string;
+  scopeFingerprint: string;
+  planHash: string;
+  nonce: string;
+  checks: ActiveExamCheck[];
+}
+
+/** Exact commit presentation bound before any Git or GitHub mutation. */
+export interface CommitIntent {
+  title: string;
+  body: string;
+  planHash: string;
+  implementationDigest: string;
 }
 
 export interface WorkflowState {
@@ -244,6 +277,10 @@ export interface WorkflowState {
   documentReads?: DocumentReads | null;
   syncDocs?: SyncDocsRecord | null;
   mergeReceipt?: MergeReceipt | null;
+  /** Current long-running verification binding, persisted for status recovery. */
+  activeExam?: ActiveExam | null;
+  /** Exact commit and PR title/body, persisted for cross-session retries. */
+  commitIntent?: CommitIntent | null;
 }
 
 // ── State path ───────────────────────────────────────────────
@@ -368,6 +405,8 @@ function initialState(): WorkflowState {
     documentReads: null,
     syncDocs: null,
     mergeReceipt: null,
+    activeExam: null,
+    commitIntent: null,
   };
 }
 
@@ -398,6 +437,71 @@ function normalizeMergeReceipt(value: unknown, file: string): MergeReceipt | nul
 
 function isPlanHash(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{12}$/.test(value);
+}
+const ACTIVE_EXAM_LAYERS = new Set<ActiveExamCheckLayer>(["compile", "scope", "boundary", "platform", "smoke", "tests"]);
+
+function normalizeActiveExam(value: unknown, phase: Phase, plan: PlanDoc | null, file: string): ActiveExam | null {
+  if (value === null || value === undefined) return null;
+  const invalid = (): never => structuredWorkflowStateError(
+    "WORKFLOW_STATE_INVALID_ACTIVE_EXAM",
+    `Workflow state has an invalid activeExam in ${file}.`,
+    { file },
+  );
+  if (!isObject(value)
+      || phase !== "verify"
+      || typeof value.examId !== "string" || !/^[0-9a-f]{16,}$/.test(value.examId)
+      || typeof value.issuedAt !== "string" || !Number.isFinite(Date.parse(value.issuedAt))
+      || typeof value.expiresAt !== "string" || !Number.isFinite(Date.parse(value.expiresAt))
+      || Date.parse(value.expiresAt) <= Date.parse(value.issuedAt)
+      || typeof value.scopeFingerprint !== "string" || !/^[0-9a-f]{12}$/.test(value.scopeFingerprint)
+      || !isPlanHash(value.planHash)
+      || value.planHash !== computePlanHash(plan)
+      || typeof value.nonce !== "string" || !/^[0-9a-f]{16,}$/.test(value.nonce)
+      || !Array.isArray(value.checks) || value.checks.length === 0) {
+    return invalid();
+  }
+  const seenIds = new Set<string>();
+  const checks: ActiveExamCheck[] = value.checks.map(raw => {
+    if (!isObject(raw)
+        || typeof raw.id !== "string" || !raw.id.trim() || seenIds.has(raw.id)
+        || typeof raw.layer !== "string" || !ACTIVE_EXAM_LAYERS.has(raw.layer as ActiveExamCheckLayer)
+        || typeof raw.command !== "string" || !raw.command.trim()
+        || raw.cwd !== undefined && (typeof raw.cwd !== "string" || !raw.cwd.trim())
+        || !Number.isSafeInteger(raw.timeoutMs) || (raw.timeoutMs as number) <= 0
+        || !Number.isSafeInteger(raw.expectExitCode)
+        || typeof raw.nonce !== "string" || !/^[0-9a-f]{16,}$/.test(raw.nonce)
+        || raw.mustContain !== undefined && typeof raw.mustContain !== "string"
+        || raw.mustNotContain !== undefined && typeof raw.mustNotContain !== "string") {
+      return invalid();
+    }
+    seenIds.add(raw.id);
+    return { ...raw } as unknown as ActiveExamCheck;
+  });
+  return { ...value, checks } as unknown as ActiveExam;
+}
+
+function normalizeCommitIntent(
+  value: unknown,
+  phase: Phase,
+  plan: PlanDoc | null,
+  verifiedImplementationDigest: string | null,
+  file: string,
+): CommitIntent | null {
+  if (value === null || value === undefined) return null;
+  if (!isObject(value)
+      || phase !== "commit"
+      || typeof value.title !== "string" || !value.title.trim()
+      || typeof value.body !== "string"
+      || !isPlanHash(value.planHash) || value.planHash !== computePlanHash(plan)
+      || !isPlanHash(value.implementationDigest)
+      || value.implementationDigest !== verifiedImplementationDigest) {
+    structuredWorkflowStateError(
+      "WORKFLOW_STATE_INVALID_COMMIT_INTENT",
+      `Workflow state has an invalid commitIntent in ${file}.`,
+      { file },
+    );
+  }
+  return { ...value } as unknown as CommitIntent;
 }
 
 function hasValidApprovalAuditChain(value: unknown, decisionId: string, planHash: string): boolean {
@@ -474,6 +578,28 @@ function normalizePendingApproval(value: unknown, plan: PlanDoc | null, file: st
   return { ...value } as unknown as PendingPlanApproval;
 }
 
+function normalizeDocumentReadSnapshot(value: unknown): DocumentReadSnapshot | null {
+  if (!isObject(value)) return null;
+  const {
+    purpose: _legacyPurpose,
+    findings: _legacyFindings,
+    ...facts
+  } = value;
+  return facts as unknown as DocumentReadSnapshot;
+}
+
+function normalizeDocumentReads(value: unknown): DocumentReads | null {
+  if (!isObject(value)) return null;
+  const normalized: Record<string, unknown> = { ...value };
+  for (const key of ["beforePlan", "beforeApprove", "afterEdit"] as const) {
+    if (!(key in value)) continue;
+    normalized[key] = value[key] === null
+      ? null
+      : normalizeDocumentReadSnapshot(value[key]);
+  }
+  return normalized as unknown as DocumentReads;
+}
+
 function normalizeState(raw: unknown, file: string): WorkflowState {
   if (!isObject(raw)) {
     structuredWorkflowStateError("WORKFLOW_STATE_INVALID", `Workflow state is not an object: ${file}.`, { file });
@@ -485,6 +611,7 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
   }
 
   const plan = (isObject(raw.plan) ? raw.plan : null) as PlanDoc | null;
+  const verifiedImplementationDigest = normalizeNullableString(raw.verifiedImplementationDigest);
 
   return {
     ...initialState(),
@@ -498,13 +625,15 @@ function normalizeState(raw: unknown, file: string): WorkflowState {
     approval: normalizeApproval(raw.approval, plan, file),
     pendingApproval: normalizePendingApproval(raw.pendingApproval, plan, file),
     verifyHash: normalizeNullableString(raw.verifyHash),
-    verifiedImplementationDigest: normalizeNullableString(raw.verifiedImplementationDigest),
+    verifiedImplementationDigest,
     verifiedManifestHash: normalizeNullableString(raw.verifiedManifestHash),
     pendingAmendment: (isObject(raw.pendingAmendment) ? raw.pendingAmendment : null) as PendingPlanAmendment | null,
     implementationManifest: (isObject(raw.implementationManifest) ? raw.implementationManifest : null) as ImplementationManifest | null,
-    documentReads: (isObject(raw.documentReads) ? raw.documentReads : null) as DocumentReads | null,
+    documentReads: normalizeDocumentReads(raw.documentReads),
     syncDocs: (isObject(raw.syncDocs) ? raw.syncDocs : null) as SyncDocsRecord | null,
     mergeReceipt: normalizeMergeReceipt(raw.mergeReceipt, file),
+    activeExam: normalizeActiveExam(raw.activeExam, phase, plan, file),
+    commitIntent: normalizeCommitIntent(raw.commitIntent, phase, plan, verifiedImplementationDigest, file),
   };
 }
 
@@ -550,7 +679,19 @@ export function transition(state: WorkflowState, to: Phase): WorkflowState {
       `Allowed transitions from "${state.phase}": ${allowed?.join(", ") ?? "none"}.`
     );
   }
-  return { ...state, phase: to, stage: DEFAULT_STAGE_BY_PHASE[to] };
+  return {
+    ...state,
+    phase: to,
+    stage: DEFAULT_STAGE_BY_PHASE[to],
+    activeExam: to === "verify" ? state.activeExam ?? null : null,
+    commitIntent: to === "commit" ? state.commitIntent ?? null : null,
+  };
+}
+
+export function supersedeCommitRecoveryAfterVerification(approval: Approval | null): Approval | null {
+  if (!approval || !Object.prototype.hasOwnProperty.call(approval, "commitRecovery")) return approval;
+  const { commitRecovery: _superseded, ...currentApproval } = approval;
+  return currentApproval;
 }
 
 export class StateError extends Error {

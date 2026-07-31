@@ -139,6 +139,22 @@ function assertEnvelope(name: string, result: any): void {
   }
 }
 
+function assertProseFreeResult(name: string, result: any): void {
+  for (const field of ["display", "summary", "hint", "message", "pipeline", "stopAfter", "resumeAfter"]) {
+    if (field in result) throw new Error(`${name} must not emit top-level Agent prose field ${field}: ${JSON.stringify(result)}`);
+  }
+  if (result.error) {
+    if ("hint" in result.error) throw new Error(`${name} error must retain machine facts without presentation guidance: ${JSON.stringify(result.error)}`);
+    if (typeof result.error.message !== "string") throw new Error(`${name} error must retain its diagnostic message`);
+  }
+  if (result.recovery && ("instruction" in result.recovery || "byLayer" in result.recovery)) {
+    throw new Error(`${name} recovery must retain only machine routing facts: ${JSON.stringify(result.recovery)}`);
+  }
+  if (result.userAction && ("prompt" in result.userAction || "instruction" in result.userAction)) {
+    throw new Error(`${name} user action must contain no Agent prose: ${JSON.stringify(result.userAction)}`);
+  }
+}
+
 function assertGitExecutor(name: string, executor: any): void {
   if (executor?.executor !== "git" || executor?.available !== true || typeof executor?.checkedAt !== "string" || !executor.checkedAt) {
     throw new Error(`${name} should expose the actual available Git executor capability: ${JSON.stringify(executor)}`);
@@ -190,21 +206,28 @@ try {
     documentReads: {
       beforePlan: {
         stage: "before_plan",
-        purpose: "test baseline",
         time: new Date().toISOString(),
         task: "add envelope",
         planHash: null,
         docsDir: "docs",
         digest: "test",
         files: [],
-        findings: [],
+        docsGraphDigest: "test-baseline-graph",
+        entryPoints: [],
+        traversalRoots: [],
       },
     },
   });
   const planResult = await handlePlan({ task: "add envelope", plan: planForPlan });
   assertEnvelope("hy_plan", planResult);
-  if (!planResult.summary || planResult.display?.body !== planResult.summary) {
-    throw new Error("hy_plan should preserve summary and mirror it into display.body");
+  if (planResult.plan?.task !== planForPlan.task || typeof planResult.decisionId !== "string") {
+    throw new Error("hy_plan should return PlanDoc facts bound to a decision identity");
+  }
+  for (const field of ["display", "summary", "hint", "message"]) {
+    if (field in planResult) throw new Error(`hy_plan must not produce Agent prose field ${field}`);
+  }
+  if ("prompt" in (planResult.userAction ?? {}) || "instruction" in (planResult.userAction ?? {})) {
+    throw new Error("hy_plan userAction must contain decision facts only");
   }
   if (!planResult.requires_user || !planResult.stop_here) {
     throw new Error("hy_plan should require user and stop");
@@ -220,42 +243,33 @@ try {
     documentReads: {
       beforeApprove: {
         stage: "before_approve",
-        purpose: "test audit",
         time: new Date().toISOString(),
         task: planForApprove.task,
         planHash: computePlanHash(planForApprove),
         docsDir: "docs",
         digest: "test",
         files: [],
-        findings: [],
+        docsGraphDigest: "test-audit-graph",
+        entryPoints: [],
+        traversalRoots: [],
       },
     },
   });
-  const approveResult = await handleApprove({ approved: "approve", note: "test" });
+  const approveResult = await handleApprove({
+    approved: "approve",
+    note: "test",
+    decisionId: `plan:${computePlanHash(planForApprove)}`,
+  });
   assertEnvelope("hy_approve", approveResult);
   if (approveResult.userAction !== null) {
     throw new Error(`hy_approve should not request another user action: ${JSON.stringify(approveResult.userAction)}`);
   }
-  if (approveResult.stopAfter !== "hy_reset") {
-    throw new Error("hy_approve should continue the approved pipeline through hy_reset");
+  if (approveResult.approved !== true || typeof approveResult.decisionId !== "string"
+      || approveResult.stage !== "branch.create") {
+    throw new Error(`hy_approve should return approval and branch-route facts: ${JSON.stringify(approveResult)}`);
   }
-  const pipelineSteps = approveResult.pipeline?.map((item: any) => item.step) ?? [];
-  const expectedPipelineSteps = [
-    "hy_branch",
-    "hy_edit",
-    "edit files",
-    "hy_read_docs",
-    "hy_sync_docs",
-    "hy_verify",
-    "hy_commit",
-    "hy_merge",
-    "hy_reset",
-  ];
-  if (JSON.stringify(pipelineSteps) !== JSON.stringify(expectedPipelineSteps)) {
-    throw new Error(`hy_approve pipeline mismatch: ${JSON.stringify(pipelineSteps)}`);
-  }
-  if (!approveResult.resumeAfter?.includes("baseBranch")) {
-    throw new Error("hy_approve should describe merge-to-baseBranch completion");
+  for (const field of ["display", "summary", "hint", "message", "pipeline", "stopAfter", "resumeAfter"]) {
+    if (field in approveResult) throw new Error(`hy_approve must not produce Agent prose field ${field}`);
   }
 
   writeState({ ...baseState("branch"), branch: "feat/envelope", plan: basePlan(), approval: { time: "historical", note: "approved" } });
@@ -305,8 +319,9 @@ try {
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/envelope" });
   const commitResult = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:missing-verify", commitResult);
-  if (!commitResult.error || !commitResult.hint || !commitResult.error.message.includes("Missing verified implementation digest") || !commitResult.allowedTools?.includes("hy_exam_plan") || !commitResult.allowedTools?.includes("hy_exam_submit")) {
-    throw new Error("hy_commit missing digest precondition should include error and hint");
+  assertProseFreeResult("hy_commit:missing-verify", commitResult);
+  if (!commitResult.error || !commitResult.error.message.includes("Missing verified implementation digest") || !commitResult.allowedTools?.includes("hy_exam_plan") || !commitResult.allowedTools?.includes("hy_exam_submit")) {
+    throw new Error("hy_commit missing digest precondition should retain the error and executable verify routes");
   }
   if (commitResult.phase !== "edit" || commitResult.stage !== "edit.implementation" || commitResult.nextAction.tool !== "hy_verify" || commitResult.nextAction.phase !== "verify" || readState().phase !== "edit") {
     throw new Error(`hy_commit verify recovery must first persist an executable edit phase: ${JSON.stringify(commitResult)}`);
@@ -324,6 +339,7 @@ try {
   writeState({ ...baseState("commit"), plan: basePlan(), branch: "feat/not-current", verifiedImplementationDigest: "abc123" });
   const branchMismatchCommit = await handleCommit({ title: "test", body: "test" });
   assertEnvelope("hy_commit:branch-mismatch", branchMismatchCommit);
+  assertProseFreeResult("hy_commit:branch-mismatch", branchMismatchCommit);
   if (branchMismatchCommit.error?.code !== "GIT_BRANCH_MISMATCH") {
     throw new Error(`hy_commit should reject current branch mismatch, got ${JSON.stringify(branchMismatchCommit)}`);
   }
@@ -354,6 +370,7 @@ await withEnvelopeMergeHarness("merge-envelope-success", async harness => {
   harness.setGhCapability("unavailable");
   const result = await handleMerge();
   assertEnvelope("hy_merge:already-integrated", result);
+  assertProseFreeResult("hy_merge:already-integrated", result);
   if (result.ok !== true || result.phase !== "done" || result.next !== "done") {
     throw new Error(`hy_merge Git recovery should complete: ${JSON.stringify(result)}`);
   }
@@ -369,6 +386,7 @@ await withEnvelopeMergeHarness("merge-envelope-sync-failure", async harness => {
   harness.failGitOnce("checkout", harness.baseBranch);
   const result = await handleMerge();
   assertEnvelope("hy_merge:post-sync-incomplete", result);
+  assertProseFreeResult("hy_merge:post-sync-incomplete", result);
   if (result.ok !== false || result.phase !== "merge" || result.next !== "merge") {
     throw new Error(`hy_merge local recovery failure should preserve merge phase: ${JSON.stringify(result)}`);
   }
@@ -389,6 +407,7 @@ await withEnvelopeMergeHarness("merge-envelope-unknown-outcome", async harness =
   harness.setGhCapability("unavailable");
   const result = await handleMerge();
   assertEnvelope("hy_merge:unknown-outcome", result);
+  assertProseFreeResult("hy_merge:unknown-outcome", result);
   if (result.ok !== false || result.phase !== "merge" || result.next !== "merge") {
     throw new Error(`hy_merge unknown outcome should preserve merge phase: ${JSON.stringify(result)}`);
   }

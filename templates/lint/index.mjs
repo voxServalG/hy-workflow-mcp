@@ -25,11 +25,12 @@ function stableFindings(findings) {
 }
 
 function checkStatus(rule, ruleFindings, context) {
+  if (rule === "C003") return "not_configured";
+  if (rule === "C004") return "not_applicable";
   if (ruleFindings.some(item => item.severity === "error")) return "failed";
   if (ruleFindings.some(item => item.severity === "warning")) return "warning";
   if (ruleFindings.some(item => item.severity === "advisory")) return "advisory";
-  if (rule === "C003" && !context.tierConfigured) return "not_configured";
-  if ((rule === "C004" || rule === "C005") && !context.supportsDependencies) return "not_applicable";
+  if (rule === "C005" && !context.supportsParser) return "not_applicable";
   if (rule.startsWith("D") && context.docsFiles === 0 && rule !== "D001") return "not_applicable";
   if (rule.startsWith("C") && context.codeFiles === 0 && rule !== "C001") return "not_applicable";
   return "passed";
@@ -47,8 +48,7 @@ function buildReport(root, docs, code, extraFindings = []) {
   const context = {
     docsFiles: docs.files.length,
     codeFiles: code.files.length,
-    tierConfigured: code.tierConfigured,
-    supportsDependencies: code.supportsDependencies,
+    supportsParser: code.supportsParser,
   };
   const checks = RULES.map(rule => {
     const ruleFindings = findings.filter(item => item.rule === rule);
@@ -90,10 +90,8 @@ function emptyCode(findings = []) {
   return {
     files: [],
     findings,
-    graph: new Map(),
     scans: new Map(),
-    tierConfigured: false,
-    supportsDependencies: false,
+    supportsParser: false,
   };
 }
 

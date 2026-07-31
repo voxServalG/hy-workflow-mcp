@@ -1,6 +1,7 @@
 export type InternalSetupTestHooks = {
   failAt?: string;
   ownerDelayMs?: number;
+  afterSetupLockStaleObserved?: (lock: string) => void | Promise<void>;
   skipHandshake?: boolean;
   beforeLockedPreflight?: (root: string) => void;
   afterSetupPreflightBeforeLock?: (root: string) => void | Promise<void>;

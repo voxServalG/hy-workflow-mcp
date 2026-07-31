@@ -1,121 +1,129 @@
 # Error Contract
 
-User-facing failures must use a structured error object. A string may be passed inside implementation helpers, but the tool boundary normalizes it before returning JSON to the MCP client. Error types and subtypes are declared in `src/errs/catalog.ts`; the field contract is declared in `src/output/contract.ts`; the runtime shape is `StructuredError` in `src/errs/structured.ts`.
+Ordinary failures are structured JSON. Workflow errors appear in `hy-workflow.cli.v1`; helper errors appear in `hy-workflow.helper.v1`. A caller must use `error.type`, `error.subtype`, `error.code`, `error.retryable` and route fields rather than scraping the message.
 
-## Error Types
+## Workflow error shape
 
-- validation
-- workflow_state
-- scope
-- docs
-- verification
-- config
-- setup
-- io
-- internal
+```json
+{
+  "ok": false,
+  "phase": "verify",
+  "stage": "verify.run",
+  "status": "failed",
+  "error": {
+    "type": "verification",
+    "subtype": "check_failed",
+    "code": "CHECK_FAILED",
+    "message": "One or more required checks failed.",
+    "detail": {},
+    "retryable": false
+  },
+  "route": {
+    "action": {
+      "command": "edit",
+      "argv": ["hy-workflow", "edit"]
+    },
+    "control": {
+      "stop": true,
+      "reason": "repair_required"
+    }
+  }
+}
+```
 
-## Error Subtypes
+Error fields may include `detail`, `cause`, `risk`, `permission_violations`, `missing_scopes`, `console_url`, `request_id` and `trace_id`. The CLI adapter removes prompt-like `hint` text from the public error. The current Skill explains recovery from structured fields and the mapped route.
 
-- `invalid_arguments`
-- `invalid_plan`
-- `invalid_command`
-- `unknown_tool`
-- `invalid_phase`
-- `invalid_transition`
-- `approval_missing`
-- `scope_drift`
-- `scope_amend_required`
-- `docs_missing`
-- `docs_stale`
-- `sync_missing`
-- `check_failed`
-- `contract_failed`
-- `setup_update_required`
-- `setup_artifacts_missing`
-- `harness_missing`
-- `config_invalid`
-- `preflight`
-- `client_missing`
-- `client_config`
-- `client_shadowed`
-- `binary_missing`
-- `handshake`
-- `lock_busy`
-- `registry`
-- `transaction`
-- `postcondition`
-- `artifact_drift`
-- `identity`
-- `ownership`
-- `unset`
-- `artifact_tracked`
-- `package_invalid`
-- `io_failure`
-- `uncaught_exception`
+Broad workflow types include validation, workflow state, scope, docs, verification, config, setup, I/O and internal errors. Stable subtypes distinguish invalid arguments/phase/transitions, missing approval, scope drift/amendment, stale documentation, failed checks, invalid config, ownership/identity, transaction/postcondition and I/O failures.
 
-## Error Envelope Fields
+The complete compatibility subtype inventory is:
 
-Each returned failure has top-level `ok: false`, `phase`, `next`, and `error`. The nested `error` object contains these stable fields when applicable:
+- `invalid_arguments`, `invalid_plan`, `invalid_command`, `unknown_tool`;
+- `invalid_phase`, `invalid_transition`, `approval_missing`;
+- `scope_drift`, `scope_amend_required`;
+- `docs_missing`, `docs_stale`, `sync_missing`;
+- `check_failed`, `contract_failed`;
+- `setup_update_required`, `setup_artifacts_missing`, `harness_missing`;
+- `config_invalid`, `preflight`;
+- `client_missing`, `client_config`, `client_shadowed`;
+- `binary_missing`, `handshake`, `lock_busy`, `registry`;
+- `transaction`, `postcondition`, `artifact_drift`, `identity`, `ownership`;
+- `unset`, `artifact_tracked`, `package_invalid`, `io_failure`, `uncaught_exception`.
 
-- `type`: broad recovery class from the Error Types list.
-- `subtype`: precise recovery reason from the Error Subtypes list.
-- `code`: stable programmatic code for a repeated condition.
-- `message`: concise user-displayable failure text.
-- `hint`: next action guidance for the agent.
-- `detail`: structured payload such as validation failures, check output, or missing artifacts.
-- `cause`: lower-level cause message when useful.
-- `retryable`: whether rerunning the same step may succeed without edits.
-- `risk`: risk context for destructive, permission, merge, or release operations.
-- `permission_violations`: denied actions, paths, APIs, scopes, or identities.
-- `missing_scopes`: auth scopes required to continue.
-- `console_url`: URL for CI, cloud, approval, or admin consoles.
-- `request_id`: upstream request identifier.
-- `trace_id`: distributed trace identifier.
+Some names survive from the previous transport as kernel compatibility values. Public Skills route from the current CLI command and structured recovery; they never try to call an `unknown_tool` or rebuild an obsolete transport action.
+`APPROVAL_DECISION_ID_MISMATCH` and `AMENDMENT_DECISION_ID_MISMATCH` mean a response was issued for a different PlanDoc or pending amendment. They are retryable only by refreshing `status`, presenting the current decision, and returning its exact signed `decisionId`; the rejected call does not mutate workflow state.
 
-Agents should show `error.message`, add `error.hint` when present, route recovery from `error.type` and `error.subtype`, and include `error.code`, `error.console_url`, `error.request_id`, and `error.trace_id` in troubleshooting output. `permission_violations` and `missing_scopes` require explicit user or operator action; they should not be hidden inside prose.
 
-`setup_update_required` and `setup_artifacts_missing` refer to the external deployment selected by the canonical project identity, not to repository artifact presence. Recovery is to rerun `hy-workflow setup` from the project. With both target paths absent, fresh setup creates exactly `hy-workflow.json` and `.github/workflows/hy-workflow.yml` without a separate artifact-review gate; it never injects or migrates `AGENTS.md` or project client files. Occupied targets are read or changed only by a separately requested exact artifact sync. Runtime and client artifacts remain external.
+## CLI input errors
 
-Runtime uses only the configuration selected by the current external authority. An old injected root config, compatibility JSON, or setup stamp is never a fallback or migration input and cannot satisfy the gate. `ROOT_CONFIG_REQUIRED` and `ROOT_CONFIG_INVALID` concern only the newly selected root authority.
+Input is rejected before dispatch with stable codes such as:
 
-## Setup failures
+- `COMMAND_MISSING`, `COMMAND_UNKNOWN`;
+- `OPTION_UNKNOWN`, `OPTION_REPEATED`, `OPTION_VALUE_MISSING`;
+- `INPUT_SOURCE_CONFLICT`, `INPUT_TOO_LARGE`;
+- `INPUT_JSON_INVALID`, `INPUT_JSON_NOT_OBJECT`, `INPUT_JSON_NON_FINITE`, `INPUT_JSON_UNSUPPORTED_VALUE`;
+- `INPUT_FILE_UNREADABLE`, `INPUT_FILE_UNSAFE`;
+- `INPUT_UNKNOWN_FIELDS`, `INPUT_SCHEMA_INVALID`.
 
-Setup and doctor use `type: "setup"` with a stable subtype and code. A setup
-result may report success only after its effective client definitions, direct
-installed binaries, bounded MCP handshakes, both team artifacts (`hy-workflow.json`
-and `.github/workflows/hy-workflow.yml`), deployment,
-registry, and ownership postconditions agree. Important codes include:
+These errors are non-retryable until the argv/input is corrected. The failure envelope routes to `status` so the caller can refresh its position after repair.
 
-- `SETUP_PREFLIGHT_FAILED`, `SETUP_BINARY_MISSING`, and
-  `SETUP_HANDSHAKE_FAILED` before any write;
-- `SETUP_EFFECTIVE_CONFIG_SHADOWED` when a project/client scope overrides the
-  definition setup owns; setup names the source and never deletes it;
-- `SETUP_LOCK_BUSY`, `SETUP_REGISTRY_UNREADABLE`, and
-  `SETUP_TRANSACTION_FAILED` for external-state integrity failures;
-- `SETUP_POSTCONDITION_FAILED` and `SETUP_ARTIFACT_DRIFT` when apply completed
-  without proving the effective result;
-- `SETUP_IDENTITY_AMBIGUOUS`, `SETUP_OWNERSHIP_CONFLICT`, and
-  `SETUP_UNSET_INCOMPLETE` when safe cleanup requires doctor or explicit
-  project-id recovery.
+## Helper error shape
 
-Transaction failures expose the journal, affected resources, rollback result,
-and exact recovery command. Corrupt or unreadable registry data is never
-treated as an empty registry. Dry-run and cancelled TUI flows must leave the
-project, OS user roots, and client configuration byte-identical.
+Helper top-level status is `attention`, `partial` or `failed` when `ok` is false. Each `skills`, `project` and `mcp` layer retains its own status. A partial result includes the exact retry argv and completed layer names; retry is safe only after addressing the named error.
 
-Built-in lint failures are returned through the `hy-workflow.lint.v1` report and process exit status. Configuration, unsafe path, zero-scan, and parser/scanner failures produce error findings, normally under D001, C001, or C005, and exit one. Warnings remain visible and exit zero. The engine never writes legacy compatibility JSON, so there is no materialization, cleanup, or recovery-journal error path.
+Argument and selection codes include:
 
-Git/PR recovery is fail closed. `INVALID_GIT_OID`, `GIT_HEAD_OID_MISMATCH`, and `GIT_COMMIT_OID_MISMATCH` stop an unverified or moved commit from being pushed. `COMMIT_RECOVERY_STATE_MISSING` forbids guessing a clean HEAD; `GIT_RECOVERY_OID_MISMATCH` rejects an empty or otherwise moved commit on retry; `VERIFIED_COMMIT_OID_MISSING` blocks CI/merge without the persisted identity. `ORIGIN_REPOSITORY_UNRESOLVED`, `ORIGIN_REPOSITORY_MISMATCH`, and `ORIGIN_REPOSITORY_CHANGED` require origin fetch/push and the persisted selector to name one repository, without trusting `GH_REPO` or `GH_HOST`. `PR_LOOKUP_FAILED`, `PR_LOOKUP_INVALID`, `PR_LOOKUP_AMBIGUOUS`, `PR_IDENTITY_MISMATCH`, and `PR_HEAD_OID_MISMATCH` prohibit create, CI success, or merge while repository/base/head/OID identity is untrusted. `PR_CREATE_UNCONFIRMED` and `PR_CREATE_CONFIRMATION_MISMATCH` mean `gh pr create` output was not confirmed by a second exact lookup.
+- `HELPER_COMMAND_MISSING`, `HELPER_COMMAND_UNKNOWN`;
+- `HELPER_OPTION_UNKNOWN`, `HELPER_OPTION_REPEATED`, `HELPER_OPTION_VALUE_MISSING`, `HELPER_OPTION_NOT_ALLOWED`;
+- `HELPER_CLIENTS_INVALID`, `HELPER_CLIENTS_NOT_DETECTED`, `HELPER_CLIENT_PATH_UNAVAILABLE`;
+- `HELPER_MODE_INVALID`, `HELPER_MODE_IMMUTABLE`, `HELPER_TARGET_SET_IMMUTABLE`;
+- `HELPER_SKILLS_NOT_INSTALLED`, `HELPER_STATUS_ATTENTION`.
 
-Merge recovery separates immutable PR identity from mutable lifecycle and persists an attempted receipt before mutation and a confirmed receipt after remote confirmation. `executePrMerge` is the only merge mutation and is never retried inside the helper. Reconciliation first reads the GitHub postcondition; when that evidence is unavailable, `fetchRemoteBaseEvidence` performs **fresh-fetch ancestry** against an immutable `baseOid`. This **read-only Git fallback** can only report `already_integrated` with `evidence: "git"`; it never directly merges or pushes base.
+Skill ownership and transaction codes include:
 
-Stable merge recovery codes distinguish uncertainty from unsafe state:
+- `HELPER_SKILL_BUNDLE_INVALID`, `HELPER_SKILL_MANIFEST_INVALID`, `HELPER_SKILL_NOT_INSTALLED`;
+- `HELPER_SKILL_NO_TARGETS`, `HELPER_SKILL_PATH_UNSAFE`, `HELPER_SKILL_BUSY`, `HELPER_OPERATION_BUSY`;
+- `HELPER_SKILL_OWNERSHIP_CONFLICT`, `HELPER_SKILL_ROLLBACK_CONFLICT`.
 
-- `MERGE_LOCK_BUSY` means another live owner holds the project-specific merge operation lock. It is retryable after that process finishes. A dead same-host owner may be stale-recovered; owner pid/host/time/token and best-effort token release provide local process coordination, not cross-host strong consistency or power-loss durability.
-- `PR_MERGE_OUTCOME_UNCONFIRMED` means neither GitHub nor fresh Git ancestry proved that the verified head is integrated. It stays at merge and never authorizes a second mutation merely because the first command returned an error.
-- `POST_MERGE_SYNC_INCOMPLETE` means remote integration is confirmed but base/downstream synchronization is incomplete. `detail.operation: "sync base ancestry"` identifies base ancestry drift; `detail.operation: "downstream snapshot"` identifies a provable legacy stack whose local/remote refs diverged. Other detail names the failed step, branch, completed and remaining work. Retry consumes the confirmed receipt and cannot call the merge mutation again.
-- `PR_IDENTITY_MISMATCH`, `PR_HEAD_OID_MISMATCH`, `GIT_EVIDENCE_IDENTITY_MISMATCH`, and `GIT_EVIDENCE_OID_MISMATCH` reject evidence for a different immutable identity. `LOCAL_BRANCH_CAS_FAILED` rejects a moved local ref, while `GIT_FORCE_WITH_LEASE_FAILED` never falls back to an unleased push.
+Project/migration codes include:
 
-`retryable: false` is a state-integrity decision, not an invitation to repeat `hy_merge`. Inspect the detail, then explicitly use `hy_reset` to abandon the stale receipt or repair state through a reviewed recovery; automatic reset is forbidden. Legacy workflows with no receipt may recognize an already-integrated verified OID, then rebuild only agent-prefix stacks proven by verified ancestry and equal local/remote OIDs. Unrelated branches are ignored; a diverged true stack returns `POST_MERGE_SYNC_INCOMPLETE` without overwriting either ref.
+- `HELPER_PATH_UNSAFE`, `HELPER_PROJECT_CONFIG_INVALID`;
+- `HELPER_DEPLOYMENT_IDENTITY_MISMATCH`, `HELPER_DEPLOYMENT_REGISTRY_MISMATCH`, `PROJECT_IDENTITY_CONFLICT`;
+- `HELPER_MCP_OWNERSHIP_INVALID`, `HELPER_MCP_RETIREMENT_INCOMPLETE`, `HELPER_SKILL_STATE_CHANGED`.
 
-Missing CI evidence is not success. When GitHub reports no checks, or only skipped/neutral checks, `hy_commit` returns `error.code: "CI_CHECKS_REQUIRED"` from stage `commit.ci`, remains retryable in commit, and must not enable `hy_merge`. Recovery is to verify the generated workflow and ask a repository administrator to configure its Verify check as required in a GitHub ruleset or branch protection rule; setup does not make that administrative change.
+An ownership conflict is never permission to overwrite or delete. Inspect the exact path and manifest facts. Use `update --repair` only for an intentionally missing owned projection, not for unmanaged drift.
+`HELPER_OPERATION_BUSY` indicates another install/update/remove owns the complete helper lifecycle; status remains read-only and available. `HELPER_SKILL_STATE_CHANGED` prevents legacy MCP retirement when installed Skills no longer match the just-produced manifest. A registry/deployment mismatch is an integrity failure and must not be repaired by overwriting either private file.
+
+
+## Setup-gate failures
+
+Workflow commands require a valid external deployment and configuration. Missing registration, invalid configuration or ambiguous identity stays at a safe phase and blocks planning/mutation. Recovery is `hy-workflow helper install` or the exact helper route, not creating `hy-workflow.json`, a workflow file or an MCP entry by hand.
+
+`init` never invokes helper implicitly. This keeps installation authority, project cognition and workflow state transitions separate and auditable.
+
+## Verification recovery
+
+A failed check routes to edit. Repair only the named layer, then refresh `read-docs(after_edit)` and `sync-docs` before obtaining new verification evidence. An asynchronous exam is bound to one implementation fingerprint; after any repair, issue a new exam rather than resubmitting part of the old one.
+
+Successful synchronous verify or successful exam submission clears a stale commit-recovery record. A failed attempt must not clear it, because the existing exact commit may still need reconciliation.
+
+## Commit, PR and CI integrity
+
+Commit/PR recovery is fail closed. Representative codes include invalid or moved Git OIDs, missing/mismatched commit recovery, unresolved or changed origin repository, ambiguous PR lookup, PR identity/head mismatch and unconfirmed PR creation.
+
+Do not repair these by manufacturing an empty commit, changing `GH_REPO`, or retrying a movable branch push. Refresh status and follow the exact route. The CLI only reuses a commit when branch, base, repository, verified digest and HEAD match the persisted record.
+
+Missing CI evidence is not success. `CI_CHECKS_REQUIRED` means no effective checks, or only neutral/skipped evidence, satisfied the active policy. The repository team must provide and configure real checks in its own CI; helper does not inject them. Failed checks return to edit, while pending or temporary API errors remain in `commit.ci` and use wait-and-retry.
+
+## Merge recovery
+
+`MERGE_LOCK_BUSY` means another local owner currently holds the merge operation lock. Wait and retry only as routed.
+
+`PR_MERGE_OUTCOME_UNCONFIRMED` means neither GitHub state nor fresh Git ancestry proves integration. Do not issue another direct merge. Retry `merge` only when the route says reconciliation is safe.
+
+`POST_MERGE_SYNC_INCOMPLETE` means integration is confirmed but base/downstream synchronization has unfinished work. The confirmed receipt prevents a second merge mutation; retry continues only remaining sync steps.
+
+Immutable PR/OID mismatch, local compare-and-swap failure or remote force-with-lease drift is a state-integrity problem. A non-retryable result requires inspection and an explicit reviewed decision; it is not an invitation to loop or reset automatically.
+
+## Operator rule
+
+Never edit private workflow state, project registry, Skill ownership manifest or recovery receipts to suppress an error. When a code is not understood, run `hy-workflow status` or `hy-workflow helper status --json`, preserve the full structured envelope and investigate the recorded identities before mutation.

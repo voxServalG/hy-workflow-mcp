@@ -1,5 +1,5 @@
 import { computePlanHash, createPlanApproval, documentReadHealth, planDecisionId, pendingApprovalMatchesPlan, readState, writeState, transition, assertPhase } from "../state.js";
-import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
+import { toolResult, type ToolResult } from "./_base.js";
 
 type ApprovalDecision = "approve" | "reject" | "revise";
 type ApprovalAuditDecision = "continue" | "replan";
@@ -17,7 +17,7 @@ function normalizeAuditDecision(value: unknown): ApprovalAuditDecision | null {
   return decision === "continue" || decision === "replan" ? decision : null;
 }
 
-export async function handleApprove(args: { approved: string; note?: string; auditDecision?: string }): Promise<ToolResult> {
+export async function handleApprove(args: { approved: string; decisionId?: string; note?: string; auditDecision?: string }): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "approve");
   const currentStage = state.stage ?? "approve.decision";
@@ -34,12 +34,10 @@ export async function handleApprove(args: { approved: string; note?: string; aud
         subtype: "invalid_arguments",
         code: "APPROVAL_DECISION_INVALID",
         message: "Approval decision must be approve, reject, or revise.",
-        hint: "Map the users existing decision to one enum value and retry hy_approve. Do not ask the user to approve again.",
         retryable: true,
       },
       stage: currentStage,
       status: "failed",
-      hint: "Retry hy_approve with approved set to approve, reject, or revise. The current PlanDoc and any existing approval are unchanged.",
       requires_user: false,
       stop_here: true,
       allowedTools: ["hy_approve", "hy_status"],
@@ -57,7 +55,6 @@ export async function handleApprove(args: { approved: string; note?: string; aud
         subtype: "invalid_arguments",
         code: "APPROVAL_AUDIT_DECISION_INVALID",
         message: "Approval audit decision must be continue or replan.",
-        hint: "Use continue only when document drift does not materially change intent, scope, verification, or risk; otherwise use replan.",
         retryable: true,
       },
       stage: state.stage ?? "approve.decision",
@@ -69,14 +66,54 @@ export async function handleApprove(args: { approved: string; note?: string; aud
     });
   }
 
+  const expectedDecisionId = planDecisionId(state.plan);
+  if (expectedDecisionId && args.decisionId !== expectedDecisionId) {
+    return toolResult("approve", {
+      approved: false,
+      decisionId: expectedDecisionId,
+      error: {
+        type: "validation",
+        subtype: "stale_decision",
+        code: "APPROVAL_DECISION_ID_MISMATCH",
+        message: "Approval decision identity does not match the current PlanDoc.",
+        detail: {
+          expectedDecisionId,
+          actualDecisionId: typeof args.decisionId === "string" ? args.decisionId : null,
+        },
+        retryable: true,
+      },
+      stage: currentStage,
+      status: "failed",
+      allowedTools: ["hy_approve", "hy_status"],
+      blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
+      nextAction: { tool: null, phase: "approve", stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "approval_required" },
+      userAction: {
+        kind: "approval",
+        decisionId: expectedDecisionId,
+        options: ["approve", "reject", "revise"],
+      },
+    });
+  }
+
   if (decision === "approve") {
     if (!state.plan) {
-      return invalidWorkflowStateResult(
-        state,
-        "APPROVAL_PLAN_MISSING",
-        "Workflow state reached approval without an active PlanDoc.",
-        "Reset the impossible workflow state, then create and approve a new PlanDoc.",
-      );
+      return toolResult("approve", {
+        approved: false,
+        error: {
+          type: "workflow_state",
+          subtype: "approval_missing",
+          code: "APPROVAL_PLAN_MISSING",
+          message: "Workflow state reached approval without an active PlanDoc.",
+        },
+        stage: currentStage,
+        status: "blocked",
+        allowedTools: ["hy_reset", "hy_status"],
+        blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
+        nextAction: { tool: "hy_reset", phase: "approve", stage: currentStage, automatic: false },
+        control: { automatic: false, stop: true, reason: "repair_required" },
+        userAction: { kind: "review_failure" },
+      });
     }
     const health = documentReadHealth(state);
     if (!health.okForApprove) {
@@ -88,7 +125,6 @@ export async function handleApprove(args: { approved: string; note?: string; aud
             subtype: "invalid_arguments",
             code: "APPROVAL_AUDIT_NOT_READY",
             message: "auditDecision is valid only after the before_approve audit is current.",
-            hint: "Submit the users approval without auditDecision first; the tool will preserve it and route the automatic audit.",
             retryable: true,
           },
           stage: currentStage,
@@ -103,7 +139,7 @@ export async function handleApprove(args: { approved: string; note?: string; aud
       state.pendingApproval = {
         time: new Date().toISOString(),
         note: args.note ?? "",
-        decisionId: `plan:${planHash}`,
+        decisionId: expectedDecisionId ?? `plan:${planHash}`,
         planHash,
       };
       state.stage = "approve.before_approve";
@@ -113,7 +149,6 @@ export async function handleApprove(args: { approved: string; note?: string; aud
         approvalPending: true,
         error: "before_approve document audit is required before hy_approve can accept user approval.",
         documentReadHealth: health,
-        hint: `${health.gates.beforeApprove.reason} Call hy_read_docs with { stage: "before_approve" } first. This is an automatic agent audit step, not a separate user review gate.`,
         stage: "approve.before_approve",
         status: "running",
         allowedTools: ["hy_read_docs", "hy_status"],
@@ -134,7 +169,6 @@ export async function handleApprove(args: { approved: string; note?: string; aud
           subtype: "evidence_stale",
           code: "APPROVAL_AUDIT_DECISION_REQUIRED",
           message: "before_approve found document drift and requires an agent audit decision.",
-          hint: "Call hy_approve with auditDecision=continue only if the PlanDoc remains materially unchanged; otherwise use auditDecision=replan. Do not ask the user to approve the same PlanDoc again.",
         },
         stage: "approve.before_approve",
         status: "pending",
@@ -165,11 +199,6 @@ export async function handleApprove(args: { approved: string; note?: string; aud
         auditDecision: "replan",
         stage: "plan.before_plan",
         status: "ready",
-        display: {
-          title: "Plan facts changed materially",
-          body: "The saved user approval was not applied to changed intent. Refresh the document baseline and construct a new PlanDoc.",
-        },
-        hint: "Automatically refresh before_plan for the same task, then build and display a new PlanDoc. Only the new PlanDoc requires a new user approval.",
         allowedTools: ["hy_read_docs", "hy_status"],
         blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
         nextAction: { tool: "hy_read_docs", arguments: { stage: "before_plan", task }, phase: "plan", stage: "plan.before_plan", automatic: true },
@@ -189,20 +218,6 @@ export async function handleApprove(args: { approved: string; note?: string; aud
     return toolResult("branch", {
       approved: true,
       plan: state.plan?.task,
-      pipeline: [
-        { step: "hy_branch",  description: "create branch" },
-        { step: "hy_edit",      description: "lock scope" },
-        { step: "edit files",   description: "write code" },
-        { step: "hy_read_docs", description: "run after_edit document audit" },
-        { step: "hy_sync_docs", description: "confirm documentation sync gate" },
-        { step: "hy_verify",    description: "run lint + compile + scope + boundary + tests" },
-        { step: "hy_commit",  description: "create PR and wait for CI" },
-        { step: "hy_merge",   description: "merge PR into baseBranch and synchronize downstream branches" },
-        { step: "hy_reset",   description: "reset workflow to plan" },
-      ],
-      stopAfter: "hy_reset",
-      resumeAfter: "任务完成标准为 PR 合并到 baseBranch、下游同步完成并 hy_reset 回到 plan；除工具返回明确的 userAction 或不可自动恢复错误外，不要中途停下。",
-      hint: "Proceed through the returned pipeline in order until stopAfter. The users single plan approval covers every automatic step while the PlanDoc hash remains unchanged.",
       decisionId: approval.decisionId,
       stage: "branch.create",
       status: "passed",
@@ -230,14 +245,12 @@ export async function handleApprove(args: { approved: string; note?: string; aud
     decision,
     decisionId: planDecisionId(state.plan),
     note: input,
-    message: decision === "reject" ? "Plan rejected." : "Plan revision requested.",
-    hint: "Do not continue the prior pipeline. Revise the PlanDoc and call hy_plan again only if the user wants to proceed.",
     stage: "plan.compose",
     status: "ready",
     allowedTools: ["hy_plan", "hy_status"],
     blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
     nextAction: { tool: null, phase: "plan", stage: "plan.compose", automatic: false },
     control: { automatic: false, stop: true, reason: "information_required" },
-    userAction: { kind: "provide_information", instruction: "Provide the requested plan changes before replanning." },
+    userAction: { kind: "provide_information" },
   });
 }

@@ -7,7 +7,7 @@ import {
   RUNTIME_CONFIG_SOURCE_ENV,
   RUNTIME_CONFIG_SOURCE_SCHEMA,
   applyConfig,
-  buildSuggestedCommand,
+  buildSuggestedArgv,
   checkConfig,
   ensureConfigDefaults,
   projectRuntimeConfigSource,
@@ -17,6 +17,7 @@ import {
   resolveRuntimeConfig,
   runConfigCli,
 } from "../../src/config.js";
+import { CONFIG_CLI_SCHEMA, CONFIG_CLI_VERSION } from "../../src/config-output.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 
 const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-config-runtime-"));
@@ -227,14 +228,12 @@ fs.writeFileSync(path.join(root, "doclint.json"), JSON.stringify({
 const drift = checkConfig(root);
 assert(drift.ok, "legacy compatibility drift should not fail config check");
 assert(drift.drift.length === 0, "historical injected files must not be read even for drift diagnostics");
-assert(!drift.display.body.includes("Config drift"), "ignored historical injections must not appear in config output");
 
 const mismatchRoot = tempRoot();
 fs.writeFileSync(path.join(mismatchRoot, "codelint.json"), JSON.stringify({ codeExt: ".ts", codeDirs: ["src"] }, null, 2) + "\n", "utf-8");
 const mismatch = checkConfig(mismatchRoot);
 assert(mismatch.ok, "authority-free config check should use detected defaults without consulting legacy files");
-assert(mismatch.requires_user === false && mismatch.stop_here === false, "authority-free detection should not add a user gate");
-assert(mismatch.suggestedCommand.includes("--code-ext .py"), "suggested command should include the detected Python extension in a platform-neutral form");
+assert(mismatch.recoveryArgv.includes(".py"), "recovery argv should include the detected Python extension as one platform-neutral element");
 assert(mismatch.issues.length === 0, "missing unselected project config should not be reported");
 const mismatchCli = runConfigCli(["--check", "--json"], mismatchRoot);
 assert(mismatchCli.exitCode === 0, "config CLI should pass using detected authority");
@@ -250,9 +249,9 @@ markProjectAuthority(unsafeRoot);
 const unsafe = checkConfig(unsafeRoot);
 assert(!unsafe.ok, "unsafe baseBranch should fail config check");
 assert(unsafe.issues.some(issue => issue.includes("project.baseBranch is not a safe Git branch name")), "unsafe baseBranch should be reported");
-const portable = buildSuggestedCommand({ codeExt: ".py", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
-assert(portable.includes("--code-dirs INVALID_CODE_DIRS"), `unsafe code dirs must be replaced instead of shell-quoted: ${portable}`);
-assert(portable.includes("--base-branch INVALID_BASE_BRANCH"), `unsafe base branch must be replaced instead of shell-quoted: ${portable}`);
+const portable = buildSuggestedArgv({ codeExt: ".py", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
+assert(portable[portable.indexOf("--code-dirs") + 1] === "INVALID_CODE_DIRS", `unsafe code dirs must be replaced as one argv element: ${portable}`);
+assert(portable[portable.indexOf("--base-branch") + 1] === "INVALID_BASE_BRANCH", `unsafe base branch must be replaced as one argv element: ${portable}`);
 assert(!portable.includes("touch${IFS}"), "suggested commands must not echo unsafe payloads on any platform");
 
 const malformedRoot = tempRoot();
@@ -303,22 +302,14 @@ assert(checkConfig(conflictingLegacyRoot).issues.some(issue => issue.includes("m
 
 const tierRoot = configuredRoot(".py", { "src/app.py": "print('ok')\n", "src/api/index.py": "value = 1\n", "src/core/index.py": "value = 1\n" });
 const tierConfig = readJson(tierRoot, "hy-workflow.json");
-tierConfig.codelint.tiers = [
-  { name: "api", paths: ["src/api"] },
-  { name: "core", paths: ["src/core"] },
-];
-fs.writeFileSync(path.join(tierRoot, "hy-workflow.json"), JSON.stringify(tierConfig, null, 2) + "\n", "utf-8");
-assert(checkConfig(tierRoot).ok, "unique non-overlapping high-to-low tiers should validate");
-
-const overlappingTiers = readJson(tierRoot, "hy-workflow.json");
-overlappingTiers.codelint.tiers = [
+const legacyTiers = [
   { name: "api", paths: ["src"] },
   { name: "api", paths: ["src/core"] },
 ];
-fs.writeFileSync(path.join(tierRoot, "hy-workflow.json"), JSON.stringify(overlappingTiers, null, 2) + "\n", "utf-8");
-const tierIssues = checkConfig(tierRoot).issues;
-assert(tierIssues.some(issue => issue.includes("names must be unique")), "tier names must be globally unique");
-assert(tierIssues.some(issue => issue.includes("paths must not duplicate or overlap")), "tier paths must be globally non-overlapping");
+tierConfig.codelint.tiers = legacyTiers;
+fs.writeFileSync(path.join(tierRoot, "hy-workflow.json"), JSON.stringify(tierConfig, null, 2) + "\n", "utf-8");
+assert(checkConfig(tierRoot).ok, "legacy codelint.tiers must remain parseable even when its former dependency constraints overlap");
+assert(JSON.stringify(requireRuntimeConfig(tierRoot).codelint.tiers) === JSON.stringify(legacyTiers), "legacy codelint.tiers must be preserved byte-for-value while remaining inert");
 
 const invalidApplyRoot = tempRoot();
 const invalidApply = runConfigCli(["--apply-suggested", "--json", "--base-branch", "dev;touch"], invalidApplyRoot);
@@ -525,7 +516,28 @@ validPolicy.policy.profile = "legacy-compatible";
 fs.writeFileSync(path.join(policyRoot, "hy-workflow.json"), JSON.stringify(validPolicy, null, 2) + "\n");
 assert(checkConfig(policyRoot).issues.some(issue => issue.includes("policy.profile")), "internal legacy-compatible profile must not be project-selectable");
 
+const retiredPolicyRoot = configuredRoot(".ts", { "src/app.ts": "export {};\n" });
+const retiredPolicyConfig = readJson(retiredPolicyRoot, "hy-workflow.json");
+retiredPolicyConfig.policy = {
+  profile: "standard",
+  rules: {
+    "code.tier-dependency": { severity: "error" },
+    "code.dependency-cycle": { severity: "warning" },
+  },
+  overrides: [{ files: ["src/**"], rules: { "code.dependency-cycle": { severity: "off" } } }],
+  exceptions: [{ rule: "code.tier-dependency", files: ["src/legacy.ts"], reason: "Legacy migration", owner: "platform", expires: "2099-01-01" }],
+};
+fs.writeFileSync(path.join(retiredPolicyRoot, "hy-workflow.json"), JSON.stringify(retiredPolicyConfig, null, 2) + "\n");
+assert(checkConfig(retiredPolicyRoot).ok, "retired dependency-policy keys must remain parseable during migration");
+assert(Object.prototype.hasOwnProperty.call(requireRuntimeConfig(retiredPolicyRoot).policy.rules, "code.tier-dependency"), "retired dependency-policy data must be preserved rather than rewritten");
+const retiredExplanation = runConfigCli(["--explain-policy", "code.tier-dependency", "--json"], retiredPolicyRoot);
+assert(retiredExplanation.exitCode === 1 && JSON.parse(retiredExplanation.stdout).issues.some((issue: string) => issue.includes("Unknown policy rule")), "retired dependency-policy keys must not remain an active explainable configuration surface");
+
 const schema = JSON.parse(fs.readFileSync(path.resolve("schemas/hy-workflow.schema.json"), "utf-8"));
+const legacyTierSchema = schema.properties.codelint.properties.tiers;
+assert(legacyTierSchema.deprecated === true && legacyTierSchema.description.includes("preserved but ignored"), "schema must mark codelint.tiers as compatibility-only and ignored");
+assert(!schema.$defs.qualityRuleId.enum.includes("code.tier-dependency") && !schema.$defs.qualityRuleId.enum.includes("code.dependency-cycle"), "retired dependency-policy rules must leave the public rule-id schema");
+assert(!Object.prototype.hasOwnProperty.call(schema.$defs.ruleMap.properties, "code.tier-dependency") && !Object.prototype.hasOwnProperty.call(schema.$defs.ruleMap.properties, "code.dependency-cycle"), "retired dependency-policy rules must leave the public rule map");
 const schemaPath = new RegExp(schema.$defs.path.pattern);
 const schemaGlob = new RegExp(schema.$defs.glob.pattern);
 for (const unsafe of ["../outside", "src/../outside", "/absolute", "-command", "src\\escape"]) {
@@ -562,7 +574,10 @@ const cli = runConfigCli(["--apply-suggested", "--json", "--code-ext", ".py", "-
 const parsed = JSON.parse(cli.stdout);
 assert(cli.exitCode === 0, "config CLI should exit 0");
 assert(parsed.ok === true, "config CLI should emit ok envelope");
-assert(parsed.display?.title, "config CLI should emit display title");
+assert(parsed.schema === CONFIG_CLI_SCHEMA && parsed.version === CONFIG_CLI_VERSION, "config CLI should emit its versioned envelope");
+for (const key of ["display", "hint", "requires_user", "stop_here", "allowedTools", "suggestedCommand"]) {
+  assert(!(key in parsed), `config CLI must not expose legacy Agent presentation field ${key}`);
+}
 assert(!exists(cliRoot, "hy-workflow.json"), "authority-free config CLI must not create a project config");
 const cliExternal = JSON.parse(fs.readFileSync(projectPaths(cliRoot).config, "utf-8"));
 assert(cliExternal.project.codeExt === ".py", "config CLI should write project settings to external state");
@@ -590,16 +605,20 @@ fs.writeFileSync(path.join(noDocsRoot, "tsconfig.json"), "{}\n", "utf-8");
 fs.writeFileSync(path.join(noDocsRoot, "src", "index.ts"), "export {};\n", "utf-8");
 const noDocs = checkConfig(noDocsRoot);
 assert(noDocs.suggestion.docsDir === "", "config detection must not invent a missing docs directory or fall back to project root");
-assert(noDocs.suggestedCommand.includes("--docs-dir existing-docs-dir") && !noDocs.suggestedCommand.includes("--docs-dir docs"), "recovery must require an explicit existing docs directory instead of emitting a failing loop");
-assert(!noDocs.suggestedCommand.includes("--apply-suggested"), "missing-docs recovery must use preserving apply semantics");
+assert(noDocs.recoveryArgv.slice(0, 3).join(" ") === "hy-workflow config --apply", "missing-docs recovery must use preserving apply semantics");
+assert(noDocs.recoveryArgv[noDocs.recoveryArgv.indexOf("--docs-dir") + 1] === "existing-docs-dir", "recovery must require an explicit existing docs directory as one argv element");
+assert(!noDocs.recoveryArgv.includes("--apply-suggested"), "missing-docs recovery must not overwrite detected project settings");
 const noDocsApply = runConfigCli(["--apply-suggested", "--json"], noDocsRoot);
 assert(noDocsApply.exitCode === 1 && JSON.parse(noDocsApply.stdout).issues.some((issue: string) => issue.includes("no documentation directory was detected")), "apply-suggested must stop when docsDir cannot be inferred");
 assert(!exists(noDocsRoot, "hy-workflow.json"), "failed no-docs apply must not write an invalid shared config");
 fs.writeFileSync(path.join(noDocsRoot, "docs"), "not a directory\n", "utf-8");
 const invalidExplicitDocs = runConfigCli(["--apply-suggested", "--json", "--docs-dir", "docs"], noDocsRoot);
 const invalidExplicitPayload = JSON.parse(invalidExplicitDocs.stdout);
-assert(invalidExplicitDocs.exitCode === 1 && invalidExplicitPayload.suggestedCommand.includes("--docs-dir existing-docs-dir"), "an explicit nonexistent docsDir must not be echoed into another guaranteed-failing recovery command");
-assert(!invalidExplicitPayload.suggestedCommand.includes("--docs-dir docs"), "recovery must not repeat the nonexistent explicit docsDir");
+assert(invalidExplicitDocs.exitCode === 1, "an explicit nonexistent docsDir must fail");
+assert(invalidExplicitPayload.recovery?.argv?.slice(0, 3).join(" ") === "hy-workflow config --apply", "invalid docsDir recovery must use preserving apply semantics");
+assert(invalidExplicitPayload.recovery.argv[invalidExplicitPayload.recovery.argv.indexOf("--docs-dir") + 1] === "existing-docs-dir", "recovery must preserve the replacement docsDir as one exact argv element");
+assert(!invalidExplicitPayload.recovery.argv.includes("docs"), "recovery must not repeat the nonexistent explicit docsDir");
+assert(!("instruction" in invalidExplicitPayload.recovery), "config recovery must not contain Agent instructions or a shell command string");
 fs.mkdirSync(path.join(noDocsRoot, "guide"));
 fs.writeFileSync(path.join(noDocsRoot, "guide", "index.md"), "# Guide\n", "utf-8");
 const explicitDocs = runConfigCli(["--apply", "--json", "--docs-dir", "guide"], noDocsRoot);
@@ -675,7 +694,7 @@ fs.writeFileSync(path.join(customDocsRoot, "hy-workflow.json"), JSON.stringify({
 markProjectAuthority(customDocsRoot);
 const customDocsCheck = checkConfig(customDocsRoot);
 assert(!customDocsCheck.ok, "a missing custom docsDir should require recovery");
-assert(customDocsCheck.suggestedCommand === "hy-workflow config --apply --json --docs-dir existing-docs-dir", "existing config recovery should only request docsDir and preserve every other field");
+assert(JSON.stringify(customDocsCheck.recoveryArgv) === JSON.stringify(["hy-workflow", "config", "--apply", "--json", "--docs-dir", "existing-docs-dir"]), "existing config recovery should only request docsDir and preserve every other field");
 fs.mkdirSync(path.join(customDocsRoot, "handbook"));
 fs.writeFileSync(path.join(customDocsRoot, "handbook", "index.md"), "# Handbook\n", "utf-8");
 const customDocsApply = runConfigCli(["--apply", "--json", "--docs-dir", "handbook"], customDocsRoot);

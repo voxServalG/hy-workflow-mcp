@@ -79,7 +79,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       phase: state.phase,
       stage: currentStage,
       error: "after_edit document audit is required before hy_sync_docs.",
-      hint: "Call hy_read_docs with { stage: \"after_edit\" } after implementation edits, then call hy_sync_docs before hy_verify.",
       allowedTools: ["hy_read_docs", "hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
@@ -94,8 +93,8 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       phase: state.phase,
       stage: currentStage,
       error,
-      hint: "Run hy-workflow setup in the project root, then retry hy_sync_docs.",
       requires_user: true,
+      userAction: { kind: "fix_configuration" },
       stop_here: true,
       allowedTools: ["hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
@@ -109,7 +108,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       phase: state.phase,
       stage: currentStage,
       error: "Implementation diff changed after hy_read_docs(after_edit).",
-      hint: "Rerun hy_read_docs with { stage: \"after_edit\" } so the document sync audit matches the current implementation diff.",
       allowedTools: ["hy_read_docs", "hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
@@ -120,7 +118,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       phase: state.phase,
       stage: currentStage,
       error: "Configured project.docsDir points to an ignored legacy or runtime path.",
-      hint: "Choose a maintained documentation directory outside legacy injection and runtime paths.",
       allowedTools: ["hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
@@ -131,7 +128,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
       phase: state.phase,
       stage: currentStage,
       error: `Invalid project.docsDir: ${resolvedDocsDir.error}`,
-      hint: "Update project.docsDir in the authoritative project configuration to a project-relative directory inside the repository.",
       allowedTools: ["hy_status"],
       blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     });
@@ -171,18 +167,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
   };
   writeState(next);
 
-  const displayBody: string[] = [
-    "after_edit audit is current and declared documentation edits are recorded. Run hy_verify next.",
-    allowedDocs.length ? `Allowed sync files: ${allowedDocs.join(", ")}` : "No documentation sync files were declared in plan.scope.",
-  ];
-  if (graphInfo.updated) {
-    displayBody.push(`DocsGraph incrementally updated for ${graphChangedDocs.length} changed file(s).`);
-  }
-  if (graphInfo.brokenLinks > 0) {
-    displayBody.push(`⚠ ${graphInfo.brokenLinks} broken link(s) detected:`);
-    displayBody.push(...graphInfo.brokenLinkDetails.map(d => `  - ${d}`));
-  }
-
   return toolResult("verify", {
     phase: "edit",
     stage: "edit.sync_docs",
@@ -190,12 +174,6 @@ export async function handleSyncDocs(): Promise<ToolResult> {
     synced: true,
     allowedDocs,
     graphInfo,
-    display: {
-      title: "Document sync gate recorded",
-      body: displayBody.join("\n"),
-      files: allowedDocs,
-    },
-    hint: "Documentation synchronization is recorded for the current implementation digest. Call hy_verify without further edits.",
     allowedTools: ["hy_verify", "hy_edit", "hy_status"],
     blockedTools: ["hy_commit", "hy_merge"],
     nextAction: { tool: "hy_verify", phase: "verify", stage: "verify.run", automatic: true },

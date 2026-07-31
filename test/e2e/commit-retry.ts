@@ -7,7 +7,9 @@ import { buildImplementationManifest } from "../../src/checks.js";
 import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
 import { checkCi, commitScope, createPr, mergePr } from "../../src/git.js";
 import { computeImplementationDigest, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { toWorkflowCliEnvelope, workflowCommandArgv } from "../../src/cli/workflow.js";
 import { handleCommit } from "../../src/tools/commit.js";
+import { handleStatus } from "../../src/tools/status.js";
 
 process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
@@ -17,6 +19,22 @@ function git(root: string, args: string[]): string {
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
+}
+
+function assertProseFreeResult(name: string, result: any): void {
+  for (const field of ["display", "summary", "hint", "message", "pipeline", "stopAfter", "resumeAfter"]) {
+    assert(!(field in result), `${name} must not emit top-level Agent prose field ${field}: ${JSON.stringify(result)}`);
+  }
+  if (result.error) {
+    assert(!("hint" in result.error), `${name} error must retain machine facts without presentation guidance: ${JSON.stringify(result.error)}`);
+    assert(typeof result.error.message === "string", `${name} error must retain its diagnostic message`);
+  }
+  if (result.recovery) {
+    assert(!("instruction" in result.recovery) && !("byLayer" in result.recovery), `${name} recovery must retain only machine routing facts: ${JSON.stringify(result.recovery)}`);
+  }
+  if (result.userAction) {
+    assert(!("prompt" in result.userAction) && !("instruction" in result.userAction), `${name} user action must contain no Agent prose: ${JSON.stringify(result.userAction)}`);
+  }
 }
 
 const root = mkdtempSync(join(tmpdir(), "hy-commit-retry-"));
@@ -282,6 +300,7 @@ exec "${realGit}" "$@"
   writeFileSync(gitLog, "", "utf-8");
   const commitCountBefore = git(workflowRoot, ["rev-list", "--count", "HEAD"]);
   const firstAttempt = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
+  assertProseFreeResult("commit publish recovery", firstAttempt);
   assert(firstAttempt.next === "commit" && firstAttempt.error?.code === "PR_LOOKUP_FAILED", `first PR confirmation failure should leave commit recoverable: ${JSON.stringify(firstAttempt)}`);
   assert(firstAttempt.data?.commit?.action === "created", `first attempt should report the created commit: ${JSON.stringify(firstAttempt.data)}`);
   const committedHead = git(workflowRoot, ["rev-parse", "HEAD"]);
@@ -291,6 +310,27 @@ exec "${realGit}" "$@"
   const firstRecovery = (firstFailureState.approval as { commitRecovery?: any } | null)?.commitRecovery;
   assert(firstFailureState.phase === "commit", "PR confirmation failure must preserve commit phase");
   assert(firstRecovery?.commitOid === committedHead && firstRecovery?.repository === "github.com/o/r" && firstRecovery?.baseBranch === "main", "the exact commit/repository/base identity must be persisted before push or PR side effects");
+
+  const expectedCommitArguments = { title: "fix: retry safely", body: "exercise recovery" };
+  assert(JSON.stringify(firstFailureState.commitIntent && { title: firstFailureState.commitIntent.title, body: firstFailureState.commitIntent.body }) === JSON.stringify(expectedCommitArguments), "commit arguments must be persisted before Git or GitHub mutation");
+  assert(firstFailureState.commitIntent?.planHash === firstFailureState.approval?.planHash && firstFailureState.commitIntent?.implementationDigest === firstFailureState.verifiedImplementationDigest, "commit intent must bind the approved plan and verified implementation digest");
+  const resumedStatus = await handleStatus();
+  const resumedEnvelope = toWorkflowCliEnvelope("status", resumedStatus);
+  assert(resumedEnvelope.route.action.command === "commit" && resumedEnvelope.route.action.automatic === true, `status must resume a bound commit without Skill synthesis: ${JSON.stringify(resumedEnvelope.route.action)}`);
+  assert(JSON.stringify(resumedEnvelope.route.action.input) === JSON.stringify(expectedCommitArguments), `status must expose the exact persisted commit input: ${JSON.stringify(resumedEnvelope.route.action)}`);
+  assert(JSON.stringify(resumedEnvelope.route.action.argv) === JSON.stringify(workflowCommandArgv("commit", expectedCommitArguments)), `status must expose an executable exact-argument CLI handoff: ${JSON.stringify(resumedEnvelope.route.action.argv)}`);
+
+  const mismatchCommitCount = git(workflowRoot, ["rev-list", "--count", "HEAD"]);
+  const mismatchPushCount = readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push ")).length;
+  const mismatchPrCreateCount = calls().filter(line => line.startsWith("pr create ")).length;
+  const mismatchedArguments = await handleCommit({ title: "fix: changed title", body: "changed body" });
+  assertProseFreeResult("commit argument recovery", mismatchedArguments);
+  assert(mismatchedArguments.error?.code === "COMMIT_ARGUMENTS_MISMATCH" && mismatchedArguments.nextAction?.automatic === true, `changed retry arguments must route automatically to the persisted intent: ${JSON.stringify(mismatchedArguments)}`);
+  assert(JSON.stringify(mismatchedArguments.nextAction?.arguments) === JSON.stringify(expectedCommitArguments), "mismatch recovery must return the original title and body exactly");
+  assert(git(workflowRoot, ["rev-list", "--count", "HEAD"]) === mismatchCommitCount, "argument mismatch must not create another commit");
+  assert(readFileSync(gitLog, "utf-8").split("\n").filter(line => line.startsWith("push ")).length === mismatchPushCount, "argument mismatch must stop before push");
+  assert(calls().filter(line => line.startsWith("pr create ")).length === mismatchPrCreateCount, "argument mismatch must stop before PR creation");
+  assert(JSON.stringify(readState().commitIntent) === JSON.stringify(firstFailureState.commitIntent), "argument mismatch must preserve the original persisted intent");
 
   git(workflowRoot, ["reset", "--mixed", "HEAD^"]);
   process.env.HY_TEST_ORIGIN_OVERRIDE = "https://github.com/evil/other.git";
@@ -319,6 +359,7 @@ exec "${realGit}" "$@"
   writeState(afterResetAttack);
 
   const secondAttempt = await handleCommit({ title: "fix: retry safely", body: "exercise recovery" });
+  assertProseFreeResult("commit CI success", secondAttempt);
   assert(secondAttempt.next === "merge" && secondAttempt.reused === true && secondAttempt.prNumber === 190, `second attempt should reuse the exact PR and advance to merge: ${JSON.stringify(secondAttempt)}`);
   assert(secondAttempt.data?.commit?.action === "recovered_verified_head" && secondAttempt.data?.commit?.sha === committedHead, `second attempt should recover the same verified HEAD: ${JSON.stringify(secondAttempt.data)}`);
   assert(git(workflowRoot, ["rev-list", "--count", "HEAD"]) === String(Number(commitCountBefore) + 1), "retry must not create an empty commit");

@@ -1,104 +1,61 @@
-# Built-in lint rules
+# Built-in Lint Rules
 
-`hy-workflow lint --json` runs the first-party doclint and codelint engines shipped in the installed package. The command is deterministic and offline: it does not download code, invoke third-party lint packages, or create, modify, and restore `codelint.json`, `doclint.json`, or `docs-gardener.json`.
+`hy-workflow lint --json` runs the first-party doclint and codelint engine shipped in the installed package. It is deterministic and offline: it does not download code, invoke a third-party linter or create/modify `codelint.json`, `doclint.json` or `docs-gardener.json`.
 
-## Configuration
+## Configuration authority
 
-For a new deployment, setup creates the project-owned root `hy-workflow.json` and records an exact local authority marker. CI selects the same project-owned file through an exact versioned environment signal. The runtime validates the selected file with bundled, offline code; the `$schema` URL is editor metadata and is never fetched while a workflow runs.
+The lint engine reads the runtime configuration selected by the external project registration. Fresh helper registration derives a complete configuration from local project evidence and stores it outside the worktree. An existing valid external configuration remains byte-for-byte authoritative during migration.
 
-An existing installation keeps working without a migration prompt or project edit. A valid external configuration remains authoritative. If there is no external configuration, hy-workflow detects the project read-only and uses frozen historical defaults. Unless the exact new authority marker or CI signal is present, runtime code does not read a root `hy-workflow.json` at all. Historical injected `AGENTS.md` blocks, workflows, `codelint.json`, `doclint.json`, and `docs-gardener.json` are ignored and do not need to be removed.
+Helper does not create a root `hy-workflow.json`, authority marker or GitHub Actions workflow. A historical tracked config is not selected merely because it exists. Preserved compatibility state and explicit `config` operations may provide the same schema-shaped values, but the current authority and absolute external path are reported by CLI/doctor rather than inferred from a project file.
 
-New configurations use:
+Important selected values are:
 
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/voxServalG/hy-workflow-mcp/main/schemas/hy-workflow.schema.json",
-  "version": 1,
-  "project": {
-    "baseBranch": "dev",
-    "codeExt": [".ts"],
-    "codeDirs": ["src"],
-    "docsDir": "docs"
-  },
-  "codelint": {
-    "lintDirs": ["src"],
-    "maxLinesWarning": 300,
-    "maxLinesError": 500,
-    "tiers": [
-      { "name": "domain", "paths": ["src/domain"] },
-      { "name": "infra", "paths": ["src/infra"] }
-    ]
-  },
-  "doclint": {
-    "maxLinesWarning": 200,
-    "maxLinesError": 500
-  },
-  "policy": {
-    "profile": "standard",
-    "rules": {
-      "code.max-lines": { "warning": 400, "error": 700 }
-    },
-    "overrides": [
-      {
-        "files": ["test/**"],
-        "rules": { "code.max-lines": { "severity": "advisory" } }
-      }
-    ],
-    "exceptions": [
-      {
-        "rule": "docs.max-lines",
-        "files": ["docs/legacy.md"],
-        "reason": "Split is tracked separately",
-        "owner": "docs-team",
-        "issue": "#421",
-        "expires": "2026-12-31"
-      }
-    ]
-  }
-}
-```
+- `project.codeExt`, `project.codeDirs`, `project.docsDir` and `project.baseBranch`;
+- codelint scan roots and line thresholds;
+- doclint line thresholds;
+- policy profile, scoped overrides and time-bounded exceptions where supported.
 
-`maxLines` remains a read-only legacy input and is interpreted as the error threshold. If it is present together with `maxLinesError`, both values must match. Warning thresholds must not exceed error thresholds. `codelint.tiers` is optional; its array is ordered from highest to lowest layer. Every tier name and normalized project-relative path must be unique, safe, and non-overlapping. A higher tier may depend on the same tier or a later lower tier; a lower tier must not depend on an earlier higher tier.
+Configured roots must be safe paths inside the project. Generated/dependency/runtime directories such as `.git`, `.hy`, `.codex`, `.opencode`, `node_modules`, `dist`, `build`, `coverage`, fixtures, examples, generated and vendor trees are excluded. Agent instruction files are not managed documentation.
 
-Generated and dependency directories such as `.git`, `.hy`, `.codex`, `.opencode`, `node_modules`, `dist`, `build`, `coverage`, fixtures, examples, generated, and vendor trees are excluded. Agent instruction files such as `AGENTS.md` and `CLAUDE.md` are not managed documentation. Configured roots must remain inside the project.
+## Policy precedence
 
-## Policy profiles and precedence
+The public profiles are `relaxed`, `standard` and `strict`. Effective configurable quality values resolve from profile, compatible legacy aliases, project rule, matching path overrides in declaration order, and active time-bounded exception. Later layers replace only fields they supply. Expired exceptions remain visible but do not alter results.
 
-The public profiles are `relaxed`, `standard`, and `strict`. A profile is only a starting point. The effective value is resolved in this order: profile, legacy top-level `maxLines` aliases, project rule, matching path overrides in declaration order, then an active time-limited exception. Later layers replace fields supplied by earlier layers. Expired exceptions remain visible as diagnostics but do not change the result.
+`off` disables a configurable quality finding; `advisory` and `warning` remain visible and exit zero; `error` blocks. Scan/parser integrity, safe paths, workflow scope, evidence freshness and project identity are not configurable quality findings and cannot be disabled through profiles or exceptions.
 
-`off` disables a configurable quality finding. `advisory` keeps it visible without failing the command. `warning` stays visible and exits zero. `error` blocks. Exceptions require a rule, files, reason, owner, and expiry date; an issue reference is recommended.
+Policy explanation remains available through the config CLI, for example:
 
-Scan integrity, parser integrity, path and scope boundaries, evidence freshness, and project identity are safety invariants. Profiles, overrides, and exceptions cannot disable or weaken them.
-
-To see exactly why a rule has its current value, run:
-
-```sh
+```bash
 hy-workflow config --explain-policy code.max-lines --file test/example.ts --json
 ```
 
-The result includes the selected configuration authority, ordered source layers, effective values, and diagnostics.
+The result identifies the selected external authority and ordered contributing layers.
 
-## Document rules
+## Document checks
 
-- `D001` scan integrity: `project.docsDir` must be a safe in-repository directory and contain at least one `.md` or `.mdx` document.
-- `D002` reachability: the docs root needs an `index.md`, `index.mdx`, `README.md`, or `README.mdx` entry point, and every managed document must be reachable through local document links.
-- `D003` links: non-external local targets must exist, remain in the docs boundary, and not traverse symlinks. Markdown fragments match GitHub-style duplicate slugs or explicit ids. External links and links inside code fences are not fetched.
-- `D004` structure: a non-empty document starts with exactly one H1, headings are non-empty and do not jump levels, and fenced code blocks close.
-- `D005` size: documents must contain effective content; effective lines above 200 warn by default and above 500 fail by default.
+- `D001` scan integrity: the selected docs root is safe/readable and scans at least one supported document.
+- `D002` reachability: an entry document exists and managed documents are reachable through local links.
+- `D003` links: local targets/fragments exist and stay inside the documentation boundary without unsafe symlink traversal. External links are not fetched.
+- `D004` structure: one meaningful H1, non-empty/non-jumping headings and closed fenced code blocks.
+- `D005` size/content: empty shells fail; effective-line warning/error thresholds come from the selected config.
 
-## Code rules
+## Code checks
 
-- `C001` scan integrity: `project.codeExt` and `codelint.lintDirs` must select readable files; every configured extension must scan at least one file.
-- `C002` size: effective code lines above 300 warn by default; above 500 fail by default.
-- `C003` dependency tiers: configured tier paths must be valid and lower layers must not import earlier higher layers. The check is `not_configured` when tiers are absent.
-- `C004` cycles: supported Python, Rust, JavaScript, and TypeScript local dependency graphs must not contain a multi-file strongly connected component. The check is `not_applicable` when the selected language has no dependency scanner.
-- `C005` parser integrity: sources must be read, Python AST/tokenize subprocess results must satisfy their protocol, and Rust/JavaScript lexical parsing must complete. Syntax or lexical errors, scanner omissions, and unsafe source structure fail closed. Unsupported languages are reported as `not_applicable`, not as a pass.
+- `C001` scan integrity: selected extensions and scan roots are safe/readable and every configured supported extension scans real files.
+- `C002` size/content: effective-line warning/error thresholds come from the selected config.
+- `C005` parser/scanner integrity: supported-language scanning must complete deterministically; unsafe source structure, malformed scanner protocol or parser failure fails closed.
 
-Python uses the standard-library AST/tokenize scanner available on the runner. Rust uses the packaged deterministic tokenizer and module/import parser; neither scanner requires a third-party runtime package.
+`C003` and `C004` remain schema-stable compatibility positions in the ten-check report, but they never execute dependency or module analysis. `C003` is always `not_configured`, `C004` is always `not_applicable`, and neither slot emits findings. A legacy `codelint.tiers` value and the retired `code.tier-dependency` or `code.dependency-cycle` policy keys may be read and preserved during migration, but the CLI ignores them. Skills must not present these slots as an architecture gate.
+
+This is distinct from `boundary.no_new_external`, which checks whether a change introduces dependency-manifest differences. That workflow invariant does not infer module architecture.
+
+## Applicability
+
+Python uses packaged orchestration around the available standard-library parser/tokenizer. Rust uses the packaged deterministic lexical scanner. JavaScript/TypeScript and other language applicability is reported explicitly. An unsupported scanner is `not_applicable`, never a fabricated pass. A configured supported language that scans zero files fails.
 
 ## Report and exit status
 
-The JSON report has schema `hy-workflow.lint.v1` and contains exactly ten ordered checks plus sorted findings:
+The report schema is `hy-workflow.lint.v1`, version 1. It retains ten deterministic rule positions for compatibility, sorted findings and aggregate file/error/warning counts.
 
 ```json
 {
@@ -117,10 +74,19 @@ The JSON report has schema `hy-workflow.lint.v1` and contains exactly ten ordere
     "code": 8
   },
   "checks": [
-    { "rule": "D001", "status": "passed", "files": 4, "errors": 0, "warnings": 0, "message": "..." }
+    {
+      "rule": "D001",
+      "status": "passed",
+      "files": 4,
+      "errors": 0,
+      "warnings": 0,
+      "message": "..."
+    }
   ],
   "findings": []
 }
 ```
 
-Check status is one of `passed`, `failed`, `warning`, `advisory`, `not_applicable`, or `not_configured`. Warnings and advisories remain visible but exit zero. Any error, invalid configuration, parser failure, configured-language zero scan, malformed report, or runtime failure exits nonzero. CI additionally requires at least one scanned documentation file and rejects a report whose `ok` is false or whose error count is nonzero.
+Status is `passed`, `failed`, `warning`, `advisory`, `not_applicable` or `not_configured`. Warnings/advisories exit zero. Any error, invalid configuration, parser/scanner failure, configured zero scan, malformed report or runtime failure exits nonzero.
+
+Teams may call this same command from their existing CI, but helper does not inject it. The repository remains responsible for runner/toolchain setup and required-check policy.

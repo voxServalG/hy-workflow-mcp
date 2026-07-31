@@ -87,3 +87,25 @@ const secretError = structuredError(new SetupFailure(
 const secretJson = JSON.stringify(secretError);
 assert(!secretJson.includes(secret), "public structured setup errors must never contain client environment values or raw stdout");
 assert(secretJson.includes("API_TOKEN") && secretJson.includes("source") && secretJson.includes("state"), "redacted diagnostics should retain environment key names and safe source/state evidence");
+
+const remoteSecret = "sentinel-remote-secret-832e";
+const remoteUser = "sentinel-remote-user";
+const remoteError = structuredError({
+  type: "setup",
+  subtype: "identity",
+  message: "failed for https://" + remoteUser + ":" + remoteSecret + "@github.com/Org/Repo.git",
+  detail: {
+    remote: "https://" + remoteUser + ":" + remoteSecret + "@github.com/Org/Repo.git",
+    scp: remoteUser + "@github.com:Org/Repo.git",
+  },
+});
+const remoteJson = JSON.stringify(remoteError);
+assert(!remoteJson.includes(remoteSecret) && !remoteJson.includes(remoteUser), "structured diagnostics must redact URL and SCP userinfo recursively");
+assert(remoteJson.includes("github.com/Org/Repo.git") && remoteJson.includes("github.com:Org/Repo.git"), "remote redaction must preserve useful repository locator facts");
+
+const primitiveRemoteError = structuredError(
+  "failed for https://primitive-user:segment@primitive-secret@example.invalid/Org/Repo.git",
+);
+const primitiveRemoteJson = JSON.stringify(primitiveRemoteError);
+assert(!primitiveRemoteJson.includes("primitive-user") && !primitiveRemoteJson.includes("primitive-secret"),
+  "primitive structured errors must pass through recursive credential redaction");

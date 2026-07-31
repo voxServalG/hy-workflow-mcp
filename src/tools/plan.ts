@@ -1,158 +1,7 @@
-import * as path from "node:path";
 import { planDecisionId, readState, writeState, transition, assertPhase, projectRoot } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
 import type { PlanDoc } from "../state.js";
 import { normalizePlanDoc, validatePlanScopePaths } from "../plan_validation.js";
-import { REQUIRED_SECTIONS } from "../output/contract.js";
-
-type CheckItem = PlanDoc["verify"]["smoke"][number];
-type TestCategory = {
-  title: string;
-  explanation: string;
-  checks: CheckItem[];
-};
-
-function plural(count: number, singular: string, pluralWord = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : pluralWord}`;
-}
-
-function pathReason(path: string, action: "change" | "new" | "delete"): string {
-  if (path.startsWith("src/")) return action === "delete" ? "移除不再需要的源码入口" : "调整运行时代码行为";
-  if (path.startsWith("dist/")) return action === "delete" ? "移除对应编译产物" : "同步发布用编译产物";
-  if (path.startsWith("test/") || path.startsWith("tests/")) return action === "delete" ? "移除不再适用的测试" : "更新验证覆盖";
-  if (path.startsWith("docs/")) return action === "delete" ? "移除过期文档" : "同步用户和 agent 可读说明";
-  if (path === "README.md") return action === "delete" ? "移除入口说明" : "同步项目入口说明";
-  if (action === "new") return "新增本次任务需要的文件";
-  if (action === "delete") return "删除本次任务不再需要的文件";
-  return "更新本次任务涉及的文件";
-}
-
-function addPathList(lines: string[], paths: string[], action: "change" | "new" | "delete"): void {
-  if (!paths.length) {
-    lines.push("- 无");
-    return;
-  }
-  for (const path of paths) {
-    lines.push(`- \`${path}\`: ${pathReason(path, action)}`);
-  }
-}
-
-function classifyChecks(smoke: CheckItem[], tests: CheckItem[]): TestCategory[] {
-  const categories: TestCategory[] = [
-    {
-      title: "单元测试 (Unit Test)",
-      explanation: "开发人员编写并执行，测试代码中的最小模块或函数。",
-      checks: [],
-    },
-    {
-      title: "集成测试 (Integration Test)",
-      explanation: "在单元测试后进行，检查多个模块组合在一起时的数据交互和接口是否正常。",
-      checks: [],
-    },
-    {
-      title: "系统测试 (System Test)",
-      explanation: "将整个系统作为一个整体，进行功能、性能、安全及兼容性测试。",
-      checks: [],
-    },
-    {
-      title: "验收测试 (Acceptance Test)",
-      explanation: "业务方或最终用户介入，验证系统是否满足实际需求。",
-      checks: [],
-    },
-  ];
-
-  const assign = (check: CheckItem, fallback: number) => {
-    const text = `${check.command} ${check.description}`.toLowerCase();
-    if (/acceptance|验收|user|用户/.test(text)) categories[3].checks.push(check);
-    else if (/integration|集成|e2e|端到端/.test(text)) categories[1].checks.push(check);
-    else if (/system|系统|dist|doclint|codelint|build|compile|tsc|lint/.test(text)) categories[2].checks.push(check);
-    else if (/unit|单元|vitest|jest|test|tsx/.test(text)) categories[0].checks.push(check);
-    else categories[fallback].checks.push(check);
-  };
-
-  smoke.forEach(check => assign(check, 2));
-  tests.forEach(check => assign(check, 0));
-
-  return categories;
-}
-
-function addCheck(lines: string[], check: CheckItem): void {
-  lines.push(`- command: \`${check.command}\``);
-  lines.push(`  thing to test: ${check.description}`);
-  lines.push(`  expectation: exit ${check.expected_exit}`);
-}
-
-function cleanSentence(text: string): string {
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "";
-  return /[。.!?]$/.test(trimmed) ? trimmed : `${trimmed}。`;
-}
-
-function extractTitle(task: string): { title: string; why: string } {
-  const arrow = task.indexOf("→");
-  if (arrow > 0) {
-    const t = cleanSentence(task.slice(0, arrow)).trim();
-    const w = cleanSentence(task.slice(arrow + 1)).trim();
-    if (t.length >= 6) return { title: t, why: w };
-  }
-  const dot = task.indexOf("。");
-  if (dot > 10) return { title: cleanSentence(task.slice(0, dot)), why: cleanSentence(task.slice(dot + 1)) };
-  return { title: cleanSentence(task).slice(0, 120), why: "" };
-}
-
-function pathKind(p: string): string {
-  if (p.startsWith("src/")) return "代码";
-  if (p.startsWith("test/") || p.startsWith("tests/")) return "测试";
-  if (p.startsWith("docs/") || p === "README.md") return "文档";
-  return "其他";
-}
-
-function addPathGroups(lines: string[], paths: string[], _action: string): void {
-  if (!paths.length) { lines.push("- 无"); return; }
-  const groups = new Map<string, string[]>();
-  for (const f of paths) {
-    const dir = path.dirname(f) + "/";
-    if (!groups.has(dir)) groups.set(dir, []);
-    groups.get(dir)!.push(path.basename(f));
-  }
-  for (const [dir, files] of groups) {
-    lines.push(`- ${pathKind(paths[0])} (${dir}): ${files.join(", ")}`);
-  }
-}
-
-function buildSummary(p: PlanDoc): string {
-  const lines: string[] = [];
-  const { title, why } = extractTitle(p.task);
-  lines.push(`## ${title}`);
-  lines.push("");
-  const whyText = why || cleanSentence(p.task).slice(0, 200);
-  if (whyText) { lines.push(`> **为什么**: ${whyText}`); lines.push(""); }
-  lines.push("### 改动");
-  addPathGroups(lines, p.scope.changes, "change");
-  addPathGroups(lines, p.scope.new_files, "new");
-  addPathGroups(lines, p.scope.delete, "delete");
-  lines.push("");
-  const dag = p.boundary.dependency_dag;
-  lines.push(`> **影响**: ${dag.length > 120 ? dag.slice(0, 120) + "..." : dag}`);
-  lines.push("");
-  lines.push("### 验证");
-  for (const ep of p.boundary.entry_points) lines.push(`- [ ] \`${ep}\``);
-  lines.push("");
-  if (p.risks.length) {
-    lines.push("### 风险");
-    for (const r of p.risks) lines.push(`- ${r.length > 200 ? r.slice(0, 200) + "..." : r}`);
-    lines.push("");
-  }
-  if (p.discussion.length) {
-    lines.push("<details>");
-    lines.push("<summary>讨论 + 备选方案</summary>");
-    lines.push("");
-    lines.push(p.discussion);
-    lines.push("");
-    lines.push("</details>");
-  }
-  return lines.join("\n").trimEnd();
-}
 
 export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown }): Promise<ToolResult> {
   const state = readState();
@@ -163,7 +12,6 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   if (!task) {
     return toolResult("plan", {
       error: "task must be a non-empty string describing the work to be done.",
-      hint: "Provide a concrete task and construct a PlanDoc before calling hy_plan again.",
       allowedTools: ["hy_plan", "hy_status"],
     });
   }
@@ -172,7 +20,6 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   if (!beforePlan) {
     return toolResult("plan", {
       error: "before_plan document baseline is required before hy_plan.",
-      hint: `Call hy_read_docs with { stage: "before_plan", task } first. This is an automatic agent context step, not a user review gate.`,
       stage: "plan.before_plan",
       allowedTools: ["hy_read_docs", "hy_status"],
       blockedTools: ["hy_approve", "hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
@@ -192,8 +39,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   const rawPlan = args.plan;
   if (!rawPlan) {
     return toolResult("plan", {
-      error: "PlanDoc not provided. You must construct the PlanDoc JSON yourself using your workspace knowledge, then call hy_plan with {task, plan}.",
-      hint: "Read project files, build a complete PlanDoc, and retry hy_plan.",
+      error: "PlanDoc is required.",
       allowedTools: ["hy_plan", "hy_status"],
       schema: {
         type: "object",
@@ -273,7 +119,6 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   if (!normalizedPlan.ok) {
     return toolResult("plan", {
       error: `PlanDoc has invalid shape: ${normalizedPlan.errors.join("; ")}`,
-      hint: "Construct a complete PlanDoc object with string fields and array fields that match the schema, then call hy_plan again.",
       allowedTools: ["hy_plan", "hy_status"],
     });
   }
@@ -297,7 +142,6 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   if (scopePathErrors.length) {
     return toolResult("plan", {
       error: `PlanDoc scope contains invalid paths: ${scopePathErrors.join("; ")}.`,
-      hint: "Use project-relative paths, put planned creations in scope.new_files, and remove every legacy ignored or local/runtime artifact because those paths are permanently outside hy-workflow authority.",
       allowedTools: ["hy_plan", "hy_status"],
     });
   }
@@ -358,8 +202,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     const reason = describeImpureCommand(cmd);
     if (!reason) return null;
     return toolResult("plan", {
-      error: `${field} must be a pure executable shell command, but "${cmd}" ${reason}. Put explanations in description and write an executable command only.`,
-      hint: "Keep command fields as pure shell commands and move explanations into description fields.",
+      error: `${field} must be a pure executable shell command; "${cmd}" ${reason}.`,
       allowedTools: ["hy_plan", "hy_status"],
     });
   };
@@ -386,21 +229,35 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     if (rejected) return rejected;
   }
 
-  // Gate 7: semantic quality (soft — warnings only, do not block)
-  const warnings: string[] = [];
+  // Gate 7: semantic quality facts (soft; never block)
+  const warnings: Array<Record<string, unknown>> = [];
   if (beforePlanTaskMismatch) {
-    warnings.push(`before_plan task differs from hy_plan task; using the existing document baseline. before_plan="${beforePlan.task}", hy_plan="${task}"`);
+    warnings.push({
+      code: "BEFORE_PLAN_TASK_MISMATCH",
+      beforePlanTask: beforePlan.task,
+      planTask: task,
+    });
   }
   if (p.task.length < 20) {
-    warnings.push(`task 较简短 (${p.task.length} chars)，建议补充问题动机和上下文`);
+    warnings.push({ code: "TASK_TOO_SHORT", field: "task", actualLength: p.task.length, minLength: 20 });
   }
-  for (const r of p.risks) {
-    if (r.length < 20) {
-      warnings.push(`risk "${r}" 过于简短 (${r.length} chars)，建议包含触发场景、影响和缓解措施`);
+  p.risks.forEach((risk, index) => {
+    if (risk.length < 20) {
+      warnings.push({
+        code: "RISK_TOO_SHORT",
+        field: `risks[${index}]`,
+        actualLength: risk.length,
+        minLength: 20,
+      });
     }
-  }
+  });
   if (p.discussion.length < 50) {
-    warnings.push("discussion 建议说明备选方案及否定理由");
+    warnings.push({
+      code: "DISCUSSION_TOO_SHORT",
+      field: "discussion",
+      actualLength: p.discussion.length,
+      minLength: 50,
+    });
   }
 
   const next = transition(state, "approve");
@@ -418,23 +275,15 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
   next.mergeReceipt = null;
   writeState(next);
 
-  const summary = buildSummary(p);
   const decisionId = planDecisionId(p)!;
   return toolResult("approve", {
     plan: p,
-    summary,
     warnings: warnings.length ? warnings : undefined,
-    display: {
-      title: "Plan ready for approval",
-      body: summary,
-      requiredSections: [...REQUIRED_SECTIONS],
-    },
     requires_user: true,
     stop_here: true,
     stage: "approve.decision",
     status: "pending",
     decisionId,
-    hint: "You MUST display the ENTIRE display.body to the user, matching ALL requiredSections anchors in order. Do not skip any section. Wait for explicit approval before calling hy_approve.",
     allowedTools: ["hy_read_docs", "hy_approve", "hy_status"],
     blockedTools: ["hy_branch", "hy_edit", "hy_verify", "hy_commit", "hy_merge"],
     nextAction: { tool: null, phase: "approve", stage: "approve.decision", automatic: false },
@@ -442,9 +291,7 @@ export async function handlePlan(args: { task: string; plan?: PlanDoc | unknown 
     userAction: {
       kind: "approval",
       decisionId,
-      prompt: "Review the complete PlanDoc and approve, reject, or request revision.",
       options: ["approve", "reject", "revise"],
     },
-    message: "PlanDoc validated. Review the plan, then call hy_approve to proceed or provide feedback to revise.",
   });
 }

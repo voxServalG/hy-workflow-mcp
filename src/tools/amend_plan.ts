@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { approvalMatchesPlan, assertPhase, createPlanApproval, projectRoot, readState, scopePath, transition, writeState, type PendingPlanAmendment, type PlanDoc } from "../state.js";
-import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
+import { amendmentDecisionId, approvalMatchesPlan, assertPhase, createPlanApproval, projectRoot, readState, scopePath, transition, writeState, type PendingPlanAmendment, type PlanDoc } from "../state.js";
+import { toolResult, type ToolResult } from "./_base.js";
 import { normalizePlanScopeAmendment, validateAmendmentPaths, validatePlanScopePaths } from "../plan_validation.js";
 
 type AmendPlanArgs = {
   approved: string;
+  decisionId?: string;
   note?: string;
 };
 
@@ -69,14 +70,12 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
         subtype: "invalid_arguments",
         code: "AMENDMENT_DECISION_INVALID",
         message: "Amendment decision must be approve, reject, or revise.",
-        hint: "Map the users existing decision to one enum value and retry without asking for approval again.",
         retryable: true,
       },
       requires_user: false,
       stop_here: true,
       stage: currentStage,
       status: "failed",
-      hint: "Retry hy_amend_plan with an explicit decision. The pending amendment and original approval are unchanged.",
       allowedTools: ["hy_amend_plan", "hy_verify", "hy_status"],
       blockedTools: ["hy_commit", "hy_merge"],
       nextAction: { tool: null, phase: state.phase, stage: currentStage, automatic: false },
@@ -86,12 +85,23 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
   }
 
   if (!state.plan) {
-    return invalidWorkflowStateResult(
-      state,
-      "AMENDMENT_PLAN_MISSING",
-      "Workflow state reached amendment review without an active PlanDoc.",
-      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
-    );
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "AMENDMENT_PLAN_MISSING",
+        message: "Workflow state reached amendment review without an active PlanDoc.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
   }
   if (!approvalMatchesPlan(state.approval, state.plan)) {
     return toolResult(state.phase, {
@@ -102,14 +112,13 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
         subtype: "approval_missing",
         code: "AMENDMENT_APPROVAL_PLAN_MISMATCH",
         message: "The original PlanDoc approval is missing or no longer matches; an amendment cannot create a replacement approval.",
-        hint: "Reset the invalid workflow state and create a new PlanDoc decision.",
       },
       allowedTools: ["hy_reset", "hy_status"],
       blockedTools: ["hy_amend_plan", "hy_verify", "hy_commit", "hy_merge"],
-      recovery: { strategy: "reset", tool: "hy_reset", instruction: "Reset the invalid approval state before replanning." },
+      recovery: { strategy: "reset", tool: "hy_reset" },
       nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
       control: { automatic: false, stop: true, reason: "review_required" },
-      userAction: { kind: "review_failure", instruction: "The amendment cannot proceed without the original bound approval; no new approval is implied." },
+      userAction: { kind: "review_failure" },
     });
   }
   if (!state.pendingAmendment) {
@@ -118,6 +127,36 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
       stage: currentStage,
       error: "No pending plan amendment. Run hy_verify first.",
       allowedTools: ["hy_verify", "hy_status"],
+    });
+  }
+
+  const expectedDecisionId = amendmentDecisionId(state.plan, state.pendingAmendment)!;
+  if (args.decisionId !== expectedDecisionId) {
+    return toolResult(state.phase, {
+      amended: false,
+      decisionId: expectedDecisionId,
+      error: {
+        type: "validation",
+        subtype: "stale_decision",
+        code: "AMENDMENT_DECISION_ID_MISMATCH",
+        message: "Amendment decision identity does not match the current pending amendment.",
+        detail: {
+          expectedDecisionId,
+          actualDecisionId: typeof args.decisionId === "string" ? args.decisionId : null,
+        },
+        retryable: true,
+      },
+      stage: currentStage,
+      status: "failed",
+      allowedTools: ["hy_amend_plan", "hy_verify", "hy_status"],
+      blockedTools: ["hy_commit", "hy_merge"],
+      nextAction: { tool: null, phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "approval_required" },
+      userAction: {
+        kind: "approval",
+        decisionId: expectedDecisionId,
+        options: ["approve", "reject", "revise"],
+      },
     });
   }
 
@@ -133,8 +172,6 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
       decision,
       stage: "edit.implementation",
       status: "ready",
-      message: "Plan amendment was not applied. Restore the implementation to the original approved scope or prepare a revised plan.",
-      hint: "Keep the original approval and PlanDoc. Remove the scope drift, then rerun the after_edit audit and verification.",
       allowedTools: ["hy_edit", "hy_status"],
       nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
       control: { automatic: true, stop: false, reason: "automatic" },
@@ -150,7 +187,6 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
       error: `Pending plan amendment has invalid shape: ${normalizedAmendment.errors.join("; ")}`,
       requires_user: true,
       stop_here: true,
-      hint: "Run hy_verify again to regenerate a valid pending amendment, or return to hy_plan for a larger scope change.",
       allowedTools: ["hy_verify", "hy_status"],
       blockedTools: ["hy_commit", "hy_merge"],
     });
@@ -168,7 +204,6 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
       error: `Pending plan amendment contains invalid paths: ${amendmentPathErrors.join("; ")}`,
       requires_user: true,
       stop_here: true,
-      hint: "Reject this automatic amendment. Paths outside the project root and legacy ignored or local/runtime artifacts are permanently outside hy-workflow authority.",
       allowedTools: ["hy_verify", "hy_status"],
       blockedTools: ["hy_commit", "hy_merge"],
     });
@@ -183,7 +218,6 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
       error: `Amended PlanDoc scope is invalid: ${amendedScopeErrors.join("; ")}`,
       requires_user: true,
       stop_here: true,
-      hint: "Reject this automatic amendment and create a new PlanDoc if the approved scope would become empty, invalid, or include paths permanently outside hy-workflow authority.",
       allowedTools: ["hy_verify", "hy_status"],
       blockedTools: ["hy_commit", "hy_merge"],
     });
@@ -207,11 +241,6 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
     amended: true,
     plan: amendedPlan,
     appliedAmendment: amendment,
-    display: {
-      title: "Plan amended",
-      body: "Pending plan amendment was applied. Refresh the after_edit document audit before verification.",
-    },
-    hint: "Run the automatic after_edit document audit, confirm document sync, then rerun verification. Do not call hy_commit before that sequence passes.",
     decisionId: next.approval.decisionId,
     stage: "edit.implementation",
     status: "passed",
@@ -220,6 +249,5 @@ export async function handleAmendPlan(args: AmendPlanArgs): Promise<ToolResult> 
     nextAction: { tool: "hy_read_docs", arguments: { stage: "after_edit" }, phase: "edit", stage: "edit.after_edit", automatic: true },
     control: { automatic: true, stop: false, reason: "automatic" },
     userAction: null,
-    message: "Plan amended. Refresh after_edit evidence before verification.",
   });
 }

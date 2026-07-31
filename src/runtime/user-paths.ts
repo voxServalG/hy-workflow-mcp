@@ -107,22 +107,229 @@ function canonicalRoot(root: string): string {
   }
 }
 
-function movedRegistryId(identity: ProjectIdentity, roots: UserRoots): string | null {
-  if (!identity.remote) return null;
-  const file = path.join(roots.config, "registry.json");
-  if (!fs.existsSync(file)) return null;
-  try {
-    const value = JSON.parse(fs.readFileSync(file, "utf-8"));
-    if (!value?.projects || typeof value.projects !== "object") return null;
-    const candidates = Object.values(value.projects as Record<string, any>).filter(record =>
-      record?.remote === identity.remote && typeof record?.root === "string" && !fs.existsSync(record.root),
-    );
-    return candidates.length === 1 && typeof (candidates[0] as any).id === "string" ? (candidates[0] as any).id : null;
-  } catch {
-    // Strict registry validation happens in runtime/deployment. Identity lookup must not
-    // overwrite or reinterpret an unreadable registry.
-    return null;
+function sameCanonicalPath(left: string, right: string): boolean {
+  return canonicalRoot(left) === canonicalRoot(right);
+}
+
+/**
+ * Return the transport-independent locator used by project identity.
+ *
+ * GitHub repository paths are case-insensitive, so folding the owner and
+ * repository names is safe and prevents harmless URL spelling changes from
+ * forking external workflow state. Non-GitHub remotes retain their historical
+ * byte-for-byte identity until an equivalent hosting contract is explicit.
+ */
+export function redactGitRemote(remote: string | null): string | null {
+  if (!remote) return null;
+  const value = remote.trim();
+  if (!value) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    return value.replace(/^[^@/:\s]+@(?=[A-Za-z0-9.-]+:)/, "");
   }
+  try {
+    const parsed = new URL(value);
+    if (!parsed.username && !parsed.password) return value;
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#\s@]*@/i, "$1");
+  }
+}
+
+export function redactGitRemoteCredentialsInText(value: string): string {
+  return value
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/?#\s]*@/gi, "$1")
+    .replace(/(^|[\s("'=])[^\s@/:]+@(?=[A-Za-z0-9.-]+:[^\s])/g, "$1");
+}
+
+export function canonicalGitRemote(remote: string | null): string | null {
+  const value = redactGitRemote(remote);
+  if (!value) return null;
+
+  let host = "";
+  let repositoryPath = "";
+  let port = "";
+  let protocol = "";
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      if (!["https:", "http:", "ssh:", "git:"].includes(parsed.protocol)) return value;
+      protocol = parsed.protocol;
+      host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+      port = parsed.port;
+      repositoryPath = parsed.pathname;
+    } else {
+      const scp = value.match(/^(?:[^@/:]+@)?([A-Za-z0-9.-]+):(.+)$/);
+      if (!scp) return value;
+      host = scp[1].toLowerCase().replace(/\.$/, "");
+      repositoryPath = scp[2];
+    }
+  } catch {
+    return value;
+  }
+
+  if (host === "www.github.com") host = "github.com";
+  if (host !== "github.com") return value;
+  const defaultPort = !port
+    || (protocol === "https:" && port === "443")
+    || (protocol === "http:" && port === "80")
+    || (protocol === "ssh:" && port === "22")
+    || (protocol === "git:" && port === "9418");
+  if (!defaultPort) return value;
+
+  const cleanPath = repositoryPath.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+  const segments = cleanPath.split("/");
+  if (segments.length !== 2 || segments.some(segment => !/^[A-Za-z0-9_.-]+$/.test(segment))) return value;
+  return "github.com/" + segments[0].toLowerCase() + "/" + segments[1].toLowerCase();
+}
+
+/**
+ * Compare a persisted identity with the checkout that is currently active.
+ *
+ * The project id remains the storage key, paths are compared through realpath
+ * so a symlink does not fork state, and only the explicitly supported remote
+ * canonicalization contract is accepted. A moved checkout deliberately fails
+ * this predicate until helper install reconciles its persisted identity.
+ */
+export function sameProjectCheckoutIdentity(left: ProjectIdentity, right: ProjectIdentity): boolean {
+  return left.id === right.id
+    && sameCanonicalPath(left.root, right.root)
+    && sameCanonicalPath(left.gitCommonDir, right.gitCommonDir)
+    && canonicalGitRemote(left.remote) === canonicalGitRemote(right.remote);
+}
+
+type StoredIdentity = ProjectIdentity & { source: "registry" | "deployment" };
+
+function identityConflict(message: string, detail: Record<string, unknown>): never {
+  const error = new Error(message) as Error & { code: string; detail: Record<string, unknown> };
+  error.name = "ProjectIdentityConflictError";
+  error.code = "PROJECT_IDENTITY_CONFLICT";
+  error.detail = detail;
+  throw error;
+}
+
+function storedIdentities(roots: UserRoots): StoredIdentity[] {
+  const values = new Map<string, StoredIdentity>();
+  const file = path.join(roots.config, "registry.json");
+  if (fs.existsSync(file)) {
+    try {
+      const value = JSON.parse(fs.readFileSync(file, "utf-8"));
+      if (value?.projects && typeof value.projects === "object") {
+        for (const [id, raw] of Object.entries(value.projects as Record<string, any>)) {
+          const record = raw as Record<string, unknown>;
+          if (!/^[a-f0-9]{24}$/.test(id)
+              || record.id !== id
+              || typeof record.root !== "string"
+              || typeof record.gitCommonDir !== "string"
+              || (record.remote !== null && typeof record.remote !== "string")) continue;
+          values.set(id, {
+            id,
+            root: record.root,
+            gitCommonDir: record.gitCommonDir,
+            remote: record.remote as string | null,
+            source: "registry",
+          });
+        }
+      }
+    } catch {
+      // runtime/deployment performs strict registry validation. Identity lookup
+      // must never replace or reinterpret an unreadable registry.
+    }
+  }
+
+  const projectsDir = path.join(roots.state, "projects");
+  if (!fs.existsSync(projectsDir)) return [...values.values()];
+  for (const id of fs.readdirSync(projectsDir)) {
+    if (!/^[a-f0-9]{24}$/.test(id)) continue;
+    const deployment = path.join(projectsDir, id, "deployment.json");
+    if (!fs.existsSync(deployment)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(deployment, "utf-8"));
+      const identity = parsed?.identity as Record<string, unknown> | undefined;
+      if (!identity
+          || identity.id !== id
+          || typeof identity.root !== "string"
+          || typeof identity.gitCommonDir !== "string"
+          || (identity.remote !== null && typeof identity.remote !== "string")) continue;
+      const candidate: StoredIdentity = {
+        id,
+        root: identity.root,
+        gitCommonDir: identity.gitCommonDir,
+        remote: identity.remote as string | null,
+        source: "deployment",
+      };
+      const registered = values.get(id);
+      const mismatchedFields = registered ? [
+        ...(registered.root !== candidate.root ? ["root"] : []),
+        ...(registered.gitCommonDir !== candidate.gitCommonDir ? ["gitCommonDir"] : []),
+        ...(registered.remote !== candidate.remote ? ["remote"] : []),
+      ] : [];
+      if (registered && mismatchedFields.length) {
+        identityConflict("Registry and deployment identities disagree for one stored project.", {
+          projectId: id,
+          mismatchedFields,
+        });
+      }
+      values.set(id, candidate);
+    } catch (error) {
+      if ((error as any)?.code === "PROJECT_IDENTITY_CONFLICT") throw error;
+      // An unrelated unreadable deployment remains the responsibility of setup
+      // doctor. It must not be guessed into the current repository identity.
+    }
+  }
+  return [...values.values()];
+}
+
+function hasStoredProject(id: string, roots: UserRoots): boolean {
+  const storage = projectStoragePaths(id, roots);
+  return [storage.configDir, storage.stateDir, storage.cacheDir].some(directory => fs.existsSync(directory));
+}
+
+function legacyIdentityAlias(identity: ProjectIdentity, roots: UserRoots): ProjectIdentity | null {
+  if (!identity.remote) return null;
+  const identities = storedIdentities(roots);
+  const targetStored = identities.some(candidate => candidate.id === identity.id) || hasStoredProject(identity.id, roots);
+  const equivalent = identities.filter(candidate =>
+    candidate.id !== identity.id
+    && canonicalGitRemote(candidate.remote) === identity.remote,
+  );
+  const sameCheckout = equivalent.filter(candidate =>
+    sameCanonicalPath(candidate.root, identity.root)
+      && sameCanonicalPath(candidate.gitCommonDir, identity.gitCommonDir)
+      && hasStoredProject(candidate.id, roots),
+  );
+  const movedCheckout = equivalent.filter(candidate =>
+    !fs.existsSync(candidate.root) && hasStoredProject(candidate.id, roots),
+  );
+  const activeLegacy = sameCheckout.length ? sameCheckout : movedCheckout;
+
+  if (targetStored && activeLegacy.length) {
+    identityConflict("Canonical and legacy project identities both contain active external state.", {
+      canonicalProjectId: identity.id,
+      legacyProjectIds: activeLegacy.map(candidate => candidate.id),
+    });
+  }
+  if (activeLegacy.length > 1) {
+    identityConflict("Multiple legacy project identities contain active external state for the same repository.", {
+      canonicalProjectId: identity.id,
+      legacyProjectIds: activeLegacy.map(candidate => candidate.id),
+    });
+  }
+  if (targetStored || !activeLegacy.length) return null;
+
+  const legacy = activeLegacy[0];
+  if (sameCheckout.length) {
+    // Read-only alias: every identity-scoped artifact continues to resolve as
+    // one set, so phase, approval, scope, exam cache, and DocsGraph cannot be
+    // partially copied or lost during a transport-only remote change. Return
+    // the active canonical identity while retaining only the legacy storage id;
+    // public status must never project a credential-bearing stored remote.
+    return { ...identity, id: legacy.id };
+  }
+  // Preserve the historical moved-checkout recovery behavior. A subsequent
+  // setup/unset transaction will reconcile the stored root under this id.
+  return { ...identity, id: legacy.id };
 }
 
 export function resolveProjectIdentity(root: string, roots = userRoots()): ProjectIdentity {
@@ -131,12 +338,11 @@ export function resolveProjectIdentity(root: string, roots = userRoots()): Proje
     ?? git(canonical, ["rev-parse", "--git-common-dir"])
     ?? path.join(canonical, ".git");
   const gitCommonDir = path.isAbsolute(commonRaw) ? canonicalRoot(commonRaw) : canonicalRoot(path.join(canonical, commonRaw));
-  const remote = git(canonical, ["remote", "get-url", "origin"]);
+  const remote = canonicalGitRemote(git(canonical, ["remote", "get-url", "origin"]));
   const fingerprint = JSON.stringify({ root: canonical, gitCommonDir, remote: remote ?? "" });
   const generated = createHash("sha256").update(fingerprint).digest("hex").slice(0, 24);
   const provisional = { id: generated, root: canonical, gitCommonDir, remote };
-  const id = movedRegistryId(provisional, roots) ?? generated;
-  return { id, root: canonical, gitCommonDir, remote };
+  return legacyIdentityAlias(provisional, roots) ?? provisional;
 }
 
 export function projectPaths(root: string, roots = userRoots()): ProjectPaths {

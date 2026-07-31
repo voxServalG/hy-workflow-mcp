@@ -29,11 +29,6 @@ export async function handleReset(): Promise<ToolResult> {
   return toolResult("plan", {
     stage: "plan.before_plan",
     status: "completed",
-    display: {
-      title: "Workflow reset",
-      body: "Workflow state was reset to plan phase.",
-    },
-    hint: "Provide the new task to hy_read_docs(before_plan), then use the returned facts to construct hy_plan.",
     allowedTools: ["hy_read_docs", "hy_plan", "hy_status"],
     nextAction: {
       tool: null,
@@ -43,6 +38,5 @@ export async function handleReset(): Promise<ToolResult> {
     },
     control: { automatic: false, stop: true, reason: "completed" },
     userAction: null,
-    message: "Reset to plan phase. Read project docs for the new task before planning.",
   });
 }

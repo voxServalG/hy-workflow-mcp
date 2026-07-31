@@ -21,14 +21,15 @@ function resetPlanState(task = "test task"): void {
     documentReads: {
       beforePlan: {
         stage: "before_plan",
-        purpose: "test baseline",
         time: new Date().toISOString(),
         task,
         planHash: null,
         docsDir: "docs",
         digest: "test",
         files: [],
-        findings: [],
+        docsGraphDigest: "plan-command-validation-graph",
+        entryPoints: [],
+        traversalRoots: [],
       },
     },
   }, null, 2));
@@ -81,7 +82,7 @@ async function expectAccepted(): Promise<void> {
   const plan = basePlan();
   resetPlanState(plan.task);
   const result = await handlePlan({ task: plan.task, plan });
-  if (result.next !== "approve" || !result.summary) {
+  if (result.next !== "approve" || result.plan?.task !== plan.task || typeof result.decisionId !== "string") {
     throw new Error("valid pure shell commands should be accepted");
   }
 }
@@ -93,7 +94,7 @@ async function expectUvAccepted(): Promise<void> {
   plan.verify.smoke[0].command = "uv run python -m compileall -q src";
   plan.verify.tests[0].command = "uv run python -m pytest tests";
   const result = await handlePlan({ task: plan.task, plan });
-  if (result.next !== "approve" || !result.summary) {
+  if (result.next !== "approve" || result.plan?.task !== plan.task || typeof result.decisionId !== "string") {
     throw new Error("uv run commands should be accepted as pure executable shell commands");
   }
 }

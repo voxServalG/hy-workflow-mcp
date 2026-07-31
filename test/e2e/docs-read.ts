@@ -7,7 +7,7 @@ import { handleApprove } from "../../src/tools/approve.js";
 import { handlePlan } from "../../src/tools/plan.js";
 import { handleReadDocs } from "../../src/tools/read_docs.js";
 import { handleStatus } from "../../src/tools/status.js";
-import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { planDecisionId, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
 import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
@@ -52,6 +52,12 @@ function planState(): WorkflowState {
     approval: null,
     verifyHash: null,
   };
+}
+
+function currentPlanDecisionId(): string {
+  const decisionId = planDecisionId(readState().plan);
+  if (!decisionId) throw new Error("expected a current PlanDoc decision id");
+  return decisionId;
 }
 
 const originalCwd = cwd();
@@ -102,6 +108,9 @@ try {
   if (!bsnap.traversalRoots || bsnap.traversalRoots.length === 0) {
     throw new Error(`before_plan snapshot should include traversalRoots, got ${JSON.stringify(bsnap)}`);
   }
+  if (Object.hasOwn(bsnap, "purpose") || Object.hasOwn(bsnap, "findings")) {
+    throw new Error(`read-docs snapshots must contain facts rather than model-facing prose: ${JSON.stringify(bsnap)}`);
+  }
   if (!existsSync(projectPaths(root).docsGraph) || existsSync(join(root, ".git", "hy-workflow", "docs-graph.json"))) {
     throw new Error("before_plan should create DocsGraph only in the identity-scoped user cache");
   }
@@ -124,12 +133,24 @@ try {
   if (planned.phase !== "approve") {
     throw new Error(`hy_plan should pass after before_plan even when task text differs, got ${JSON.stringify(planned)}`);
   }
-  if (!planned.warnings?.some((warning: string) => warning.includes("before_plan task differs"))) {
+  if (!planned.warnings?.some((warning: any) =>
+    warning?.code === "BEFORE_PLAN_TASK_MISMATCH"
+      && warning.beforePlanTask === baselineTask
+      && warning.planTask === plan.task
+  )) {
     throw new Error(`hy_plan should warn when before_plan task differs, got ${JSON.stringify(planned)}`);
   }
   const waitingDecision = await handleStatus();
   if (waitingDecision.userAction?.kind !== "approval" || waitingDecision.nextAction.tool !== null || waitingDecision.stage !== "approve.decision") {
     throw new Error(`status must wait for the first user decision before the automatic before_approve audit: ${JSON.stringify(waitingDecision)}`);
+  }
+
+  const stateBeforeStaleDecision = JSON.stringify(readState());
+  const staleDecision = await handleApprove({ approved: "approve", decisionId: "plan:000000000000" });
+  if (staleDecision.error?.code !== "APPROVAL_DECISION_ID_MISMATCH"
+      || staleDecision.userAction?.decisionId !== currentPlanDecisionId()
+      || JSON.stringify(readState()) !== stateBeforeStaleDecision) {
+    throw new Error(`a stale approval decision must be rejected without mutation: ${JSON.stringify(staleDecision)}`);
   }
 
   const stateBeforePrematureAudit = JSON.stringify(readState());
@@ -149,7 +170,7 @@ try {
     throw new Error(`a premature before_approve call must not audit, persist, or imply approval: ${JSON.stringify(stateAfterPrematureAudit)}`);
   }
 
-  const missingAudit = await handleApprove({ approved: "approve", note: "user approved" });
+  const missingAudit = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
   if (!(missingAudit.error?.message ?? String(missingAudit.error)).includes("before_approve")) {
     throw new Error(`hy_approve should require before_approve audit, got ${JSON.stringify(missingAudit)}`);
   }
@@ -172,11 +193,11 @@ try {
     throw new Error(`document drift should stop for an agent audit decision without asking the user again: ${JSON.stringify(auditedDecision)}`);
   }
   const driftAuditState = readState();
-  const missingAuditDecision = await handleApprove({ approved: "approve", note: "user approved" });
+  const missingAuditDecision = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
   if (missingAuditDecision.error?.code !== "APPROVAL_AUDIT_DECISION_REQUIRED" || missingAuditDecision.userAction !== null) {
     throw new Error(`document drift must require an explicit agent audit decision, not another user approval: ${JSON.stringify(missingAuditDecision)}`);
   }
-  const replanned = await handleApprove({ approved: "approve", note: "user approved", auditDecision: "replan" });
+  const replanned = await handleApprove({ approved: "approve", note: "user approved", auditDecision: "replan", decisionId: currentPlanDecisionId() });
   if (replanned.phase !== "plan"
       || replanned.nextAction.tool !== "hy_read_docs"
       || replanned.nextAction.arguments?.stage !== "before_plan"
@@ -188,7 +209,7 @@ try {
   }
 
   writeState(driftAuditState);
-  const driftApproval = await handleApprove({ approved: "approve", note: "user approved", auditDecision: "continue" });
+  const driftApproval = await handleApprove({ approved: "approve", note: "user approved", auditDecision: "continue", decisionId: currentPlanDecisionId() });
   if (driftApproval.phase !== "branch" || driftApproval.approved !== true) {
     throw new Error(`digest drift alone must not consume another user approval; the agent decides whether facts require replanning: ${JSON.stringify(driftApproval)}`);
   }
@@ -220,8 +241,12 @@ try {
         : null,
     },
   });
-  const staleAudit = await handleApprove({ approved: "approve", note: "user approved" });
-  if (!String(staleAudit.hint).includes("before_approve plan hash does not match")) {
+  const staleAudit = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
+  if (staleAudit.ok !== false
+      || staleAudit.error?.type !== "docs"
+      || staleAudit.error?.subtype !== "docs_missing"
+      || staleAudit.documentReadHealth?.blockedBy?.gate !== "beforeApprove"
+      || staleAudit.documentReadHealth.blockedBy.reason !== "before_approve plan hash does not match the current PlanDoc.") {
     throw new Error(`hy_approve should reject stale before_approve audit, got ${JSON.stringify(staleAudit)}`);
   }
 
@@ -234,7 +259,7 @@ try {
   unlinkSync(join(root, "guides", "unread.md"));
 
   writeState(stateWithAudit);
-  const approved = await handleApprove({ approved: "approve", note: "user approved" });
+  const approved = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
   if (approved.phase !== "branch" || approved.approved !== true) {
     throw new Error(`hy_approve should pass after before_approve, got ${JSON.stringify(approved)}`);
   }
