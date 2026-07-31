@@ -272,7 +272,14 @@ assert("artifacts" in deployment && Object.keys(deployment.artifacts).length ===
 const externalConfig = JSON.parse(fs.readFileSync(paths.config, "utf8"));
 assert(externalConfig.project?.baseBranch === "main" && externalConfig.codelint?.lintDirs?.length, "fresh helper registration must write a complete external config");
 const registry = JSON.parse(fs.readFileSync(paths.registry, "utf8"));
-assert(registry.projects[paths.identity.id]?.root === root, "fresh helper registration must register the exact project identity");
+const registeredIdentity = registry.projects[paths.identity.id];
+assert(
+  registeredIdentity?.id === paths.identity.id
+    && registeredIdentity.root === paths.identity.root
+    && registeredIdentity.gitCommonDir === paths.identity.gitCommonDir
+    && registeredIdentity.remote === paths.identity.remote,
+  `fresh helper registration must register the canonical project identity: ${JSON.stringify(registeredIdentity)}`,
+);
 
 adapter.installed = true;
 const completed = await runHelperCli(["install", "--clients", "codex", "--mode", "copy", "--json"], dependencies);
