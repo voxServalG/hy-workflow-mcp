@@ -70,6 +70,7 @@ const requiredScripts = ["clean", "build", "lint", "lint:contract", "test", "tes
 for (const script of requiredScripts) {
   assert(typeof pkg.scripts?.[script] === "string", `Missing required npm script: ${script}`);
 }
+assert(pkg.scripts?.["test:acceptance"] === "npm run test:acceptance:pressure --", "release acceptance alias must preserve the npm argument separator");
 const windowsSmoke = readFileSync("scripts/windows-smoke.mjs", "utf8");
 for (const token of ["npm pack", "test/unit/skills-cli.ts", "installed skills list", "installed skills read", "hy-workflow.skills.v1", "installed lint", "installed helper", "projectFilesChanged", "codelint.json"]) {
   assert(windowsSmoke.includes(token), `Windows smoke is missing installed-package lifecycle evidence: ${token}`);
@@ -190,7 +191,12 @@ const helperFaultEvidence = scenarios.includes("helperFaultChild")
   || scenarios.includes("beforeManifestWrite") && scenarios.includes("afterMutation")
   || scenarios.includes("helper projector atomic rollback");
 assert(scenarios.includes("isolatedUserStateFingerprint") && helperFaultEvidence, "helper projector fault pressure must prove atomic rollback of isolated user state");
-assert(scenarios.includes("\"HELPER_SKILL_BUSY\"") && scenarios.includes("retryableContention") && scenarios.includes("postContentionRecovery") && scenarios.includes("[\"helper\", \"install\""), "helper install contention must accept only structured retryable Skill-lock contention and prove post-contention convergence");
+assert(
+  scenarios.includes("\"HELPER_OPERATION_BUSY\"") && scenarios.includes("\"operation_lock\"")
+    && scenarios.includes("retryableContention") && scenarios.includes("postContentionRecovery")
+    && scenarios.includes("[\"helper\", \"install\""),
+  "helper install contention must accept only structured retryable complete-lifecycle lock contention and prove post-contention convergence",
+);
 assert(scenarios.includes("run(\"hy-workflow\", [\"helper\", \"install\"") && scenarios.includes("projectFilesChanged") && scenarios.includes("length === 0"), "fresh installed helper acceptance must prove zero project-file writes");
 for (const removedToken of ["TestOwnedMigration", "MANAGED_RULES_BLOCK", "verifyStaleManagedAgentsAutoMigration", "verifyCodexProjectShadowBoundary", "migrateCodexProjectSectionsExplicitly", "verifyLegacyShadowBoundary", "managedAgentsOriginal", "codexProjectMigration", "--ci-command", "--accept-ci-commands", "ciConfirmationRequired", "--print-managed-rules"]) {
   assert(!scenarios.includes(removedToken), `release scenarios must not contain removed setup behavior: ${removedToken}`);
@@ -201,7 +207,7 @@ assert(scenarios.includes('summary.notConfiguredRules.includes("C003")') && scen
 for (const forbiddenToken of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "npx --yes --package"]) {
   assert(!scenarios.includes(forbiddenToken), `release pressure must not contain ${forbiddenToken}`);
 }
-assert(harness.includes("Acceptance harness refuses remote write command") && runner.includes("remote-write-attempt"), "acceptance must reject and audit remote-write attempts");
+assert(harness.includes("Acceptance harness refuses remote write command") && runner.includes("remote-write-attempt") && runner.includes("existsSync(eventFile)"), "acceptance must reject and audit remote-write attempts while treating no client invocation as an empty event log");
 assert(harness.includes("const fetchAttempts = 3") && harness.includes('"http.version=HTTP/1.1"') && harness.includes('"shallow.lock"'), "pinned repository clones must use bounded HTTPS retries and clean only temporary Git locks");
 assert(harness.includes("ACCEPTANCE_WORKSPACE_LIMIT_BYTES") && scenarios.includes("assertWorkspaceDiskBudget") && runner.includes("workspaceDisk"), "acceptance must enforce and report a fixed recursive workspace disk budget");
 

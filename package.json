@@ -22,7 +22,7 @@
     "test:acceptance:baseline": "npx tsx test/acceptance/baseline-runner.ts",
     "test:acceptance:migration": "npx tsx test/acceptance/public-migration-oracle.ts",
     "test:acceptance:pressure": "npx tsx test/acceptance/runner.ts --profile release",
-    "test:acceptance": "npm run test:acceptance:pressure",
+    "test:acceptance": "npm run test:acceptance:pressure --",
     "test:windows": "node scripts/windows-smoke.mjs",
     "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
     "verify": "npm run build && npm test",

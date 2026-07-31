@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   abortAcceptance,
@@ -81,7 +81,9 @@ async function main(): Promise<void> {
   process.stdout.write(JSON.stringify({ event: "acceptance-scenario", ok: true, ...report.results.at(-1) }) + "\n");
 
   const eventFile = workspace.env.HY_ACCEPTANCE_CLIENT_EVENTS!;
-  const events = readFileSync(eventFile, "utf8").split(/\r?\n/).filter(Boolean);
+  const events = existsSync(eventFile)
+    ? readFileSync(eventFile, "utf8").split(/\r?\n/).filter(Boolean)
+    : [];
   if (events.some(line => JSON.parse(line).action === "remote-write-attempt")) {
     throw new Error("A client attempted a remote write during acceptance");
   }
