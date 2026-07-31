@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import { projectRoot, type DocsGraph, type DocsGraphEntry, type DocsGraphLink } from "./state.js";
 import { DOC_EXTENSIONS, isDocumentPath, pathInsideDocs, relativeInside, relativeToDocs, resolveDocsDir } from "./docs_paths.js";
 import { atomicWriteJson, projectPaths } from "./runtime/user-paths.js";
-import { resolveGitPrivatePath } from "./runtime/project.js";
 import { shouldIgnoreDocumentPath } from "./policy/docs.js";
 
 const GRAPH_DIGEST_VERSION = "docs-graph-v3";
@@ -27,8 +26,23 @@ function graphPath(root: string): string {
   return projectPaths(root).docsGraph;
 }
 
-function legacyGraphPath(root: string): string {
-  return resolveGitPrivatePath(root, path.join("hy-workflow", "docs-graph.json"));
+function isAllowedGraphPath(root: string, docsDir: string, file: string): boolean {
+  return !shouldIgnoreDocumentPath(file)
+    && isDocumentPath(file)
+    && pathInsideDocs(root, docsDir, file);
+}
+
+function graphContainsOnlyAllowedPaths(root: string, graph: DocsGraph): boolean {
+  try {
+    if (!graph || typeof graph !== "object" || typeof graph.docsDir !== "string" || !graph.entries || typeof graph.entries !== "object" || !Array.isArray(graph.entryPoints)) return false;
+    for (const [file, entry] of Object.entries(graph.entries)) {
+      if (!entry || typeof entry !== "object" || entry.path !== file || !Array.isArray(entry.links) || !isAllowedGraphPath(root, graph.docsDir, file)) return false;
+      if (entry.links.some(link => !link || typeof link.target !== "string" || !isAllowedGraphPath(root, graph.docsDir, link.target))) return false;
+    }
+    return graph.entryPoints.every(file => typeof file === "string" && Boolean(graph.entries[file]) && isAllowedGraphPath(root, graph.docsDir, file));
+  } catch {
+    return false;
+  }
 }
 
 function normalizeLink(
@@ -94,6 +108,7 @@ function extractTargetPath(rawTarget: string): string {
 // ── Graph files ─────────────────────────────────────────────
 
 function listDocFiles(root: string, docsDir: string): string[] {
+  if (shouldIgnoreDocumentPath(docsDir)) throw new Error("project.docsDir points to an ignored legacy or runtime path.");
   const resolvedDocsDir = resolveDocsDir(root, docsDir);
   if (!resolvedDocsDir.ok) throw new Error(resolvedDocsDir.error);
   const { docsRoot } = resolvedDocsDir;
@@ -369,12 +384,9 @@ export function saveDocsGraph(root: string, graph: DocsGraph): void {
 
 export function loadDocsGraph(root: string): DocsGraph | null {
   const p = graphPath(root);
-  const source = fs.existsSync(p) ? p : legacyGraphPath(root);
-  if (!fs.existsSync(source)) return null;
+  if (!fs.existsSync(p)) return null;
   try {
-    const graph = JSON.parse(fs.readFileSync(source, "utf-8")) as DocsGraph;
-    if (source !== p) saveDocsGraph(root, graph);
-    return graph;
+    return JSON.parse(fs.readFileSync(p, "utf-8")) as DocsGraph;
   } catch {
     return null;
   }
@@ -388,17 +400,6 @@ export function isGraphStale(root: string, graph: DocsGraph): boolean {
   } catch {
     return true;
   }
-}
-
-export function hasLegacyRelativeTargets(root: string, graph: DocsGraph): boolean {
-  for (const entry of Object.values(graph.entries)) {
-    for (const link of entry.links) {
-      if (graph.entries[link.target]) continue;
-      if (pathInsideDocs(root, graph.docsDir, link.target)) continue;
-      if (fs.existsSync(path.join(root, graph.docsDir, link.target))) return true;
-    }
-  }
-  return false;
 }
 
 // ── Task-driven BFS traversal ───────────────────────────────
@@ -457,7 +458,8 @@ export function traverseByTask(
   const visited = new Set<string>();
   const read: string[] = [];
   const sourcePaths: string[][] = [];
-  const entryPoints = [...graph.entryPoints, ...extraEntryPoints];
+  const entryPoints = [...graph.entryPoints, ...extraEntryPoints]
+    .filter(file => isAllowedGraphPath(root, graph.docsDir, file));
 
   // Deduplicate entry points
   const dedupedEntryPoints: string[] = [];
@@ -472,6 +474,7 @@ export function traverseByTask(
   while (queue.length > 0) {
     const item = queue.shift()!;
     if (visited.has(item.path)) continue;
+    if (!isAllowedGraphPath(root, graph.docsDir, item.path)) continue;
     visited.add(item.path);
 
     const entry = graph.entries[item.path];
@@ -493,6 +496,7 @@ export function traverseByTask(
 
     // Evaluate outgoing links
     for (const link of entry.links) {
+      if (!isAllowedGraphPath(root, graph.docsDir, link.target)) continue;
       // Always traverse entry points regardless of score
       const score = matchScore(link.anchor, link.target, task);
       if (score > 0 || dedupedEntryPoints.includes(link.target)) {
@@ -532,7 +536,8 @@ export function incrementalUpdate(
   const resolvedDocsDir = resolveDocsDir(root, graph.docsDir);
   if (!resolvedDocsDir.ok) throw new Error(resolvedDocsDir.error);
   const { docsRoot } = resolvedDocsDir;
-  const updated = { ...graph, entries: { ...graph.entries } };
+  const source = graphContainsOnlyAllowedPaths(root, graph) ? graph : buildDocsGraph(root, graph.docsDir);
+  const updated = { ...source, entries: { ...source.entries } };
 
   for (const cf of changedFiles) {
     if (!pathInsideDocs(root, graph.docsDir, cf)) continue;
@@ -636,7 +641,9 @@ export function detectBrokenLinks(
 ): BrokenLink[] {
   const broken: BrokenLink[] = [];
   for (const [srcPath, entry] of Object.entries(entries)) {
+    if (shouldIgnoreDocumentPath(srcPath)) continue;
     for (const link of entry.links) {
+      if (shouldIgnoreDocumentPath(link.target)) continue;
       const fullTarget = path.join(root, link.target);
       if (!fs.existsSync(fullTarget)) {
         broken.push({ source: srcPath, target: link.target, anchor: link.anchor, line: link.line });
@@ -650,7 +657,10 @@ export function detectBrokenLinks(
 
 export function ensureGraph(root: string, docsDir: string): DocsGraph {
   const existing = loadDocsGraph(root);
-  if (existing && existing.docsDir === docsDir && !isGraphStale(root, existing) && !hasLegacyRelativeTargets(root, existing)) {
+  if (existing
+    && existing.docsDir === docsDir
+    && graphContainsOnlyAllowedPaths(root, existing)
+    && !isGraphStale(root, existing)) {
     return existing;
   }
   return buildDocsGraph(root, docsDir);

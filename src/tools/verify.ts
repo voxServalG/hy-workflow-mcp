@@ -1,43 +1,145 @@
-import { readState, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, documentReadHealth } from "../state.js";
+import { amendmentDecisionId, approvalMatchesPlan, computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, supersedeCommitRecoveryAfterVerification, writeState, transition, assertPhase, projectRoot, computeImplementationDigest, documentReadHealth } from "../state.js";
 import { buildImplementationManifest } from "../checks.js";
 import { runAllChecksAsync } from "../checks-async.js";
 import { implementationDigest } from "./sync_docs.js";
 import { toolResult, type ToolResult } from "./_base.js";
+import { applyAmendment, isNonMaterialScopeNarrowing, writeScopeLock } from "./amend_plan.js";
+import { validatePlanScopePaths } from "../plan_validation.js";
 
 export async function handleVerify(): Promise<ToolResult> {
-  const state = readState();
+  let state = readState();
   assertPhase(state, "edit", "verify");
+  const currentStage = state.stage ?? (state.phase === "verify" ? "verify.run" : "edit.implementation");
 
-  if (!state.plan) return toolResult("verify", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
+  if (!state.plan) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "VERIFY_PLAN_MISSING",
+        message: "Workflow state reached verification without an active PlanDoc.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
+  }
+  const plan = state.plan;
+  if (!approvalMatchesPlan(state.approval, plan)) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      error: {
+        type: "workflow_state",
+        subtype: "approval_missing",
+        code: "VERIFY_APPROVAL_PLAN_MISMATCH",
+        message: "The current PlanDoc is not bound to a valid approval.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
+  }
 
   const root = projectRoot();
-  const currentImplementationDigest = implementationDigest(root, state.plan, buildImplementationManifest(root));
+  const scopePathErrors = validatePlanScopePaths(root, plan, "verify");
+  if (scopePathErrors.length) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "VERIFY_SCOPE_INVALID",
+        message: `Stored PlanDoc scope contains invalid paths: ${scopePathErrors.join("; ")}`,
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
+  }
+  const currentImplementationDigest = implementationDigest(root, plan, buildImplementationManifest(root));
   const health = documentReadHealth(state, currentImplementationDigest);
   if (!health.okForVerify) {
     const blocked = health.blockedBy;
     return toolResult("edit", {
       phase: state.phase,
+      stage: currentStage,
       error: blocked?.reason ?? "after_edit document audit and hy_sync_docs must be current before hy_verify.",
       documentReadHealth: health,
-      hint: blocked?.tool === "hy_sync_docs"
-        ? "Call hy_sync_docs to confirm the document sync gate, then rerun hy_verify."
-        : "Call hy_read_docs with { stage: \"after_edit\" }, then hy_sync_docs, then rerun hy_verify.",
       allowedTools: [blocked?.tool ?? "hy_read_docs", "hy_status"],
-      blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+      blockedTools: ["hy_commit", "hy_merge"],
     });
   }
 
+  state = transition(state, "verify");
+  state.stage = "verify.run";
+  state.activeExam = null;
+  writeState(state);
   const report = await runAllChecksAsync(root, state);
 
   if (!report.allPassed) {
     if (report.status === "amend_required" && report.suggestedAmendment) {
+      if (isNonMaterialScopeNarrowing(plan, report.suggestedAmendment)) {
+        const amendedPlan = applyAmendment(plan, report.suggestedAmendment);
+        const scopeErrors = validatePlanScopePaths(root, amendedPlan, "amendment");
+        if (!scopeErrors.length) {
+          const decisionId = amendmentDecisionId(plan, report.suggestedAmendment)!;
+          const planHash = computePlanHash(amendedPlan)!;
+          const next = transition(state, "verify");
+          next.plan = amendedPlan;
+          next.approval = rebindApprovalForNonMaterialNarrowing(state.approval, plan, amendedPlan, decisionId);
+          next.pendingAmendment = null;
+          next.implementationManifest = report.implementationManifest;
+          next.verifyHash = null;
+          next.verifiedImplementationDigest = null;
+          next.verifiedManifestHash = null;
+          next.documentReads = next.documentReads ? {
+            ...next.documentReads,
+            beforeApprove: next.documentReads.beforeApprove ? { ...next.documentReads.beforeApprove, planHash } : next.documentReads.beforeApprove,
+            afterEdit: next.documentReads.afterEdit ? { ...next.documentReads.afterEdit, planHash } : next.documentReads.afterEdit,
+          } : next.documentReads;
+          next.syncDocs = next.syncDocs ? { ...next.syncDocs, planHash } : next.syncDocs;
+          writeState(next);
+          writeScopeLock(amendedPlan, state.branch);
+          return toolResult("verify", {
+            phase: "verify",
+            amended: true,
+            material: false,
+            appliedAmendment: report.suggestedAmendment,
+            decisionId: next.approval.decisionId,
+            stage: "verify.run",
+            status: "warning",
+            allowedTools: ["hy_verify", "hy_status"],
+            blockedTools: ["hy_commit", "hy_merge"],
+            nextAction: { tool: "hy_verify", phase: "verify", stage: "verify.run", automatic: true },
+            control: { automatic: true, stop: false, reason: "automatic" },
+            userAction: null,
+          });
+        }
+      }
       const next = transition(state, "verify");
+      next.stage = "verify.amendment";
       next.pendingAmendment = report.suggestedAmendment;
       next.implementationManifest = report.implementationManifest;
       next.verifyHash = null;
       next.verifiedImplementationDigest = null;
       next.verifiedManifestHash = null;
       writeState(next);
+      const decisionId = amendmentDecisionId(plan, report.suggestedAmendment)!;
 
       return toolResult("verify", {
         passed: false,
@@ -47,23 +149,19 @@ export async function handleVerify(): Promise<ToolResult> {
         checks: report.checks,
         implementationManifest: report.implementationManifest,
         suggestedAmendment: report.suggestedAmendment,
-        display: {
-          title: "Plan amendment required",
-          body: [
-            "hy_verify found scope drift that appears to stay inside the approved task boundary.",
-            "Review suggestedAmendment, then call hy_amend_plan with approved='approve' to apply it.",
-          ].join("\n"),
-        },
         requires_user: true,
         stop_here: true,
-        hint: "Show the suggested amendment to the user. If approved, call hy_amend_plan, then rerun hy_verify. Do not reset to plan for amendable scope drift.",
+        decisionId,
+        stage: "verify.amendment",
         allowedTools: ["hy_amend_plan", "hy_verify", "hy_status"],
-        blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
-        recovery: {
-          tool: "hy_amend_plan",
-          instruction: "Apply the pending plan amendment only after explicit user approval, then rerun hy_verify.",
+        blockedTools: ["hy_commit", "hy_merge"],
+        nextAction: { tool: null, phase: "verify", stage: "verify.amendment", automatic: false },
+        control: { automatic: false, stop: true, reason: "approval_required" },
+        userAction: {
+          kind: "approval",
+          decisionId,
+          options: ["approve", "reject", "revise"],
         },
-        message: "Scope drift can be handled with hy_amend_plan. Await approval before amending.",
       });
     }
 
@@ -78,30 +176,19 @@ export async function handleVerify(): Promise<ToolResult> {
     return toolResult("edit", {
       passed: false,
       allPassed: false,
-      status: report.status,
+      status: "failed",
       hardFailed: report.hardFailed,
       total: report.total,
       checks: report.checks,
       failedChecks,
       implementationManifest: report.implementationManifest,
       suggestedAmendment: report.suggestedAmendment,
-      hint: "Do not call hy_commit. Inspect failed check layers, fix the minimal cause, then rerun hy_verify. If any command exceeds 60s or the full suite exceeds the MCP client timeout, switch to the async exam path (hy_exam_plan → run commands via Bash → hy_exam_submit).",
       allowedTools: ["hy_edit", "hy_verify", "hy_exam_plan", "hy_status"],
-      blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
-      recovery: {
-        tool: "hy_edit",
-        instruction: "Fix failed checks, then rerun hy_verify.",
-        byLayer: {
-          lint: "Fix formatting, imports, naming, or static rule violations without changing business behavior just to silence lint.",
-          compile: "Fix types, imports, exports, or build configuration.",
-          scope: "Remove unintended scope-out changes. If verify returns amend_required, use hy_amend_plan instead of resetting to plan.",
-          boundary: "Fix real entry points or module boundaries; do not replace checks with hollow commands.",
-          platform: "Fix setup or dependency assumptions; do not skip setup silently.",
-          smoke: "Fix the smallest executable path covered by the smoke check.",
-          tests: "Fix code or tests; do not delete failing tests or weaken assertions.",
-        },
-      },
-      message: `${report.hardFailed} checks failed: ${failedChecks.join(", ")}. Fix and re-run hy_verify.`,
+      blockedTools: ["hy_commit", "hy_merge"],
+      recovery: { strategy: "repair_and_retry", tool: "hy_edit" },
+      nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.implementation", automatic: true },
+      control: { automatic: true, stop: false, reason: "repair_required" },
+      userAction: null,
     });
   }
 
@@ -110,18 +197,21 @@ export async function handleVerify(): Promise<ToolResult> {
   next.pendingAmendment = null;
   next.implementationManifest = report.implementationManifest;
   next.verifiedImplementationDigest = computeImplementationDigest(root, report.implementationManifest);
+  next.approval = supersedeCommitRecoveryAfterVerification(next.approval);
   writeState(next);
 
   return toolResult("commit", {
     passed: true,
     allPassed: true,
-    status: report.status,
+    status: "passed",
+    stage: "commit.prepare",
     checks: report.checks,
     implementationManifest: report.implementationManifest,
     verifyHash: next.verifiedImplementationDigest,
-    hint: "Verification passed. Call hy_commit next to create the PR; do not edit files without rerunning hy_verify.",
     allowedTools: ["hy_commit", "hy_status"],
     blockedTools: ["hy_merge"],
-    message: `All ${report.total} checks passed. Ready to commit.`,
+    nextAction: { tool: null, phase: "commit", stage: "commit.prepare", automatic: false },
+    control: { automatic: false, stop: true, reason: "information_required" },
+    userAction: null,
   });
 }

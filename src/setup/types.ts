@@ -1,4 +1,6 @@
 import type { ClientName, DeploymentMode } from "../runtime/deployment.js";
+import type { StructuredError } from "../errs/structured.js";
+import type { ToolRecovery } from "../output/envelope.js";
 
 export type SetupAction = "setup" | "unset";
 export type SetupLanguage = "zh" | "en";
@@ -59,6 +61,12 @@ export type SetupOptions = {
   dryRun: boolean;
   json: boolean;
   removeGlobal: boolean;
+  /**
+   * Independent, explicit intent to replace occupied project integration
+   * targets. Without this flag, artifact review inputs are inert and setup
+   * treats unowned project files as metadata-only legacy surface.
+   */
+  syncProjectArtifacts?: boolean;
   acceptArtifactChanges?: boolean;
   /** Exact artifact diff hashes shown to and accepted by the user. */
   reviewedArtifactChanges?: Array<Pick<ArtifactChange, "file" | "beforeHash" | "afterHash">>;
@@ -72,10 +80,8 @@ export type SetupOptions = {
    */
   forceClientOverwrite?: ClientName[];
   /**
-   * When true, setup scans the project root for legacy client-local MCP definitions
-   * (.mcp.json, .opencode/, .codex/, .claude/), backs them up under
-   * .hy-cleanup-backup/<timestamp>/, ensures user-scope definitions for hy-workflow/docs-gardener,
-   * and moves the project-level legacy files out of the way.
+   * Deprecated compatibility input. Historical project injections are inert;
+   * setup never scans, copies, moves, deletes, or interprets them.
    */
   migrateLegacyClients?: boolean;
 };
@@ -103,9 +109,42 @@ export type ArtifactChange = {
   requiresAcceptance: boolean;
 };
 
-export type SetupResult = {
-  ok: boolean;
+export type SetupCliPhase = "setup";
+export type SetupCliStage = "setup.apply" | "setup.unset";
+export type SetupCliStatus = "completed" | "failed";
+
+export type SetupCliNextAction = {
+  tool: string | null;
+  arguments?: Record<string, unknown>;
+  phase: SetupCliPhase;
+  stage: SetupCliStage;
+  automatic: boolean;
+};
+
+export type SetupCliControl = {
+  automatic: boolean;
+  stop: boolean;
+  reason: "completed" | "repair_required" | "wait_required";
+};
+
+export type SetupCliUserAction = {
+  kind: "review_failure" | "wait";
+  instruction: string;
+};
+
+export type SetupContract = {
+  phase: SetupCliPhase;
   action: SetupAction;
+  stage: SetupCliStage;
+  status: SetupCliStatus;
+  nextAction: SetupCliNextAction;
+  control: SetupCliControl;
+  userAction: SetupCliUserAction | null;
+  recovery?: ToolRecovery;
+};
+
+export type SetupResult = SetupContract & {
+  ok: true;
   mode: DeploymentMode;
   projectId: string;
   projectRoot: string;
@@ -115,7 +154,6 @@ export type SetupResult = {
   remainingProjects?: number;
   dryRun: boolean;
   message: string;
-  recovery?: string[];
   removed?: boolean;
   remainingOwnedClients?: ClientName[];
   transactionId?: string;
@@ -123,6 +161,15 @@ export type SetupResult = {
   artifactChanges?: ArtifactChange[];
   ciCandidates?: string[];
   ciConfirmationRequired?: boolean;
+  /** How setup treated the two repository integration targets. */
+  projectFileDisposition?: "fresh" | "managed" | "explicit-sync" | "external-only" | "legacy-inert";
+  /** Configuration authority established or preserved by this setup result. */
+  configAuthority?: "project" | "external" | "preserved";
+};
+
+export type SetupFailureResult = SetupContract & {
+  ok: false;
+  error: StructuredError;
 };
 
 export type SetupErrorSubtype =

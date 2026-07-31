@@ -1,6 +1,5 @@
 {
   "schemaVersion": "1",
-  "companionPackage": "@voxstudio/docs-gardener@1.0.0-next.0",
   "repositories": [
     {
       "id": "vite",

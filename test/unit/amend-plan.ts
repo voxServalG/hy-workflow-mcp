@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest, runScopeCheck, suggestPlanAmendment } from "../../src/checks.js";
-import { handleAmendPlan } from "../../src/tools/amend_plan.js";
-import { readState, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { handleAmendPlan, isNonMaterialScopeNarrowing } from "../../src/tools/amend_plan.js";
+import { amendmentDecisionId, computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -45,6 +45,13 @@ function baseState(plan: PlanDoc): WorkflowState {
   };
 }
 
+function currentAmendmentDecisionId(): string {
+  const state = readState();
+  const decisionId = amendmentDecisionId(state.plan, state.pendingAmendment);
+  if (!decisionId) throw new Error("expected a pending amendment decision id");
+  return decisionId;
+}
+
 const originalCwd = cwd();
 const root = mkdtempSync(join(tmpdir(), "hy-amend-plan-"));
 
@@ -53,12 +60,14 @@ try {
   run("git config user.email test@example.com", root);
   run("git config user.name Test", root);
   mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, "docs"), { recursive: true });
   writeFileSync(join(root, "src", "app.ts"), "export const value = 1;\n");
+  writeFileSync(join(root, "docs", "README.md"), "# Test documentation\n");
+  writeFileSync(join(root, "docs", "unchanged.md"), "# Unchanged documentation\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
     project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
     codelint: { lintDirs: ["src"] },
   }, null, 2) + "\n");
-  writeFileSync(join(root, "codelint.json"), "{\"baseBranch\":\"dev\"}\n");
   run("git add .", root);
   run("git commit -m init", root);
   run("git update-ref refs/remotes/origin/main HEAD", root);
@@ -78,9 +87,23 @@ try {
       warnings: [],
     },
   });
-  const externalResult = await handleAmendPlan({ approved: "approve", note: "reject external" });
+  const externalResult = await handleAmendPlan({ approved: "approve", note: "reject external", decisionId: currentAmendmentDecisionId() });
   if (!String(externalResult.error?.message).includes("outside the project root")) {
     throw new Error(`hy_amend_plan should reject external amendment paths, got ${JSON.stringify(externalResult)}`);
+  }
+
+  writeState({
+    ...baseState(plan),
+    pendingAmendment: {
+      reason: "authority-excluded project-local path",
+      scope: { changes: { add: [], remove: [] }, new_files: { add: [".opencode/opencode.json"], remove: [] }, delete: { add: [], remove: [] } },
+      warnings: [],
+    },
+  });
+  const excludedResult = await handleAmendPlan({ approved: "approve", note: "reject authority-excluded path", decisionId: currentAmendmentDecisionId() });
+  if (!String(excludedResult.error?.message).includes(".opencode/opencode.json")
+      || !String(excludedResult.error?.message).includes("permanently outside hy-workflow authority")) {
+    throw new Error(`hy_amend_plan should reject authority-excluded amendment paths, got ${JSON.stringify(excludedResult)}`);
   }
 
   writeState({
@@ -91,7 +114,7 @@ try {
       warnings: [],
     },
   });
-  const emptyResult = await handleAmendPlan({ approved: "approve", note: "reject empty" });
+  const emptyResult = await handleAmendPlan({ approved: "approve", note: "reject empty", decisionId: currentAmendmentDecisionId() });
   if (!String(emptyResult.error?.message).includes("amended PlanDoc scope is empty")) {
     throw new Error(`hy_amend_plan should reject amendments that empty the PlanDoc scope, got ${JSON.stringify(emptyResult)}`);
   }
@@ -108,7 +131,7 @@ try {
 
   const overDeclaredPlan: PlanDoc = {
     ...plan,
-    scope: { ...plan.scope, changes: [...plan.scope.changes, "codelint.json"] },
+    scope: { ...plan.scope, changes: [...plan.scope.changes, "docs/unchanged.md"] },
   };
   const missingDeclared = runScopeCheck(root, overDeclaredPlan, manifest)
     .find(check => check.detail.includes("Declared but not changed"));
@@ -116,18 +139,147 @@ try {
     throw new Error(`declared-but-unchanged paths should require explicit scope amendment, got ${JSON.stringify(missingDeclared)}`);
   }
   const removal = suggestPlanAmendment(overDeclaredPlan, manifest);
-  if (!removal?.scope.changes.remove.includes("codelint.json")) {
+  if (!removal?.scope.changes.remove.includes("docs/unchanged.md")) {
     throw new Error(`expected suggested removal for the unchanged declared path, got ${JSON.stringify(removal)}`);
+  }
+  if (isNonMaterialScopeNarrowing(overDeclaredPlan, removal)) {
+    throw new Error("a mixed removal plus new test target must remain a material amendment");
+  }
+  const removalOnly = {
+    ...removal,
+    scope: {
+      changes: { add: [], remove: ["docs/unchanged.md"] },
+      new_files: { add: [], remove: [] },
+      delete: { add: [], remove: [] },
+    },
+  };
+  if (!isNonMaterialScopeNarrowing(overDeclaredPlan, removalOnly)) {
+    throw new Error("removing an unchanged declared path should be a non-material narrowing");
+  }
+  const changeToDelete = {
+    ...removalOnly,
+    scope: {
+      changes: { add: [], remove: ["src/app.ts"] },
+      new_files: { add: [], remove: [] },
+      delete: { add: ["src/app.ts"], remove: [] },
+    },
+  };
+  if (isNonMaterialScopeNarrowing(overDeclaredPlan, changeToDelete)) {
+    throw new Error("moving an approved change target into delete must remain material and require a new decision");
   }
 
   const amendment = suggestPlanAmendment(plan, manifest);
   if (!amendment?.scope.new_files.add.includes("tests/test_000_path.py")) {
     throw new Error(`expected suggested amendment for test support file, got ${JSON.stringify(amendment)}`);
   }
+  if (isNonMaterialScopeNarrowing(plan, amendment)) {
+    throw new Error("adding a new test write target must remain a material amendment");
+  }
 
-  writeState({ ...baseState(plan), pendingAmendment: amendment, implementationManifest: manifest });
-  const amendResult = await handleAmendPlan({ approved: "approve", note: "test approved amendment" });
-  if (amendResult.phase !== "edit" || !amendResult.amended) {
+  const priorApproval = { time: "approved-at", note: "original", decisionId: `plan:${computePlanHash(overDeclaredPlan)}`, planHash: computePlanHash(overDeclaredPlan)! };
+  const narrowedPlan: PlanDoc = { ...overDeclaredPlan, scope: { ...overDeclaredPlan.scope, changes: ["src/app.ts"] } };
+  const rebound = rebindApprovalForNonMaterialNarrowing(priorApproval, overDeclaredPlan, narrowedPlan, "amendment:narrow");
+  if (rebound.decisionId !== priorApproval.decisionId || rebound.planHash !== computePlanHash(narrowedPlan) || rebound.audit?.[0]?.kind !== "non_material_scope_narrowing") {
+    throw new Error(`non-material narrowing should preserve decision identity with audit metadata: ${JSON.stringify(rebound)}`);
+  }
+  let missingApprovalRebindRejected = false;
+  try {
+    rebindApprovalForNonMaterialNarrowing(null, overDeclaredPlan, narrowedPlan, "amendment:missing-approval");
+  } catch (error) {
+    missingApprovalRebindRejected = String(error).includes("approval bound to the previous PlanDoc");
+  }
+  if (!missingApprovalRebindRejected) {
+    throw new Error("non-material narrowing must not synthesize an approval when the previous approval is missing");
+  }
+
+  const invalidOriginalApprovals: Array<{ label: string; approval: WorkflowState["approval"] }> = [
+    { label: "missing", approval: null },
+    {
+      label: "mismatched",
+      approval: {
+        time: "mismatched-at",
+        note: "belongs to another plan",
+        decisionId: "plan:000000000000",
+        planHash: "000000000000",
+      },
+    },
+  ];
+  for (const item of invalidOriginalApprovals) {
+    writeState({
+      ...baseState(plan),
+      approval: item.approval,
+      pendingAmendment: amendment,
+      implementationManifest: manifest,
+    });
+    const beforeInvalidApproval = JSON.stringify(readState());
+    const invalidApprovalResult = await handleAmendPlan({ approved: "approve", note: "must not replace approval" });
+    if (invalidApprovalResult.error?.code !== "AMENDMENT_APPROVAL_PLAN_MISMATCH"
+        || invalidApprovalResult.nextAction.tool !== "hy_reset"
+        || invalidApprovalResult.amended) {
+      throw new Error(`${item.label} original approval must block amendment approval creation: ${JSON.stringify(invalidApprovalResult)}`);
+    }
+    if (JSON.stringify(readState()) !== beforeInvalidApproval) {
+      throw new Error(`${item.label} original approval rejection must leave workflow state unchanged`);
+    }
+  }
+
+  const oldPlanHash = computePlanHash(plan)!;
+  writeState({
+    ...baseState(plan),
+    pendingAmendment: amendment,
+    implementationManifest: manifest,
+    verifyHash: "legacy-verify",
+    verifiedImplementationDigest: "legacy-digest",
+    verifiedManifestHash: "legacy-manifest",
+    documentReads: {
+      afterEdit: {
+        stage: "after_edit",
+        time: new Date().toISOString(),
+        task: plan.task,
+        planHash: oldPlanHash,
+        docsDir: "docs",
+        digest: "old-after-edit",
+        files: [],
+        docsGraphDigest: "amend-plan-docs-graph",
+        entryPoints: [],
+        traversalRoots: [],
+        implementationFiles: manifest.changed,
+        implementationDigest: "old-implementation",
+      },
+    },
+    syncDocs: {
+      time: new Date().toISOString(),
+      planHash: oldPlanHash,
+      afterEditDigest: "old-after-edit",
+      implementationDigest: "old-implementation",
+      allowedDocs: [],
+    },
+  });
+  const beforeInvalidDecision = JSON.stringify(readState());
+  const invalidDecision = await handleAmendPlan({ approved: "yes", note: "ambiguous" });
+  if (invalidDecision.error?.code !== "AMENDMENT_DECISION_INVALID" || JSON.stringify(readState()) !== beforeInvalidDecision) {
+    throw new Error(`invalid amendment decision must preserve pending state: ${JSON.stringify(invalidDecision)}`);
+  }
+  const expectedAmendmentDecisionId = currentAmendmentDecisionId();
+  const staleDecision = await handleAmendPlan({ approved: "approve", note: "stale", decisionId: "amendment:000000000000" });
+  if (staleDecision.error?.code !== "AMENDMENT_DECISION_ID_MISMATCH"
+      || staleDecision.userAction?.decisionId !== expectedAmendmentDecisionId
+      || JSON.stringify(readState()) !== beforeInvalidDecision) {
+    throw new Error(`stale amendment decision must preserve pending state: ${JSON.stringify(staleDecision)}`);
+  }
+
+  const amendResult = await handleAmendPlan({ approved: "approve", note: "test approved amendment", decisionId: expectedAmendmentDecisionId });
+  if (amendResult.phase !== "edit"
+      || amendResult.stage !== "edit.implementation"
+      || !amendResult.amended
+      || amendResult.nextAction.tool !== "hy_read_docs"
+      || amendResult.nextAction.arguments?.stage !== "after_edit"
+      || amendResult.nextAction.phase !== "edit"
+      || amendResult.nextAction.stage !== "edit.after_edit"
+      || !amendResult.nextAction.automatic
+      || !amendResult.control.automatic
+      || amendResult.control.stop
+      || amendResult.userAction !== null) {
     throw new Error(`hy_amend_plan should return to edit, got ${JSON.stringify(amendResult)}`);
   }
   const amendedState = readState();
@@ -136,6 +288,18 @@ try {
   }
   if (amendedState.pendingAmendment) {
     throw new Error("hy_amend_plan should clear pendingAmendment");
+  }
+  if (amendedState.stage !== "edit.implementation"
+      || amendedState.documentReads?.afterEdit
+      || amendedState.syncDocs
+      || amendedState.implementationManifest
+      || amendedState.verifyHash
+      || amendedState.verifiedImplementationDigest
+      || amendedState.verifiedManifestHash) {
+    throw new Error(`material amendment must clear stale evidence before the automatic after_edit audit: ${JSON.stringify(amendedState)}`);
+  }
+  if (amendedState.approval?.planHash !== computePlanHash(amendedState.plan) || amendedState.approval?.decisionId !== `plan:${computePlanHash(amendedState.plan)}`) {
+    throw new Error(`amendment approval should bind the amended PlanDoc: ${JSON.stringify(amendedState.approval)}`);
   }
   const lockedScope = JSON.parse(readFileSync(scopePath(), "utf-8"));
   if (lockedScope.lockedAt) {

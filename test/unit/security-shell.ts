@@ -4,9 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest } from "../../src/checks.js";
-import { buildSuggestedCommand, checkConfig } from "../../src/config.js";
+import {
+  buildSuggestedArgv,
+  checkConfig,
+  RUNTIME_CONFIG_SOURCE_ENV,
+  RUNTIME_CONFIG_SOURCE_SCHEMA,
+} from "../../src/config.js";
 import { checkCi, checkout, createBranch, createPr, isSafeGitRefName, mergePr, push } from "../../src/git.js";
 import { readState, statePath, writeState, type WorkflowState } from "../../src/state.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
 }
@@ -105,10 +112,10 @@ try {
   }
   assert(!existsSync(sentinel), "unsafe baseBranch must not execute shell payload");
 
-  const command = buildSuggestedCommand({ codeExt: ".ts", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
-  assert(command.includes("--base-branch INVALID_BASE_BRANCH"), `unsafe baseBranch should be replaced: ${command}`);
-  assert(command.includes("--code-dirs INVALID_CODE_DIRS"), `unsafe codeDirs should be replaced: ${command}`);
-  assert(!command.includes("touch${IFS}"), `unsafe values must not be echoed into a suggested command: ${command}`);
+  const command = buildSuggestedArgv({ codeExt: ".ts", codeDirs: ["src;touch${IFS}/tmp/x"], lintDirs: ["src"], docsDir: "docs", baseBranch: "dev;touch${IFS}/tmp/x", maxCodeLines: 500, maxDocLines: 200 }, true);
+  assert(command[command.indexOf("--base-branch") + 1] === "INVALID_BASE_BRANCH", `unsafe baseBranch should be replaced: ${command}`);
+  assert(command[command.indexOf("--code-dirs") + 1] === "INVALID_CODE_DIRS", `unsafe codeDirs should be replaced: ${command}`);
+  assert(!command.some(value => value.includes("touch${IFS}")), `unsafe values must not be echoed into recovery argv: ${command}`);
 
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
     project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },

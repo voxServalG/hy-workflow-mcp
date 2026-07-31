@@ -78,12 +78,18 @@ if (process.platform !== "win32") {
 
   fs.writeFileSync(config, "{}\n");
   fs.mkdirSync(path.join(root, ".opencode"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".opencode", "opencode.json"), JSON.stringify({ mcp: { "hy-workflow": { type: "local", command: ["npx", "github:legacy/hy-workflow"], enabled: true } } }, null, 2));
-  const shadowed = createOpenCodeAdapter(root);
-  assert(shadowed.inspect("hy-workflow").state === "shadowed" && shadowed.inspect("hy-workflow").scope === "project", "project OpenCode config must be the effective source");
-  let shadowCode = "";
-  try { shadowed.install("hy-workflow", MCP_DEFINITIONS["hy-workflow"]); } catch (error: any) { shadowCode = error?.code; }
-  assert(shadowCode === "SETUP_EFFECTIVE_CONFIG_SHADOWED", "setup must fail closed instead of deleting project-owned OpenCode config");
+  const projectOpenCodeConfig = path.join(root, ".opencode", "opencode.json");
+  const legacyOpenCode = JSON.stringify({ mcp: { "hy-workflow": { type: "local", command: ["npx", "github:legacy/hy-workflow"], enabled: true } } }, null, 2);
+  fs.writeFileSync(projectOpenCodeConfig, legacyOpenCode);
+  fs.chmodSync(projectOpenCodeConfig, 0o000);
+  const ignoredProjectOpenCode = createOpenCodeAdapter(root);
+  const ignoredOpenCodeSnapshot = ignoredProjectOpenCode.inspect("hy-workflow");
+  assert(ignoredOpenCodeSnapshot.state === "absent" && ignoredOpenCodeSnapshot.scope === "user" && ignoredOpenCodeSnapshot.source === config, "project OpenCode config must not participate in user-scope inspection");
+  const ignoredOpenCodePrevious = ignoredProjectOpenCode.install("hy-workflow", MCP_DEFINITIONS["hy-workflow"]);
+  assert(ignoredOpenCodePrevious.state === "absent" && definitionEquals(ignoredProjectOpenCode.inspect("hy-workflow").definition, MCP_DEFINITIONS["hy-workflow"]), "project OpenCode injection must not block user-scope installation");
+  ignoredProjectOpenCode.remove("hy-workflow", MCP_DEFINITIONS["hy-workflow"], ignoredOpenCodePrevious);
+  fs.chmodSync(projectOpenCodeConfig, 0o644);
+  assert(fs.readFileSync(projectOpenCodeConfig, "utf-8") === legacyOpenCode, "OpenCode setup must leave ignored project config byte-for-byte unchanged");
 
   const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-codex-client-"));
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "hy-codex-user-"));
@@ -98,22 +104,21 @@ if (process.platform !== "win32") {
   const projectCodexConfig = path.join(codexProjectDir, "config.toml");
   const legacyCodex = '[mcp_servers.hy-workflow]\ncommand = "npx"\nargs = ["-y", "github:voxServalG/hy-workflow-mcp#main"]\nenabled = true\nstartup_timeout_sec = 15\ntool_timeout_sec = 45\n';
   fs.writeFileSync(projectCodexConfig, legacyCodex);
+  fs.chmodSync(projectCodexConfig, 0o000);
   const codex = createCodexAdapter(codexRoot);
   const codexSnapshot = codex.inspect("hy-workflow");
-  assert(codexSnapshot.state === "shadowed" && codexSnapshot.scope === "project", "project Codex config must be reported as the effective shadow source");
-  assert(codexSnapshot.source === projectCodexConfig, "Codex shadow must name the actual project config file");
-  assert(codexSnapshot.definition?.command === "npx" && codexSnapshot.definition.args[1] === "github:voxServalG/hy-workflow-mcp#main", "Codex shadow must expose the legacy command and args");
-  assert(codexSnapshot.enabled === true && (codexSnapshot.raw as any)?.present === true, "Codex shadow must expose presence and enabled state");
-  assert((codexSnapshot.raw as any)?.startup_timeout_sec === 15 && (codexSnapshot.raw as any)?.tool_timeout_sec === 45, "Codex shadow must expose both timeout values");
-  assert(codexSnapshot.sources?.some(source => source.scope === "user" && source.source === userCodexConfig) === true, "Codex inspect must retain the owned user source beside the project shadow");
-  let codexShadowCode = "";
-  try { codex.install("hy-workflow", MCP_DEFINITIONS["hy-workflow"]); } catch (error: any) { codexShadowCode = error?.code; }
-  assert(codexShadowCode === "SETUP_EFFECTIVE_CONFIG_SHADOWED", "Codex install must fail closed on project shadow");
+  assert(codexSnapshot.state === "active" && codexSnapshot.scope === "user" && codexSnapshot.source === userCodexConfig, "Codex inspection must use only the user config source");
+  assert(definitionEquals(codexSnapshot.definition, MCP_DEFINITIONS["hy-workflow"]), "ignored project Codex injection must not replace the user definition");
+  assert(codexSnapshot.sources?.length === 1 && codexSnapshot.sources[0].scope === "user", "Codex inspection must not expose or parse project config sources");
+  codex.install("hy-workflow", MCP_DEFINITIONS["hy-workflow"]);
+  fs.chmodSync(projectCodexConfig, 0o644);
   assert(fs.readFileSync(projectCodexConfig, "utf-8") === legacyCodex, "Codex install must never rewrite project config");
 
   fs.writeFileSync(projectCodexConfig, '[mcp_servers.hy-workflow]\ncommand = "npx"\nenabled = "maybe"\n');
-  const unreadableCodex = createCodexAdapter(codexRoot).inspect("hy-workflow");
-  assert(unreadableCodex.scope === "project" && unreadableCodex.state === "unreadable", "unsafe project Codex values must fail closed as unreadable");
+  fs.chmodSync(projectCodexConfig, 0o000);
+  const ignoredMalformedCodex = createCodexAdapter(codexRoot).inspect("hy-workflow");
+  assert(ignoredMalformedCodex.scope === "user" && ignoredMalformedCodex.state === "active", "malformed project Codex values must remain unread and irrelevant");
+  fs.chmodSync(projectCodexConfig, 0o644);
 
   fs.rmSync(projectCodexConfig);
   const crlfCodex = '[mcp_servers."hy-workflow"]\r\ncommand = "hy-workflow"\r\nargs = []\r\nenabled = true\r\nstartup_timeout_sec = 7.0 # keep timeout note\r\ntool_timeout_sec = 9.00\r\n\r\n[unrelated]\r\nvalue = "untouched"';
@@ -227,7 +232,14 @@ process.exit(1);
   assert(fs.lstatSync(openCodeSymlinkConfig).isSymbolicLink(), "OpenCode config symlink must remain intact after rejected setup");
 
   const claudeExecutable = path.join(bin, "claude");
-  fs.writeFileSync(claudeExecutable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo claude-test; exit 0; fi\necho "not found" >&2\nexit 1\n', { mode: 0o755 });
+  const claudeCwdLog = path.join(userRoot, "claude-cwd.log");
+  process.env.CLAUDE_CWD_LOG = claudeCwdLog;
+  fs.writeFileSync(claudeExecutable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo claude-test; exit 0; fi\nprintf "%s\\n" "$PWD" > "$CLAUDE_CWD_LOG"\necho "not found" >&2\nexit 1\n', { mode: 0o755 });
+  const neutralClaude = createClaudeAdapter(root);
+  neutralClaude.inspect("hy-workflow");
+  const observedClaudeCwd = fs.readFileSync(claudeCwdLog, "utf-8").trim();
+  const relativeClaudeCwd = path.relative(root, observedClaudeCwd);
+  assert(relativeClaudeCwd.startsWith("..") || path.isAbsolute(relativeClaudeCwd), "Claude config commands must execute from outside the project root");
   const originalHome = process.env.HOME;
   process.env.HOME = root;
   const unsafeClaude = createClaudeAdapter(root);

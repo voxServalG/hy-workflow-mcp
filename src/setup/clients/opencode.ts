@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { applyEdits, findNodeAtLocation, modify, parse, parseTree } from "jsonc-parser";
 import { SetupFailure, type ClientAdapter, type ClientConfigSource, type ClientDetection, type ClientServerSnapshot, type McpDefinition, type ServerName } from "../types.js";
 import { assertClientSnapshotUnchanged } from "./effective.js";
-import { definitionEquals, resolveExecutable, versionOf } from "./index.js";
+import { definitionEquals, neutralCommandCwd, resolveExecutable, versionOf } from "./index.js";
 
 function configPath(): string {
   if (process.env.OPENCODE_CONFIG) return path.resolve(process.env.OPENCODE_CONFIG);
@@ -115,29 +115,31 @@ function writeEntry(server: ServerName, value: unknown, exactEntryText?: string,
 export function createOpenCodeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROOT ?? process.cwd()): ClientAdapter {
   const executable = resolveExecutable("opencode");
   const projectRoot = path.resolve(root);
-  const projectFiles = [path.join(projectRoot, "opencode.json"), path.join(projectRoot, ".opencode", "opencode.json")];
+  const commandCwd = neutralCommandCwd(projectRoot);
   const inspect = (server: ServerName): ClientServerSnapshot => {
+    const userFile = configPath();
+    if (locationInside(projectRoot, userFile)) {
+      return {
+        definition: null,
+        raw: { error: "OpenCode user config path points inside the project; file was not inspected" },
+        source: userFile,
+        scope: "unknown",
+        state: "unreadable",
+        sources: [],
+        ownedDefinition: null,
+      };
+    }
     try {
       const sources: ClientConfigSource[] = [];
-      const userDocument = readDocument();
-      const configuredAsProject = locationInside(projectRoot, userDocument.file);
+      const userDocument = readDocument(userFile);
       const userRaw = userDocument.value?.mcp?.[server];
       if (userRaw !== undefined) {
-        sources.push({ scope: configuredAsProject ? "project" : "user", source: userDocument.file, definition: fromEntry(userRaw), enabled: userRaw?.enabled !== false });
+        sources.push({ scope: "user", source: userDocument.file, definition: fromEntry(userRaw), enabled: userRaw?.enabled !== false });
       }
-      for (const file of projectFiles) {
-        if (canonicalLocation(file) === canonicalLocation(userDocument.file)) continue;
-        if (!fs.existsSync(file)) continue;
-        const document = readDocument(file);
-        const raw = document.value?.mcp?.[server];
-        if (raw !== undefined) sources.push({ scope: "project", source: file, definition: fromEntry(raw), enabled: raw?.enabled !== false });
-      }
-      const effective = [...sources].reverse().find(item => item.scope === "project") ?? sources.find(item => item.scope === "user");
-      if (!effective) return { definition: null, source: userDocument.file, scope: configuredAsProject ? "project" : "user", state: "absent", sources, ownedDefinition: null };
-      const effectiveDocument = effective.scope === "user" ? userDocument : readDocument(effective.source);
-      const rawEntry = effectiveDocument.value?.mcp?.[server];
-      const raw = rawSnapshot(effectiveDocument, server, rawEntry);
-      const state = !effective.definition ? "unreadable" : effective.enabled === false ? "disabled" : effective.scope === "project" ? "shadowed" : "active";
+      const effective = sources[0];
+      if (!effective) return { definition: null, source: userDocument.file, scope: "user", state: "absent", sources, ownedDefinition: null };
+      const raw = rawSnapshot(userDocument, server, userRaw);
+      const state = !effective.definition ? "unreadable" : effective.enabled === false ? "disabled" : "active";
       return {
         definition: effective.definition,
         raw,
@@ -146,7 +148,7 @@ export function createOpenCodeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROO
         enabled: effective.enabled,
         state,
         sources,
-        ownedDefinition: sources.find(item => item.scope === "user")?.definition ?? null,
+        ownedDefinition: effective.definition,
       };
     } catch (error: any) {
       return { definition: null, raw: { error: error?.message ?? String(error) }, state: "unreadable", scope: "unknown" };
@@ -156,7 +158,7 @@ export function createOpenCodeAdapter(root = process.env.HY_WORKFLOW_PROJECT_ROO
     name: "opencode",
     detect(): ClientDetection {
       const configured = (["hy-workflow", "docs-gardener"] as ServerName[]).filter(server => inspect(server).definition);
-      return { name: "opencode", installed: Boolean(executable), executable, version: executable ? versionOf(executable) : null, configured };
+      return { name: "opencode", installed: Boolean(executable), executable, version: executable ? versionOf(executable, commandCwd) : null, configured };
     },
     inspect,
     install(server, definition, expectedPrevious) {

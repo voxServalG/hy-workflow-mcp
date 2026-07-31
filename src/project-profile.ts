@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { isKnownCodeExt, type CodeExt } from "./code_ext.js";
+import { isRuntimeIgnoredArtifact } from "./policy/artifacts.js";
 
 export type ProjectEcosystem = "typescript" | "javascript" | "python" | "go" | "rust";
 export type ProjectKind = ProjectEcosystem | "mixed" | "unknown";
@@ -34,6 +35,7 @@ export interface ProjectProfile {
 const IGNORED_SEGMENTS = new Set([
   ".git", "node_modules", "dist", "build", "coverage", "vendor", "target",
   ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
+  ".hy", ".codex", ".opencode",
 ]);
 
 const EXTENSIONS: Record<ProjectEcosystem, Set<string>> = {
@@ -76,8 +78,9 @@ function followedDirectory(root: string, full: string, entry: fs.Dirent): boolea
   } catch { return false; }
 }
 
-function ignored(file: string): boolean {
-  return slash(file).split("/").some(segment => IGNORED_SEGMENTS.has(segment));
+function ignored(root: string, file: string): boolean {
+  return slash(file).split("/").some(segment => IGNORED_SEGMENTS.has(segment))
+    || isRuntimeIgnoredArtifact(root, file);
 }
 
 function filesystemFiles(root: string, limit = 20_000): string[] {
@@ -93,7 +96,10 @@ function filesystemFiles(root: string, limit = 20_000): string[] {
       if (files.length >= limit || IGNORED_SEGMENTS.has(entry.name)) continue;
       const full = path.join(current, entry.name);
       if (followedDirectory(root, full, entry)) walk(full);
-      else if (entry.isFile()) files.push(slash(path.relative(root, full)));
+      else if (entry.isFile()) {
+        const relative = slash(path.relative(root, full));
+        if (!ignored(root, relative)) files.push(relative);
+      }
     }
   };
   walk(root);
@@ -107,7 +113,7 @@ export function trackedProjectFiles(root: string): { files: string[]; source: "g
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    const files = stdout.split("\0").filter(Boolean).map(slash).filter(file => !ignored(file)).sort();
+    const files = stdout.split("\0").filter(Boolean).map(slash).filter(file => !ignored(root, file)).sort();
     return { files, source: "git" };
   } catch {
     // Config unit tests and recovery commands can inspect a directory before Git
@@ -299,7 +305,7 @@ export function validateBaseBranch(root: string, branch: string): { ok: boolean;
   if (gitRefExists(root, branch)) return { ok: true };
   return {
     ok: false,
-    issue: `hy-workflow.json project.baseBranch does not resolve to a local or origin commit: ${branch}`,
+    issue: `The authoritative project.baseBranch does not resolve to a local or origin commit: ${branch}`,
   };
 }
 

@@ -1,4 +1,5 @@
 import { isErrorSubtype, isErrorType, type ErrorSubtype, type ErrorType } from "./catalog.js";
+import { redactGitRemoteCredentialsInText } from "../runtime/user-paths.js";
 
 export type StructuredError = {
   type: ErrorType;
@@ -76,9 +77,11 @@ function sensitiveKey(key: string): boolean {
 }
 
 function redactAssignments(value: string): string {
-  return value
-    .replace(/\b([A-Z][A-Z0-9_-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|AUTH|API[_-]?KEY)[A-Z0-9_-]*)\s*=\s*([^\s,;]+)/gi, "$1=[redacted]")
-    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [redacted]");
+  return redactGitRemoteCredentialsInText(
+    value
+      .replace(/\b([A-Z][A-Z0-9_-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|AUTH|API[_-]?KEY)[A-Z0-9_-]*)\s*=\s*([^\s,;]+)/gi, "$1=[redacted]")
+      .replace(/\b(Bearer)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [redacted]"),
+  );
 }
 
 export function redactDiagnosticValue(value: unknown, key = ""): unknown {
@@ -114,7 +117,7 @@ export function structuredError(input: unknown, fallbackType: ErrorType = "inter
   }
   const message = input instanceof Error ? input.message : String(input ?? "Unknown error");
   const subtype = subtypeForMessage(message, fallbackSubtype);
-  return { type: typeForSubtype(subtype, fallbackType), subtype, message };
+  return redactDiagnosticValue({ type: typeForSubtype(subtype, fallbackType), subtype, message }) as StructuredError;
 }
 
 export function errorMessage(error: unknown): string {

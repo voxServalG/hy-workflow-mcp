@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { lintCode } from "../../templates/lint/code.mjs";
 import { runLint } from "../../templates/lint/index.mjs";
+import { resolveLintPolicyRule } from "../../src/policy/effective.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -47,8 +48,8 @@ function config(): Record<string, unknown> {
   const first = lintCode({ root: project, config: config() });
   const second = lintCode({ root: project, config: config() });
   assert(first.findings.some(item => item.rule === "C002" && item.severity === "warning"), `effective-line warning missing: ${JSON.stringify(first.findings)}`);
-  assert(first.findings.some(item => item.rule === "C003" && item.path === "src/core/b.ts"), `reverse tier dependency must fail: ${JSON.stringify(first.findings)}`);
-  assert(first.findings.some(item => item.rule === "C004"), `dependency cycle must fail: ${JSON.stringify(first.findings)}`);
+  assert(!first.findings.some(item => item.rule === "C003" || item.rule === "C004"), `retired dependency slots must not produce findings: ${JSON.stringify(first.findings)}`);
+  assert(!("graph" in first), "codelint must not build or expose a dependency graph");
   assert(!first.findings.some(item => item.rule === "C005"), `regex and template literals must not cause parser failures: ${JSON.stringify(first.findings)}`);
   assert(JSON.stringify(first.findings) === JSON.stringify(second.findings), "code findings must be deterministic");
 }
@@ -58,11 +59,11 @@ function config(): Record<string, unknown> {
   write(project, "docs/index.md", "# Docs\n");
   write(project, "src/app.ts", "export const one = 1;\nexport const two = 2;\nexport const three = 3;\n");
   const runtimeConfig = config();
-  delete (runtimeConfig.codelint as { tiers?: unknown }).tiers;
   const report = runLint({ root: project, config: runtimeConfig });
   assert(report.ok, `warnings must not fail the report: ${JSON.stringify(report)}`);
   assert(report.counts.warnings > 0 && report.counts.errors === 0, `warning/error counts are wrong: ${JSON.stringify(report.counts)}`);
-  assert(report.checks.find(item => item.rule === "C003")?.status === "not_configured", "missing tiers must be explicit");
+  assert(report.checks.find(item => item.rule === "C003")?.status === "not_configured", "C003 must remain fixed even when legacy tiers exist");
+  assert(report.checks.find(item => item.rule === "C004")?.status === "not_applicable", "C004 must remain a fixed compatibility slot");
 }
 
 {
@@ -71,7 +72,6 @@ function config(): Record<string, unknown> {
   write(project, "src/a-b.ts", "export const one = 1;\nexport const two = 2;\nexport const three = 3;\n");
   write(project, "src/a_b.ts", "export const one = 1;\nexport const two = 2;\nexport const three = 3;\n");
   const runtimeConfig = config();
-  delete (runtimeConfig.codelint as { tiers?: unknown }).tiers;
   const report = runLint({ root: project, config: runtimeConfig });
   const findingKeys = report.findings.map(item => [item.rule, item.path, item.line ?? 0, item.message].join("\u0000"));
   assert(JSON.stringify(findingKeys) === JSON.stringify([...findingKeys].sort()), "findings must use locale-independent code-unit ordering");
@@ -88,7 +88,7 @@ function config(): Record<string, unknown> {
       codelint: { lintDirs: ["src"] },
     },
   });
-  assert(!result.findings.some(item => item.rule === "C004"), `type-only imports must not create runtime cycles: ${JSON.stringify(result.findings)}`);
+  assert(!result.findings.some(item => item.rule === "C003" || item.rule === "C004"), `parser fixtures must not activate retired dependency slots: ${JSON.stringify(result.findings)}`);
   assert(!result.findings.some(item => item.rule === "C005"), `type-only fixture must remain parseable: ${JSON.stringify(result.findings)}`);
 }
 
@@ -114,4 +114,22 @@ function config(): Record<string, unknown> {
   fs.mkdirSync(path.join(project, "src"), { recursive: true });
   const result = lintCode({ root: project, config: config() });
   assert(result.findings.some(item => item.rule === "C001" && item.severity === "error"), `zero-file scan must fail closed: ${JSON.stringify(result.findings)}`);
+}
+
+{
+  const project = root();
+  write(project, "docs/index.md", "# Docs\n");
+  write(project, "src/app.ts", "export const one = 1;\nexport const two = 2;\nexport const three = 3;\n");
+  const runtimeConfig: any = config();
+  runtimeConfig.policy = {
+    profile: "standard",
+    rules: { "code.max-lines": { severity: "advisory", warning: 2, error: 3 } },
+  };
+  const report = runLint({
+    root: project,
+    config: runtimeConfig,
+    resolvePolicyRule: (rule: any, file?: string) => resolveLintPolicyRule(runtimeConfig, rule, file),
+  });
+  assert(report.ok && report.counts.errors === 0 && report.counts.advisories > 0, `advisory code policy must remain visible without failing: ${JSON.stringify(report)}`);
+  assert(report.checks.find(item => item.rule === "C002")?.status === "advisory", "C002 check must expose advisory status");
 }

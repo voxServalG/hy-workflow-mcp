@@ -4,10 +4,17 @@ import path from "node:path";
 import { projectPaths } from "./runtime/user-paths.js";
 import { requireRuntimeConfig } from "./config.js";
 import { normalizeCodeExt, PYTHON_CODE_EXTS } from "./code_ext.js";
-import type { CheckItem, ImplementationManifest, PlanDoc, WorkflowState } from "./state.js";
-import { computeImplementationDigest } from "./state.js";
-import { buildImplementationManifest, CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs, findPython } from "./checks.js";
-import { execFileSync } from "node:child_process";
+import type {
+  ActiveExam,
+  ActiveExamCheck,
+  ActiveExamCheckLayer,
+  CheckItem,
+  ImplementationManifest,
+  PlanDoc,
+  WorkflowState,
+} from "./state.js";
+import { computeImplementationDigest, computePlanHash } from "./state.js";
+import { buildImplementationManifest, CHECK_COMMAND_TIMEOUT_MS, CHECK_TEST_TIMEOUT_MS, checkCommandTimeoutMs, findPython, runBoundaryCheck, runScopeCheck } from "./checks.js";
 
 function parsePythonVersionRequirement(value: string): [number, number, number] | null {
   const trimmed = value.trim();
@@ -19,38 +26,9 @@ function parsePythonVersionRequirement(value: string): [number, number, number] 
 
 // ── Types ─────────────────────────────────────────────────────
 
-export type ExamCheckLayer = "compile" | "scope" | "boundary" | "platform" | "smoke" | "tests";
-
-export interface ExamCheck {
-  id: string;
-  layer: ExamCheckLayer;
-  /** Exact command string the agent must run verbatim. */
-  command: string;
-  cwd?: string;
-  /** Milliseconds the agent should allow this command to run before considering it hung. */
-  timeoutMs: number;
-  /** Expected exit code, default 0. */
-  expectExitCode: number;
-  /** Nonce binding this check to a specific exam, anti-replay. */
-  nonce: string;
-  /** stdout MUST contain this regex (or substring) to pass. */
-  mustContain?: string;
-  /** stdout MUST NOT contain this regex. */
-  mustNotContain?: string;
-}
-
-export interface ExamManifest {
-  examId: string;
-  issuedAt: string;
-  expiresAt: string;
-  /** git write-tree hash at time of issue; submit validates tree unchanged. */
-  scopeFingerprint: string;
-  /** Exam-level nonce (in addition to per-check nonces). */
-  nonce: string;
-  checks: ExamCheck[];
-  /** Results that already passed every per-check constraint for partial resubmission. */
-  acceptedResults?: ExamResult[];
-}
+export type ExamCheckLayer = ActiveExamCheckLayer;
+export type ExamCheck = ActiveExamCheck;
+export type ExamManifest = ActiveExam;
 
 export interface ExamResult {
   id: string;
@@ -78,12 +56,37 @@ function examFile(root: string, examId: string): string {
   return path.join(examDir(root), `${examId}.json`);
 }
 
+function examClaimFile(root: string, examId: string): string {
+  if (!/^[0-9a-f]{16,}$/.test(examId)) throw new Error("invalid examId");
+  return path.join(examDir(root), `${examId}.claim`);
+}
+
 function loadExam(root: string, examId: string): ExamManifest {
   const file = examFile(root, examId);
   if (!fs.existsSync(file)) {
     throw Object.assign(new Error(`exam ${examId} not found or expired`), { code: "EXAM_NOT_FOUND" });
   }
   return JSON.parse(fs.readFileSync(file, "utf8")) as ExamManifest;
+}
+
+function claimExam(root: string, examId: string): ExamManifest {
+  const exam = loadExam(root, examId);
+  const claim = examClaimFile(root, examId);
+  let fd: number;
+  try {
+    fd = fs.openSync(claim, "wx", 0o600);
+  } catch (caught: any) {
+    if (caught?.code === "EEXIST") {
+      throw Object.assign(new Error(`exam ${examId} was already submitted; issue a new exam`), { code: "EXAM_ALREADY_SUBMITTED" });
+    }
+    throw caught;
+  }
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify({ examId, claimedAt: new Date().toISOString() })}\n`, "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+  return exam;
 }
 
 function saveExam(root: string, exam: ExamManifest): void {
@@ -98,18 +101,9 @@ function nonce(): string {
   return randomBytes(16).toString("hex");
 }
 
-/**
- * Compute a fingerprint of the staged git tree using `git write-tree`.
- * This is a stable, content-addressed hash of HEAD + staged changes that
- * is unaffected by untracked files or runtime artifacts.
- *
- * The commit gate (hy_commit) independently recomputes the full implementation
- * manifest/digest/verifyHash and rejects mismatches, so the exam fingerprint
- * only needs to catch trivial modification-before-submit, not be a perfect
- * content hash.
- */
+/** Bind an exam to all current implementation paths and contents. */
 export function computeScopeFingerprint(root: string): string {
-  return execFileSync("git", ["write-tree"], { cwd: root, encoding: "utf8" }).trim();
+  return computeImplementationDigest(root, buildImplementationManifest(root));
 }
 
 // ── Command derivation ────────────────────────────────────────
@@ -192,11 +186,12 @@ export function deriveExamChecks(root: string, plan: PlanDoc): ExamCheck[] {
   // the agent just confirms it ran the same git diff baseline.
   checks.push(shellCheck("git diff --name-status", "scope", idx++, "diff"));
 
-  // ── boundary (no_new_external) ──
-  // Boundary is also in-process; emit a single no-op indicator. The real boundary
-  // check (lockfile diff inspection) happens in hy_verify; exam mode trusts the
-  // agent and re-validates at hy_exam_submit time by recomputing boundary locally.
-  checks.push(shellCheck("test -f package.json && echo ok || echo no-package", "boundary", idx++));
+  // ── boundary ──
+  // Executable entry points are part of the exam. The no_new_external policy is
+  // recomputed locally at submit time and is never trusted to submitted output.
+  for (const entryPoint of plan.boundary.entry_points) {
+    checks.push(shellCheck(entryPoint, "boundary", idx++));
+  }
 
   // ── platform ──
   for (const setupCmd of plan.verify?.platform?.setup ?? []) {
@@ -233,6 +228,7 @@ export function issueExam(root: string, plan: PlanDoc): ExamManifest {
     issuedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + EXAM_TTL_MS).toISOString(),
     scopeFingerprint: computeScopeFingerprint(root),
+    planHash: computePlanHash(plan)!,
     nonce: nonce(),
     checks: deriveExamChecks(root, plan),
   };
@@ -246,7 +242,7 @@ export interface ExamSubmitOutcome {
   verifiedImplementationDigest?: string;
   failedChecks?: Array<{
     id: string;
-    reason: "missing_result" | "nonce_mismatch" | "command_mismatch" | "exit_code" | "must_contain" | "must_not_contain" | "source_changed" | "exam_expired" | "unknown_check";
+    reason: "missing_result" | "nonce_mismatch" | "command_mismatch" | "exit_code" | "must_contain" | "must_not_contain" | "source_changed" | "plan_changed" | "scope_check_failed" | "boundary_check_failed" | "exam_expired" | "exam_already_submitted" | "unknown_check";
     message: string;
     expected?: unknown;
     actual?: unknown;
@@ -266,9 +262,16 @@ export function submitExam(
 ): ExamSubmitOutcome {
   let exam: ExamManifest;
   try {
-    exam = loadExam(root, examId);
+    exam = claimExam(root, examId);
   } catch (e: any) {
-    return { passed: false, failedChecks: [{ id: "(exam)", reason: "unknown_check", message: e?.message ?? String(e) }] };
+    return {
+      passed: false,
+      failedChecks: [{
+        id: "(exam)",
+        reason: e?.code === "EXAM_ALREADY_SUBMITTED" ? "exam_already_submitted" : "unknown_check",
+        message: e?.message ?? String(e),
+      }],
+    };
   }
 
   if (Date.now() > new Date(exam.expiresAt).getTime()) {
@@ -288,10 +291,20 @@ export function submitExam(
     });
   }
 
+  const currentPlanHash = computePlanHash(state.plan);
+  if (!exam.planHash || currentPlanHash !== exam.planHash) {
+    failed.push({
+      id: examId,
+      reason: "plan_changed",
+      message: "PlanDoc changed since the exam was issued; run hy_exam_plan again",
+      expected: exam.planHash ?? null,
+      actual: currentPlanHash,
+    });
+  }
+
   const byId = new Map(exam.checks.map(c => [c.id, c]));
-  const submitted = new Map((exam.acceptedResults ?? []).map(r => [r.id, r]));
+  const submitted = new Map<string, ExamResult>();
   for (const result of results) submitted.set(result.id, result);
-  const acceptedResults: ExamResult[] = [];
 
   for (const check of exam.checks) {
     const r = submitted.get(check.id);
@@ -319,7 +332,6 @@ export function submitExam(
       failed.push({ id: check.id, reason: "must_not_contain", message: `stdout contains forbidden pattern: ${check.mustNotContain}` });
       continue;
     }
-    acceptedResults.push(r);
   }
 
   for (const r of results) {
@@ -328,19 +340,31 @@ export function submitExam(
     }
   }
 
+  let implementationManifest: ImplementationManifest | null = null;
+  if (state.plan) {
+    try {
+      implementationManifest = buildImplementationManifest(root);
+      for (const check of runScopeCheck(root, state.plan, implementationManifest).filter(item => item.hard && !item.passed)) {
+        failed.push({ id: check.name, reason: "scope_check_failed", message: check.detail });
+      }
+      for (const check of runBoundaryCheck(root, state.plan, implementationManifest, undefined, { skipEntryPoints: true }).filter(item => item.hard && !item.passed)) {
+        failed.push({ id: check.name, reason: "boundary_check_failed", message: check.detail });
+      }
+    } catch (caught: any) {
+      failed.push({ id: "scope", reason: "scope_check_failed", message: caught?.message ?? String(caught) });
+    }
+  }
+
   if (failed.length) {
-    exam.acceptedResults = acceptedResults;
-    exam.expiresAt = new Date(Date.now() + EXAM_TTL_MS).toISOString();
-    saveExam(root, exam);
     return { passed: false, failedChecks: failed };
   }
 
-  // Full pass: exam consumed, clear partial cache.
-  delete exam.acceptedResults;
-  saveExam(root, exam);
+  // The atomic claim is the immutable one-shot receipt for diagnostics.
 
   // Return the same implementation evidence that sync hy_verify persists.
-  const implementationManifest = buildImplementationManifest(root);
+  if (!implementationManifest) {
+    return { passed: false, failedChecks: [{ id: "scope", reason: "scope_check_failed", message: "implementation manifest is unavailable" }] };
+  }
   const digest = computeImplementationDigest(root, implementationManifest);
   return {
     passed: true,

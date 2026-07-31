@@ -1,7 +1,10 @@
 import { readState, writeState, assertPhase } from "./_base.js";
-import { projectRoot } from "../state.js";
+import { approvalMatchesPlan, documentReadHealth, projectRoot, transition } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
-import { issueExam } from "../verify-exam.js";
+import { computeScopeFingerprint, issueExam } from "../verify-exam.js";
+import { buildImplementationManifest } from "../checks.js";
+import { implementationDigest } from "./sync_docs.js";
+import { validatePlanScopePaths } from "../plan_validation.js";
 
 export const inputSchema = {
   type: "object",
@@ -12,17 +15,97 @@ export const inputSchema = {
 export async function handleExamPlan(): Promise<ToolResult> {
   const state = readState();
   assertPhase(state, "edit", "verify");
+  const currentStage = state.stage ?? (state.phase === "verify" ? "verify.run" : "edit.implementation");
 
   if (!state.plan) {
-    return toolResult("verify", { phase: state.phase, error: "No plan", allowedTools: ["hy_status"] });
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "EXAM_PLAN_MISSING",
+        message: "Workflow state reached asynchronous verification without an active PlanDoc.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
+  }
+  if (!approvalMatchesPlan(state.approval, state.plan)) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      error: {
+        type: "workflow_state",
+        subtype: "approval_missing",
+        code: "EXAM_APPROVAL_PLAN_MISMATCH",
+        message: "The current PlanDoc is not bound to a valid approval.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
   }
 
   const root = projectRoot();
-  const manifest = issueExam(root, state.plan);
+  const scopeErrors = validatePlanScopePaths(root, state.plan, "verify");
+  if (scopeErrors.length) {
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "EXAM_SCOPE_INVALID",
+        message: `Stored PlanDoc scope contains invalid paths: ${scopeErrors.join("; ")}`,
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
+  }
+  const implementationManifest = buildImplementationManifest(root);
+  const currentImplementationDigest = implementationDigest(root, state.plan, implementationManifest);
+  const health = documentReadHealth(state, currentImplementationDigest);
+  if (!health.okForVerify) {
+    const blocked = health.blockedBy;
+    return toolResult("edit", {
+      phase: state.phase,
+      stage: currentStage,
+      error: blocked?.reason ?? "after_edit document audit and hy_sync_docs must be current before hy_exam_plan.",
+      documentReadHealth: health,
+      allowedTools: [blocked?.tool ?? "hy_read_docs", "hy_status"],
+      blockedTools: ["hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+    });
+  }
+  const currentScopeFingerprint = computeScopeFingerprint(root);
+  const manifest = state.activeExam
+    && Date.now() < Date.parse(state.activeExam.expiresAt)
+    && state.activeExam.scopeFingerprint === currentScopeFingerprint
+    ? state.activeExam
+    : issueExam(root, state.plan);
+  const next = transition(state, "verify");
+  next.stage = "verify.run";
+  next.activeExam = manifest;
+  writeState(next);
 
   return toolResult("verify", {
     phase: "verify",
     next: "verify",
+    stage: "verify.run",
+    status: "running",
     examId: manifest.examId,
     issuedAt: manifest.issuedAt,
     expiresAt: manifest.expiresAt,
@@ -39,16 +122,11 @@ export async function handleExamPlan(): Promise<ToolResult> {
       mustContain: c.mustContain,
       mustNotContain: c.mustNotContain,
     })),
-    display: {
-      title: "Exam issued — run each command via Bash and submit results with hy_exam_submit",
-      body: [
-        `${manifest.checks.length} checks issued. Run each command exactly as printed via the Bash tool, collect exitCode + last 4KB stdout, then call hy_exam_submit({ examId: "${manifest.examId}", results: [...] }).`,
-        "Exam expires in 2 hours or when the working tree changes.",
-        "Tip: run checks in any order; you can re-run a single failing check and resubmit just that result.",
-      ].join("\n"),
-    },
     allowedTools: ["hy_exam_submit", "hy_status"],
-    blockedTools: ["hy_commit", "hy_ci", "hy_merge", "hy_chain"],
+    blockedTools: ["hy_commit", "hy_merge"],
     requires_user: false,
+    nextAction: { tool: null, phase: "verify", stage: "verify.run", automatic: false },
+    control: { automatic: false, stop: true, reason: "external_action_required" },
+    userAction: null,
   });
 }

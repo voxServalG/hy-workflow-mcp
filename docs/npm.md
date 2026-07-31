@@ -1,56 +1,85 @@
-# NPM Packaging Contract
+# NPM Packaging and Release Contract
 
-`src/npm/package.ts` provides helpers for reading `package.json` and running `npm pack --dry-run`. The public package is `@voxstudio/hy-workflow`; its stable bin is `hy-workflow`.
+The public package is `@voxstudio/hy-workflow`; its executable is `hy-workflow`. Both npm `main` and `bin["hy-workflow"]` point to `dist/main.js`. The installed binary is a CLI and must not expose an MCP server entrypoint.
 
-## Required npm scripts
+## Shipped package
 
-- `clean` — remove only the repository-root `dist/` with the cross-platform Node cleaner
-- `build` — TypeScript compile (`tsc`)
-- `lint:contract` — workflow contract lint
-- `test` — full test suite
-- `test:unit`, `test:e2e`, `test:contract` — test layers
-- `test:acceptance` — mandatory release pressure suite; local runs may pack for themselves, while release runs must receive the workflow's canonical tarball through `--package-archive`
-- `test:windows` — Windows-safe focused tests plus installed-tarball setup/repeat/unset smoke, run by the independent Windows Smoke CI job
-- `verify` — build + tests
-- `prepack` — build `dist/` immediately before creating the npm tarball
-- `prepublishOnly` — require full verification before publication
+The npm allowlist contains compiled `dist/`, public `docs/`, the public configuration schema, required templates/compatibility assets, the complete `skills/` bundle, `README.md` and `LICENSE`. Registry users receive compiled JavaScript; global installation does not require TypeScript or development dependencies.
 
-There is no `prepare`, `install`, or `postinstall` build. Registry users receive a tarball that already contains `dist/`; global installation never needs TypeScript or dev dependencies.
+The tarball must include:
 
-## Test runner dependency
+- `dist/main.js` and the compiled workflow/helper/lint kernel it imports;
+- all 12 `skills/<name>/SKILL.md` files;
+- the public configuration schema needed at runtime;
+- public documentation and README;
+- the MIT `LICENSE`.
 
-`tsx` is a declared `devDependency` because every test-layer script executes TypeScript files through `npx tsx`. Declaring it keeps `npm ci` and `hy_verify` deterministic and prevents per-file remote npx resolution.
+It must not include source tests, local tarballs, `.hy/`, project Agent directories, `.mcp.json`, compatibility lint JSON or any user config/state/cache. `dist/` and generated `.tgz` files are build products and are not committed unless a separate release policy explicitly says otherwise.
 
-## Packaging rules
+There is no `prepare`, `install` or `postinstall` mutation. Installing the npm package alone does not touch Agent directories or a project. The user explicitly runs `hy-workflow helper install` in a Git project.
 
-- `name` must be `@voxstudio/hy-workflow`, with public scoped-package access
-- `bin["hy-workflow"]` and `main` must point at `dist/server.js`
-- `files` must include `dist`, `docs`, `templates`, and `README.md`
-- `dist/` and local `*.tgz` tarballs must not be tracked by Git
-- npm pack must include `dist/server.js`, `templates/hy-workflow.yml`, and the fixed `templates/lint/*.mjs` module set
-- npm pack must not include legacy `setup` or `setup.ps1`
-- No `.hy/`, `.opencode/`, `.codex/`, `.mcp.json`, compatibility JSON, `test/`, or `src/` files may enter npm pack
-- Every build/prepack begins from an empty `dist/`; consecutive packs must have the same file list and digests even after an orphan file is injected
-- The installed `hy-workflow lint --json` command must run the packaged first-party engine without registry or codeload access and without mutating legacy compatibility JSON
+## Required scripts
 
-## Release boundary
+- `clean`: remove only repository-root `dist/` through the cross-platform cleaner;
+- `build`: clean TypeScript compilation;
+- `lint:contract`: build and run the package's public-contract lint;
+- `test:unit`, `test:e2e`, `test:contract`: deterministic test layers;
+- `test`: all normal layers;
+- `verify`: build plus normal tests;
+- `test:acceptance:baseline`: offline packed-tarball development gate;
+- `test:acceptance:migration`: online real-public-package migration oracle;
+- `test:acceptance:pressure`: pinned public-repository release pressure;
+- `test:acceptance`: release-pressure alias;
+- `test:windows`: independent Windows installed-package smoke;
+- `verify:dev`: normal verification plus offline baseline;
+- `prepack`: rebuild immediately before packing;
+- `prepublishOnly`: full verification before direct source publication attempts.
 
-`.github/workflows/npm-publish.yml` publishes GitHub Releases through npm Trusted Publishing on a GitHub-hosted runner. It requires `id-token: write`, fetches complete Git history, and fails before verification unless the release tag equals `v` plus `package.json.version`, the checked-out tag commit belongs to `origin/main`, and package semver prerelease state exactly matches GitHub `release.prerelease`. Only then may a prerelease use npm tag `next` or a stable release use `latest`. It does not use a long-lived npm token. After normal verification, the workflow creates exactly one canonical `.tgz`, records its SHA-512, passes that exact path into the no-skip acceptance matrix, verifies that its bytes did not change, and publishes that same `.tgz`. It never publishes the source directory after acceptance, so npm lifecycle hooks cannot silently replace the tested artifact. The tarball stays only in runner-temporary storage; the workflow must not use `actions/upload-artifact`, `gh release upload`, a GitHub Release asset, or a Git commit for compiled output.
+`tsx` remains a development dependency because TypeScript tests execute through its declared local CLI. Test scripts must not rely on remote `npx` resolution.
 
-The package must exist before npm can attach a trusted publisher. Bootstrap it once from the reviewed release commit with an authenticated local npm CLI and a prerelease version:
+## Reproducible pack boundary
 
-```bash
-npm publish --access public --tag next
-npm trust github @voxstudio/hy-workflow --file npm-publish.yml --repo voxServalG/hy-workflow-mcp --allow-publish
-```
+Every build/prepack starts from an empty `dist/`. Two consecutive packs from the same source must have the same allowed file set; an orphan compiled file injected between builds must not survive. Contract tests inspect the packed tarball rather than assuming `package.json.files` is sufficient.
 
-The first command publishes only to npm; it does not create or upload a GitHub build artifact. After the trusted publisher is confirmed, future GitHub Releases use OIDC only and the workflow enforces tag, branch ancestry, and prerelease-channel consistency before running the release gate.
+Installed-tarball tests must execute `dist/main.js`, use `skills list` and raw/JSON `skills read` to bind all 12 Skills to the installed package version and bundle hash, install/status/update/remove the Skill bundle in isolated user roots, confirm `projectFilesChanged: []`, and prove there is no MCP server entrypoint. The offline migration fixture synthesizes the known legacy shape. The online oracle installs the real public 0.4.0 package and begins with its repository-root `hy-workflow.json`, schema-3 deployment/registry/client ownership, active workflow/scope evidence and owned client entries, but no external runtime-config authority marker. The candidate may create only that marker as a new external state file. On an unmoved checkout it preserves root config, deployment/registry, workflow/scope evidence and all unrelated client bytes, while retiring only exactly owned MCP entries and their corresponding ownership records.
 
-These rules are enforced by `src/contralint/rules/npm.ts` and `test/contract/npm-package.ts`.
+## Lint packaging
 
-## Acceptance scripts
+`hy-workflow lint --json` must run from the unpacked tarball without registry or codeload access. It includes first-party doclint and codelint and never creates or updates legacy compatibility JSON. Dependency lint is not shipped.
 
-- test:acceptance:baseline: offline packed-tarball gate for dev.
-- test:acceptance:pressure: five-public-repository release pressure.
-- test:acceptance: compatibility alias for pressure.
-- verify:dev: normal verify plus the dev baseline.
+The package may be invoked by a consumer's existing CI, but helper does not generate a workflow. Packaging tests must not require a repository to contain `.github/workflows/hy-workflow.yml`.
+
+## Release workflow
+
+`.github/workflows/npm-publish.yml` publishes only a GitHub Release with `release.published`. It uses npm Trusted Publishing with `id-token: write` and no long-lived npm token.
+
+Before publication it proves:
+
+1. the release tag equals `v` plus `package.json.version`;
+2. the checked-out commit is the tag commit and belongs to `origin/main`;
+3. semver prerelease state matches the GitHub Release prerelease flag;
+4. normal verification passes;
+5. exactly one canonical tarball is created and its SHA-512 is recorded;
+6. the exact tarball passes the no-skip acceptance pressure matrix;
+7. the online oracle migrates real public 0.4.0 state to that exact tarball;
+8. its bytes remain unchanged before `npm publish`.
+
+That same accepted `.tgz` is published directly. Stable releases use npm tag `latest`; prereleases use `next`. The workflow does not publish the source directory after acceptance and does not upload compiled artifacts to GitHub Releases or commit them to Git.
+
+## Stable migration release gate
+
+A stable CLI+Skill release is incomplete until the offline synthetic baseline and the online public-package oracle prove:
+
+- the active bin and main are `dist/main.js`;
+- all 12 Skills are present and hashable;
+- fresh helper install leaves representative repositories byte-identical;
+- update preserves an existing target set and intentional deletion;
+- on an unmoved checkout, the MCP-era root `hy-workflow.json`, schema-3 deployment/registry and workflow/scope evidence remain byte-identical, while client ownership changes only for the retired owned MCP entry;
+- on a genuinely moved checkout, status is read-only and install transactionally updates only the proven deployment/registry identity fields;
+- no external authority marker exists before migration and the candidate creates exactly one marker that points back to the preserved root config;
+- only an exactly owned legacy `hy-workflow` MCP entry is retired;
+- `docs-gardener` and unrelated client configuration survive;
+- local doclint/codelint work from the installed tarball;
+- Windows and POSIX projection modes have focused coverage.
+
+Release documentation and npm dist-tags must be verified after the workflow completes; creating a GitHub Release alone is not proof that `latest` moved. After `latest` resolves to the released version, repeat the public oracle with `npm run test:acceptance:migration -- --legacy @voxstudio/hy-workflow@0.4.0 --candidate @voxstudio/hy-workflow@latest` so registry installation, not only the pre-publication tarball, closes the migration loop.

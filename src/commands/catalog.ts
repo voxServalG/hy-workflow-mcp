@@ -1,41 +1,82 @@
+import {
+  PHASES,
+  WORKFLOW_STAGES,
+  type Phase,
+  type WorkflowStage,
+} from "../runtime/state-machine.js";
+
 export type CommandContract = {
-  name: string;
-  handlerFile: string;
-  docsFile: string;
-  phase: string;
+  command: string;
+  legacyAction: `hy_${string}`;
+  handlerFile: `src/tools/${string}.ts`;
+  phases: readonly Phase[];
+  stages: readonly WorkflowStage[];
   description: string;
   destructive: boolean;
 };
 
-export const COMMAND_CONTRACTS: CommandContract[] = [
-  { name: "hy_init", handlerFile: "src/tools/init.ts", docsFile: "docs/tools.md", phase: "init, plan", description: "Validate setup artifacts and workflow rules", destructive: false },
-  { name: "hy_read_docs", handlerFile: "src/tools/read_docs.ts", docsFile: "docs/tools.md", phase: "plan, approve, edit, verify", description: "Read project docs for workflow gates", destructive: false },
-  { name: "hy_plan", handlerFile: "src/tools/plan.ts", docsFile: "docs/tools.md", phase: "plan", description: "Validate and store a PlanDoc", destructive: false },
-  { name: "hy_approve", handlerFile: "src/tools/approve.ts", docsFile: "docs/tools.md", phase: "approve", description: "Apply explicit user approval or rejection", destructive: false },
-  { name: "hy_branch", handlerFile: "src/tools/branch.ts", docsFile: "docs/tools.md", phase: "branch", description: "Create the implementation branch", destructive: true },
-  { name: "hy_edit", handlerFile: "src/tools/edit.ts", docsFile: "docs/tools.md", phase: "branch, edit, verify", description: "Lock implementation scope", destructive: false },
-  { name: "hy_sync_docs", handlerFile: "src/tools/sync_docs.ts", docsFile: "docs/tools.md", phase: "edit, verify", description: "Confirm documentation sync after edits", destructive: false },
-  { name: "hy_verify", handlerFile: "src/tools/verify.ts", docsFile: "docs/tools.md", phase: "edit, verify", description: "Run all verification layers (sync fast path)", destructive: false },
-  { name: "hy_exam_plan", handlerFile: "src/tools/exam-plan.ts", docsFile: "docs/tools.md", phase: "edit, verify", description: "Async verify step 1: issue an exam manifest (checks list + nonces) without running commands", destructive: false },
-  { name: "hy_exam_submit", handlerFile: "src/tools/exam-submit.ts", docsFile: "docs/tools.md", phase: "edit, verify", description: "Async verify step 2: submit agent-run check results; server validates nonces, commands, exit codes, and tree fingerprint before stamping verifyHash", destructive: false },
-  { name: "hy_amend_plan", handlerFile: "src/tools/amend_plan.ts", docsFile: "docs/tools.md", phase: "verify", description: "Apply approved scope amendments", destructive: false },
-  { name: "hy_commit", handlerFile: "src/tools/commit.ts", docsFile: "docs/tools.md", phase: "commit", description: "Commit approved scope, create PR, and poll CI until green", destructive: true },
-  { name: "hy_merge", handlerFile: "src/tools/merge.ts", docsFile: "docs/tools.md", phase: "merge", description: "Merge the approved PR and auto-rebase downstream branches", destructive: true },
-  { name: "hy_reset", handlerFile: "src/tools/reset.ts", docsFile: "docs/tools.md", phase: "any", description: "Recovery: reset workflow state to plan", destructive: true },
-  { name: "hy_status", handlerFile: "src/tools/status.ts", docsFile: "docs/tools.md", phase: "any", description: "Inspect workflow state", destructive: false },
-];
+export const COMMAND_CONTRACTS = [
+  { command: "init", legacyAction: "hy_init", handlerFile: "src/tools/init.ts", phases: ["init"], stages: ["init.ready"], description: "Validate runtime readiness and initialize external workflow state", destructive: false },
+  { command: "status", legacyAction: "hy_status", handlerFile: "src/tools/status.ts", phases: PHASES, stages: WORKFLOW_STAGES, description: "Inspect the authoritative workflow state and route", destructive: false },
+  { command: "read-docs", legacyAction: "hy_read_docs", handlerFile: "src/tools/read_docs.ts", phases: ["plan", "approve", "edit"], stages: ["plan.before_plan", "approve.before_approve", "edit.after_edit"], description: "Read project documentation for the three evidence gates", destructive: false },
+  { command: "plan", legacyAction: "hy_plan", handlerFile: "src/tools/plan.ts", phases: ["plan"], stages: ["plan.compose", "plan.review"], description: "Validate and store a PlanDoc", destructive: false },
+  { command: "approve", legacyAction: "hy_approve", handlerFile: "src/tools/approve.ts", phases: ["approve"], stages: ["approve.before_approve", "approve.decision"], description: "Apply one explicit decision to one exact PlanDoc", destructive: false },
+  { command: "branch", legacyAction: "hy_branch", handlerFile: "src/tools/branch.ts", phases: ["branch"], stages: ["branch.create"], description: "Create the implementation branch", destructive: true },
+  { command: "edit", legacyAction: "hy_edit", handlerFile: "src/tools/edit.ts", phases: ["edit"], stages: ["edit.scope", "edit.implementation"], description: "Lock the approved implementation scope", destructive: false },
+  { command: "sync-docs", legacyAction: "hy_sync_docs", handlerFile: "src/tools/sync_docs.ts", phases: ["edit"], stages: ["edit.after_edit", "edit.sync_docs"], description: "Record current post-edit documentation evidence", destructive: false },
+  { command: "verify", legacyAction: "hy_verify", handlerFile: "src/tools/verify.ts", phases: ["edit", "verify"], stages: ["edit.sync_docs", "verify.run"], description: "Run the synchronous verification path", destructive: false },
+  { command: "exam-plan", legacyAction: "hy_exam_plan", handlerFile: "src/tools/exam-plan.ts", phases: ["edit", "verify"], stages: ["edit.sync_docs", "verify.run"], description: "Issue a bound asynchronous verification manifest", destructive: false },
+  { command: "exam-submit", legacyAction: "hy_exam_submit", handlerFile: "src/tools/exam-submit.ts", phases: ["edit", "verify"], stages: ["edit.sync_docs", "verify.run"], description: "Validate one complete asynchronous result set", destructive: false },
+  { command: "amend-plan", legacyAction: "hy_amend_plan", handlerFile: "src/tools/amend_plan.ts", phases: ["verify"], stages: ["verify.amendment"], description: "Apply an explicit decision to a pending scope amendment", destructive: false },
+  { command: "commit", legacyAction: "hy_commit", handlerFile: "src/tools/commit.ts", phases: ["commit"], stages: ["commit.prepare", "commit.publish", "commit.ci"], description: "Commit approved scope, publish the pull request, and observe CI", destructive: true },
+  { command: "merge", legacyAction: "hy_merge", handlerFile: "src/tools/merge.ts", phases: ["merge"], stages: ["merge.reconcile", "merge.sync"], description: "Reconcile and merge the pull request, then synchronize downstream branches", destructive: true },
+  { command: "reset", legacyAction: "hy_reset", handlerFile: "src/tools/reset.ts", phases: PHASES, stages: WORKFLOW_STAGES, description: "Reset external workflow state to planning", destructive: true },
+] as const satisfies readonly CommandContract[];
 
-export const COMMAND_NAMES = COMMAND_CONTRACTS.map(command => command.name);
+export type WorkflowCliCommandName = typeof COMMAND_CONTRACTS[number]["command"];
+export type LegacyWorkflowAction = typeof COMMAND_CONTRACTS[number]["legacyAction"];
+
+/** Canonical public surface. */
+export const CLI_COMMAND_NAMES = COMMAND_CONTRACTS.map(contract => contract.command) as WorkflowCliCommandName[];
+
+/** Compatibility mapping for the unchanged kernel handlers and retirement code. */
+export const LEGACY_ACTION_NAMES = COMMAND_CONTRACTS.map(contract => contract.legacyAction) as LegacyWorkflowAction[];
+
+/**
+ * @deprecated Only the legacy MCP retirement/preflight kernel consumes this
+ * name. New public contracts must use CLI_COMMAND_NAMES.
+ */
+export const COMMAND_NAMES = LEGACY_ACTION_NAMES;
+
+export function commandForLegacyAction(action: string): WorkflowCliCommandName | null {
+  return COMMAND_CONTRACTS.find(contract => contract.legacyAction === action)?.command ?? null;
+}
+
+export function legacyActionForCommand(command: string): LegacyWorkflowAction | null {
+  return COMMAND_CONTRACTS.find(contract => contract.command === command)?.legacyAction ?? null;
+}
+
+function sortedNames(values: readonly string[]): string[] {
+  return [...values].sort();
+}
+
+export function assertCommandCatalogMatchesCli(commands: readonly string[]): void {
+  const catalog = sortedNames(CLI_COMMAND_NAMES);
+  const actual = sortedNames(commands);
+  if (JSON.stringify(catalog) !== JSON.stringify(actual)) {
+    throw new Error(`CLI command catalog drift: catalog=${catalog.join(",")} actual=${actual.join(",")}`);
+  }
+}
 
 export function commandNamesFromToolDefinitions(tools: Array<{ name?: string }>): string[] {
   return tools.map(tool => tool.name).filter((name): name is string => typeof name === "string").sort();
 }
 
+/** Compatibility assertion for the legacy kernel preflight only. */
 export function assertCommandCatalogMatchesTools(tools: Array<{ name?: string }>): void {
-  const catalog = [...COMMAND_NAMES].sort();
+  const catalog = sortedNames(LEGACY_ACTION_NAMES);
   const actual = commandNamesFromToolDefinitions(tools);
   if (JSON.stringify(catalog) !== JSON.stringify(actual)) {
-    throw new Error(`MCP tool catalog drift: catalog=${catalog.join(',')} actual=${actual.join(',')}`);
+    throw new Error(`Legacy kernel action catalog drift: catalog=${catalog.join(",")} actual=${actual.join(",")}`);
   }
 }
-

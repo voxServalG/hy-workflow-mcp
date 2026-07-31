@@ -2,11 +2,15 @@ import type { ContractFinding, ContractRuleContext } from "../types.js";
 import { readText } from "../files.js";
 
 const MODULE_BOUNDARIES: Record<string, string[]> = {
+  "src/cli/": ["workflow.ts"],
+  "src/commands/": ["catalog.ts"],
   "src/errs/": ["catalog.ts", "structured.ts"],
+  "src/helper/": ["cli.ts", "project.ts", "skills.ts"],
   "src/contralint/": ["index.ts", "run.ts", "types.ts", "files.ts"],
   "src/log/": ["index.ts"],
   "src/npm/": ["package.ts"],
   "src/output/": ["envelope.ts"],
+  "src/skills/": ["catalog.ts"],
 };
 
 export function checkModuleContracts(context: ContractRuleContext): ContractFinding[] {

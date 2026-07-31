@@ -59,6 +59,8 @@ export function validateLintPressureEnvelope(value: unknown, timeoutMs: number):
     byRule.set(check.rule, check);
   }
   if (RULES.some(rule => !byRule.has(rule))) throw new Error("built-in lint check set is incomplete");
+  if (byRule.get("C003")?.status !== "not_configured") throw new Error("built-in lint C003 compatibility slot must remain not_configured");
+  if (byRule.get("C004")?.status !== "not_applicable") throw new Error("built-in lint C004 compatibility slot must remain not_applicable");
   const failedChecks = report.checks.filter((check: any) => check.status === "failed").length;
   if (failed !== failedChecks) throw new Error("built-in lint failed-check count is inconsistent");
 
@@ -68,6 +70,7 @@ export function validateLintPressureEnvelope(value: unknown, timeoutMs: number):
   let findingWarnings = 0;
   for (const finding of report.findings) {
     if (!finding || typeof finding !== "object" || !RULES.includes(finding.rule)) throw new Error("built-in lint finding rule is invalid");
+    if (finding.rule === "C003" || finding.rule === "C004") throw new Error("built-in lint compatibility-only dependency slots must not emit findings");
     if (finding.severity !== "error" && finding.severity !== "warning") throw new Error("built-in lint finding severity is invalid");
     if (typeof finding.path !== "string" || typeof finding.message !== "string" || !finding.message.trim()) throw new Error("built-in lint finding payload is invalid");
     if (finding.line !== undefined && (!Number.isInteger(finding.line) || finding.line < 1)) throw new Error("built-in lint finding line is invalid");

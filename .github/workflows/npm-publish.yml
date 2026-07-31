@@ -12,11 +12,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -72,35 +72,35 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_ENV, `HY_RELEASE_TGZ=${archive}\nHY_RELEASE_TGZ_SHA512=${sha512}\n`);
           NODE
       - name: Checkout pinned Vite acceptance mirror
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: vitejs/vite
           ref: b59a73f76f5557492d83d097bb33b3dd02f27d51
           path: .acceptance-mirrors/vite
           persist-credentials: false
       - name: Checkout pinned Flask acceptance mirror
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: pallets/flask
           ref: 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81
           path: .acceptance-mirrors/flask
           persist-credentials: false
       - name: Checkout pinned Express acceptance mirror
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: expressjs/express
           ref: ae6dd37680e3a00618d6c8a3e522f0ee4eeba1a4
           path: .acceptance-mirrors/express
           persist-credentials: false
       - name: Checkout pinned gh-cli acceptance mirror
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: cli/cli
           ref: c14cbaa24a75272958161751240fd538a68e6c04
           path: .acceptance-mirrors/gh-cli
           persist-credentials: false
       - name: Checkout pinned ripgrep acceptance mirror
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: BurntSushi/ripgrep
           ref: 5e16a5c9e57e81f6031a23faa2ace52205fa8242
@@ -115,6 +115,8 @@ jobs:
           HY_ACCEPTANCE_GH_CLI_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/gh-cli
           HY_ACCEPTANCE_RIPGREP_MIRROR: ${{ github.workspace }}/.acceptance-mirrors/ripgrep
         run: npm run test:acceptance -- --package-archive "$HY_RELEASE_TGZ"
+      - name: Run public v0.4.0 migration oracle
+        run: npm run test:acceptance:migration -- --legacy @voxstudio/hy-workflow@0.4.0 --candidate "$HY_RELEASE_TGZ"
       - name: Publish the accepted tarball directly to npm
         env:
           IS_PRERELEASE: ${{ github.event.release.prerelease }}

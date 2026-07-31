@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -9,6 +9,9 @@ import { handleVerify } from "../../src/tools/verify.js";
 import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -51,6 +54,8 @@ function editState(plan: PlanDoc): WorkflowState {
 const originalCwd = cwd();
 useRuntimeHome("hy-docs-sync-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-docs-sync-"));
+const legacyGraphPath = join(root, ".git", "hy-workflow", "docs-graph.json");
+let legacyGraphContent = "";
 
 try {
   run("git init -b main", root);
@@ -64,7 +69,7 @@ try {
   writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nSee [Usage](./usage.md).\n");
   writeFileSync(join(root, "docs", "usage.md"), "# Usage\n\nUse the app.\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
-    project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
+    project: { baseBranch: "main", codeExt: ".txt", codeDirs: ["src"], docsDir: "docs" },
     codelint: { lintDirs: ["src"] },
   }, null, 2) + "\n");
   writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "dev", codeExt: ".py", codeDirs: ["legacy-src"] }, null, 2) + "\n");
@@ -73,7 +78,7 @@ try {
   run("git update-ref refs/remotes/origin/main HEAD", root);
 
   mkdirSync(join(root, ".git", "hy-workflow"), { recursive: true });
-  writeFileSync(join(root, ".git", "hy-workflow", "docs-graph.json"), JSON.stringify({
+  legacyGraphContent = JSON.stringify({
     digest: "legacy",
     docsDir: "docs",
     entryPoints: ["docs/index.md"],
@@ -91,7 +96,9 @@ try {
         referencedBy: ["docs/index.md"],
       },
     },
-  }, null, 2) + "\n", "utf-8");
+  }, null, 2) + "\n";
+  writeFileSync(legacyGraphPath, legacyGraphContent, "utf-8");
+  chmodSync(legacyGraphPath, 0o000);
 
   chdir(root);
   writeFileSync(join(root, "src", "app.ts"), "export const value = 2;\n");
@@ -105,8 +112,11 @@ try {
   }
 
   const afterEdit = await handleReadDocs({ stage: "after_edit" });
-  if (afterEdit.phase !== "edit" || afterEdit.stage !== "after_edit") {
+  if (afterEdit.phase !== "edit" || afterEdit.stage !== "edit.after_edit") {
     throw new Error(`after_edit should stay in edit, got ${JSON.stringify(afterEdit)}`);
+  }
+  if (afterEdit.nextAction.tool !== null || afterEdit.control.reason !== "external_action_required" || !afterEdit.control.stop) {
+    throw new Error(`after_edit must stop until declared documentation edits are actually complete: ${JSON.stringify(afterEdit)}`);
   }
   // Check graph-driven fields in after_edit
   if (!afterEdit.snapshot?.docsGraphDigest) {
@@ -117,10 +127,10 @@ try {
     throw new Error("after_edit should store implementation digest");
   }
   if (!existsSync(projectPaths(root).docsGraph)) {
-    throw new Error("after_edit should migrate DocsGraph cache into the identity-scoped user cache");
+    throw new Error("after_edit should create DocsGraph only in the identity-scoped user cache");
   }
-  if (!existsSync(join(root, ".git", "hy-workflow", "docs-graph.json"))) {
-    throw new Error("DocsGraph migration must preserve the legacy project-local cache");
+  if (!existsSync(legacyGraphPath)) {
+    throw new Error("the ignored legacy project-local cache must remain untouched");
   }
 
   const missingSync = await handleVerify();
@@ -131,6 +141,9 @@ try {
   const synced = await handleSyncDocs();
   if (synced.phase !== "edit" || !synced.synced) {
     throw new Error(`hy_sync_docs should keep edit phase and mark synced, got ${JSON.stringify(synced)}`);
+  }
+  if (synced.nextAction.tool !== "hy_verify" || !synced.nextAction.automatic || synced.control.stop) {
+    throw new Error(`hy_sync_docs may route automatically only after recording already-completed documentation edits: ${JSON.stringify(synced)}`);
   }
   if (!readState().syncDocs?.allowedDocs.includes("README.md")) {
     throw new Error("hy_sync_docs should record README.md as an allowed sync file");
@@ -146,8 +159,29 @@ try {
   }
 
   const syncedState = readState();
-  const changedPlan = { ...plan, discussion: `${plan.discussion} Changed after after_edit.` };
-  writeState({ ...syncedState, phase: "edit", plan: changedPlan });
+  syncedState.approval = syncedState.approval
+    ? {
+        ...syncedState.approval,
+        commitRecovery: {
+          version: 1,
+          commitOid: "0000000000000000000000000000000000000000",
+          implementationDigest: "stale-before-ci-fix",
+          branch: "feat/docs-sync-flow",
+          baseBranch: "main",
+          repository: "github.com/example/project",
+        },
+      }
+    : null;
+  writeState({
+    ...syncedState,
+    phase: "edit",
+    documentReads: {
+      ...(syncedState.documentReads ?? {}),
+      afterEdit: syncedState.documentReads?.afterEdit
+        ? { ...syncedState.documentReads.afterEdit, planHash: "000000000000" }
+        : null,
+    },
+  });
   const staleAfterEdit = await handleVerify();
   if (!(staleAfterEdit.error?.message ?? String(staleAfterEdit.error)).includes("after_edit plan hash does not match")) {
     throw new Error(`hy_verify should reject stale after_edit audit, got ${JSON.stringify(staleAfterEdit)}`);
@@ -155,9 +189,13 @@ try {
 
   writeState(syncedState);
   writeFileSync(join(root, "README.md"), "# App\n\nValue is 2.\n");
+  writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nValue 2. See [Usage](./usage.md).\n");
   const verified = await handleVerify();
   if ((verified.error?.message ?? String(verified.error)).includes("after_edit") || (verified.error?.message ?? String(verified.error)).includes("hy_sync_docs") || (verified.error?.message ?? String(verified.error)).includes("Implementation diff changed")) {
     throw new Error(`hy_verify should pass the document sync preflight after docs-only edits, got ${JSON.stringify(verified)}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(readState().approval ?? {}, "commitRecovery")) {
+    throw new Error("a successful fresh verification must supersede the stale commit recovery identity");
   }
 
   writeState({ ...readState(), phase: "edit" });
@@ -174,7 +212,7 @@ try {
   writeState(editState(deletePlan));
   unlinkSync(join(root, "docs", "usage.md"));
   const deleteAfterEdit = await handleReadDocs({ stage: "after_edit" });
-  if (deleteAfterEdit.phase !== "edit" || deleteAfterEdit.stage !== "after_edit") {
+  if (deleteAfterEdit.phase !== "edit" || deleteAfterEdit.stage !== "edit.after_edit") {
     throw new Error(`after_edit should run for deleted docs, got ${JSON.stringify(deleteAfterEdit)}`);
   }
   const deleteSynced = await handleSyncDocs();
@@ -184,6 +222,11 @@ try {
   if (!deleteSynced.graphInfo.brokenLinkDetails.some((detail: string) => detail.includes("docs/index.md") && detail.includes("docs/usage.md"))) {
     throw new Error(`broken link details should identify source and deleted target, got ${JSON.stringify(deleteSynced.graphInfo)}`);
   }
+  chmodSync(legacyGraphPath, 0o644);
+  if (readFileSync(legacyGraphPath, "utf-8") !== legacyGraphContent) {
+    throw new Error("document gates must never migrate or rewrite the legacy project-local DocsGraph cache");
+  }
 } finally {
+  try { chmodSync(legacyGraphPath, 0o644); } catch {}
   chdir(originalCwd);
 }

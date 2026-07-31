@@ -1,16 +1,17 @@
 import * as path from "node:path";
 import { requireRuntimeConfig, type JsonObject } from "./config.js";
+import { resolveLintPolicyRule, type EffectivePolicyRule } from "./policy/effective.js";
 
 export const LINT_SCHEMA = "hy-workflow.lint.v1" as const;
 export const LINT_VERSION = 1 as const;
 
 const RULES = ["D001", "D002", "D003", "D004", "D005", "C001", "C002", "C003", "C004", "C005"] as const;
 type LintRule = typeof RULES[number];
-type LintStatus = "passed" | "failed" | "warning" | "not_applicable" | "not_configured";
+type LintStatus = "passed" | "failed" | "warning" | "advisory" | "not_applicable" | "not_configured";
 
 export type LintFinding = {
   rule: string;
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "advisory";
   path: string;
   line?: number;
   message: string;
@@ -21,13 +22,18 @@ export type LintReport = {
   version: typeof LINT_VERSION;
   ok: boolean;
   root: ".";
-  counts: { checks: number; failed: number; errors: number; warnings: number; files: number; docs: number; code: number };
-  checks: Array<{ rule: LintRule; status: LintStatus; files: number; errors: number; warnings: number; message: string }>;
+  counts: { checks: number; failed: number; errors: number; warnings: number; advisories: number; files: number; docs: number; code: number };
+  checks: Array<{ rule: LintRule; status: LintStatus; files: number; errors: number; warnings: number; advisories: number; message: string }>;
   findings: LintFinding[];
 };
 
 type LintModule = {
-  runLint(options: { root: string; config: JsonObject; pythonCommand?: string }): LintReport;
+  runLint(options: {
+    root: string;
+    config: JsonObject;
+    pythonCommand?: string;
+    resolvePolicyRule(rule: LintRule, file?: string): EffectivePolicyRule;
+  }): LintReport;
 };
 
 type LintArgs = {
@@ -82,6 +88,7 @@ function failedReport(message: string): LintReport {
       files: 0,
       errors: rule === "C005" ? 1 : 0,
       warnings: 0,
+      advisories: 0,
       message: rule === "C005" ? message : `${rule} ${status.replace("_", " ")}`,
     };
   });
@@ -90,7 +97,7 @@ function failedReport(message: string): LintReport {
     version: LINT_VERSION,
     ok: false,
     root: ".",
-    counts: { checks: RULES.length, failed: 1, errors: 1, warnings: 0, files: 0, docs: 0, code: 0 },
+    counts: { checks: RULES.length, failed: 1, errors: 1, warnings: 0, advisories: 0, files: 0, docs: 0, code: 0 },
     checks,
     findings: [finding],
   };
@@ -112,7 +119,12 @@ async function lintModule(): Promise<LintModule> {
 export async function runInternalLint(root: string, pythonCommand?: string): Promise<LintReport> {
   const config = requireRuntimeConfig(root);
   const engine = await lintModule();
-  const report = engine.runLint({ root, config, pythonCommand });
+  const report = engine.runLint({
+    root,
+    config,
+    pythonCommand,
+    resolvePolicyRule: (rule, file) => resolveLintPolicyRule(config, rule, file),
+  });
   assertLintReport(report);
   return report;
 }

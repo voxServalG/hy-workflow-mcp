@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
@@ -71,6 +71,10 @@ try {
   if (!existsSync(runtimePath)) {
     throw new Error("writeState should create user-local workflow.json");
   }
+  writeFileSync(runtimePath, JSON.stringify({ ...baseState(), phase: "commit" }, null, 2));
+  if (readState().stage !== "commit.prepare") {
+    throw new Error("historical workflow state without stage should default from its persisted phase");
+  }
 
   const legacyDir = join(root, ".hy");
   mkdirSync(legacyDir, { recursive: true });
@@ -78,16 +82,15 @@ try {
   writeFileSync(join(legacyDir, "workflow.json"), JSON.stringify(legacyState, null, 2));
   unlinkSync(runtimePath);
 
-  const migrated = readState();
-  if (migrated.phase !== "approve") {
-    throw new Error("readState should load legacy .hy/workflow.json when new state is absent");
+  const fresh = readState();
+  if (fresh.phase !== "init") {
+    throw new Error("readState must ignore legacy .hy/workflow.json and initialize fresh external state");
   }
-  const migratedRaw = JSON.parse(readFileSync(runtimePath, "utf-8"));
-  if (migratedRaw.phase !== "approve") {
-    throw new Error("readState should migrate legacy state into user-local workflow.json");
+  if (existsSync(runtimePath)) {
+    throw new Error("readState must not copy legacy state into user-local workflow.json");
   }
   if (!existsSync(join(legacyDir, "workflow.json"))) {
-    throw new Error("readState must preserve legacy .hy/workflow.json after migration");
+    throw new Error("readState must leave legacy .hy/workflow.json untouched");
   }
 
   writeFileSync(join(root, "README.md"), "changed\n");
@@ -110,13 +113,19 @@ try {
     throw new Error("cleanupLegacyRuntimeFiles should preserve tracked legacy .hy/workflow.json");
   }
   const diagnostics = legacyRuntimeDiagnostics(root);
-  if (!diagnostics.some(d => d.file === ".hy/workflow.json" && d.tracked && d.remediation)) {
-    throw new Error("legacyRuntimeDiagnostics should report tracked legacy workflow metadata with remediation");
+  if (diagnostics.length !== 0) {
+    throw new Error("normal runtime diagnostics must not inspect tracked legacy workflow metadata");
   }
   run("git reset -- .hy/workflow.json", root);
   run("rm -f .hy/workflow.json .hy/scope.json", root);
 
-  const editState = { ...baseState(), phase: "branch" as const, branch: "fix/runtime", plan: basePlan() };
+  const editState = {
+    ...baseState(),
+    phase: "branch" as const,
+    branch: "fix/runtime",
+    plan: basePlan(),
+    approval: { time: "historical", note: "approved" },
+  };
   writeState(editState);
   await handleEdit();
   const runtimeScopePath = scopePath();

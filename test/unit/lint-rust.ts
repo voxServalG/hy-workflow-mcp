@@ -52,7 +52,6 @@ assert(broken.errors.some(item => item.message.includes("unclosed Rust delimiter
       },
     },
   });
-  assert(result.findings.some(item => item.rule === "C003" && item.path === "src/low.rs"), `Rust reverse tier dependency must fail: ${JSON.stringify(result.findings)}`);
-  assert(result.findings.some(item => item.rule === "C004"), `Rust dependency cycle must fail: ${JSON.stringify(result.findings)}`);
+  assert(!result.findings.some(item => item.rule === "C003" || item.rule === "C004"), `legacy Rust tiers must remain inert: ${JSON.stringify(result.findings)}`);
   assert(!result.findings.some(item => item.rule === "C005"), `valid Rust must not fail parser reliability: ${JSON.stringify(result.findings)}`);
 }

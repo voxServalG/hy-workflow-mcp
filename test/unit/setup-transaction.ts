@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { projectPaths, userRoots } from "../../src/runtime/user-paths.js";
 import { recoverSetupJournal, withSetupTransaction } from "../../src/setup/transaction.js";
 import { makeGitProject, useRuntimeHome } from "../helpers/runtime-home.js";
@@ -41,6 +42,95 @@ await Promise.all([1, 2].map(() => withSetupTransaction(root, "setup", async () 
 restoreLockHooks();
 assert(maxActive === 1, "a fresh lock directory without owner.json must remain live during the owner-write window");
 assert(!fs.existsSync(projectPaths(root).setupLock), "serialized transactions must release the setup lock");
+
+const setupLock = projectPaths(root).setupLock;
+fs.mkdirSync(setupLock, { recursive: true });
+fs.writeFileSync(path.join(setupLock, "owner.json"), `${JSON.stringify({
+  pid: 2_147_483_647,
+  host: os.hostname(),
+  createdAt: new Date().toISOString(),
+  transactionId: "stale-transaction",
+  token: randomUUID(),
+})}\n`);
+
+let releaseFirstObserver = (): void => {};
+const firstObserverGate = new Promise<void>(resolve => { releaseFirstObserver = resolve; });
+let firstObserverReached = (): void => {};
+const firstObserverSignal = new Promise<void>(resolve => { firstObserverReached = resolve; });
+let releaseReplacement = (): void => {};
+const replacementGate = new Promise<void>(resolve => { releaseReplacement = resolve; });
+let replacementReached = (): void => {};
+const replacementSignal = new Promise<void>(resolve => { replacementReached = resolve; });
+let staleObservations = 0;
+const restoreReclaimHooks = setSetupTestHooks({
+  afterSetupLockStaleObserved: async () => {
+    staleObservations += 1;
+    if (staleObservations === 1) {
+      firstObserverReached();
+      await firstObserverGate;
+    }
+  },
+});
+const reclaimOrder: string[] = [];
+const firstReclaimer = withSetupTransaction(root, "setup", () => {
+  reclaimOrder.push("first");
+});
+await firstObserverSignal;
+const secondReclaimer = withSetupTransaction(root, "setup", async () => {
+  reclaimOrder.push("second-start");
+  replacementReached();
+  await replacementGate;
+  reclaimOrder.push("second-end");
+});
+await replacementSignal;
+const replacementOwnerBefore = fs.readFileSync(path.join(setupLock, "owner.json"), "utf-8");
+const replacementOwner = JSON.parse(replacementOwnerBefore) as Record<string, unknown>;
+assert(
+  typeof replacementOwner.token === "string"
+    && /^[0-9a-f-]{36}$/i.test(replacementOwner.token)
+    && typeof replacementOwner.transactionId === "string",
+  "a replacement setup lock must publish a random owner token and transaction id",
+);
+releaseFirstObserver();
+await new Promise(resolve => setTimeout(resolve, 100));
+assert(
+  fs.readFileSync(path.join(setupLock, "owner.json"), "utf-8") === replacementOwnerBefore,
+  "a late stale observation from the first reclaimer must not move or overwrite the replacement owner",
+);
+releaseReplacement();
+await Promise.all([firstReclaimer, secondReclaimer]);
+restoreReclaimHooks();
+assert(
+  reclaimOrder.join(",") === "second-start,second-end,first",
+  "two stale reclaimers must serialize without entering transactions concurrently",
+);
+assert(!fs.existsSync(setupLock), "both reclaimers must release the final setup lock");
+assert(
+  !fs.readdirSync(path.dirname(setupLock)).some(name => name.startsWith(`${path.basename(setupLock)}.stale-`)),
+  "successful stale recovery must remove only its unique tombstone",
+);
+
+await withSetupTransaction(root, "setup", () => {
+  fs.rmSync(path.join(setupLock, "owner.json"), { force: true });
+  fs.writeFileSync(path.join(setupLock, "replacement.txt"), "owner publication interrupted\n");
+});
+assert(
+  fs.readFileSync(path.join(setupLock, "replacement.txt"), "utf-8") === "owner publication interrupted\n",
+  "release must not delete a lock whose owner record is missing",
+);
+fs.rmSync(setupLock, { recursive: true, force: true });
+
+await withSetupTransaction(root, "setup", () => {
+  const ownerFile = path.join(setupLock, "owner.json");
+  const owner = JSON.parse(fs.readFileSync(ownerFile, "utf-8")) as Record<string, unknown>;
+  fs.writeFileSync(ownerFile, `${JSON.stringify({ ...owner, token: randomUUID() }, null, 2)}\n`);
+  fs.writeFileSync(path.join(setupLock, "replacement.txt"), "replacement owner\n");
+});
+assert(
+  fs.readFileSync(path.join(setupLock, "replacement.txt"), "utf-8") === "replacement owner\n",
+  "release must preserve a replacement owner with the same transaction id but a different token",
+);
+fs.rmSync(setupLock, { recursive: true, force: true });
 
 try {
   await withSetupTransaction(root, "setup", transaction => {
@@ -147,4 +237,4 @@ assert(unreadableCode === "SETUP_TRANSACTION_FAILED", "an unreadable journal mus
 assert(!fs.existsSync(unreadablePaths.setupLock), "an unreadable journal must not strand the setup lock");
 assert(fs.existsSync(unreadablePaths.setupJournal), "an unreadable journal must be preserved for doctor recovery");
 
-console.log("setup-transaction: live-lock grace, WAL crash gap, CAS conflicts, and unreadable-journal cleanup pass");
+console.log("setup-transaction: owner publication, stale-reclaimer races, WAL crash gap, CAS conflicts, and cleanup pass");

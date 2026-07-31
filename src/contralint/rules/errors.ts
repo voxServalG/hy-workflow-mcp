@@ -1,9 +1,14 @@
 import { ERROR_SUBTYPES, ERROR_TYPES } from "../../errs/catalog.js";
 import { ERROR_ENVELOPE_FIELDS } from "../../output/contract.js";
-import { readText } from "../files.js";
+import { exists, readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
 const REQUIRED_TYPES = ["validation", "workflow_state", "scope", "docs", "verification", "config", "setup", "io", "internal"];
+const MERGE_RECOVERY_CODES = [
+  "MERGE_LOCK_BUSY",
+  "PR_MERGE_OUTCOME_UNCONFIRMED",
+  "POST_MERGE_SYNC_INCOMPLETE",
+] as const;
 
 export function checkErrorContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
@@ -13,6 +18,28 @@ export function checkErrorContracts(context: ContractRuleContext): ContractFindi
     }
   }
   const docs = readText(context.root, "docs/errors.md");
+  const mergeProduction = [
+    readText(context.root, "src/git.ts"),
+    readText(context.root, "src/tools/merge.ts"),
+  ].join("\n");
+  for (const code of MERGE_RECOVERY_CODES) {
+    if (!mergeProduction.includes(code)) {
+      findings.push({
+        rule: "errors",
+        severity: "hard_fail",
+        message: `Merge recovery implementation omits stable error code ${code}.`,
+        file: "src/git.ts",
+      });
+    }
+    if (!docs.includes(code)) {
+      findings.push({
+        rule: "errors",
+        severity: "amend_required",
+        message: `Merge recovery error code ${code} is not documented.`,
+        file: "docs/errors.md",
+      });
+    }
+  }
   for (const subtype of ERROR_SUBTYPES) {
     if (!docs.includes(subtype)) {
       findings.push({ rule: "errors", severity: "amend_required", message: "Error subtype " + subtype + " is not documented.", file: "docs/errors.md" });
@@ -32,9 +59,19 @@ export function checkErrorContracts(context: ContractRuleContext): ContractFindi
       findings.push({ rule: "errors", severity: "amend_required", message: "Error envelope docs omit " + field + ".", file: "docs/errors.md" });
     }
   }
-  const server = readText(context.root, "src/server.ts");
-  if (server.includes("JSON.stringify({ error: message }")) {
-    findings.push({ rule: "errors", severity: "hard_fail", message: "Server catch block returns a bare error string instead of a structured envelope.", file: "src/server.ts" });
+  const cliPath = "src/cli/workflow.ts";
+  if (!exists(context.root, cliPath)) {
+    findings.push({ rule: "errors", severity: "hard_fail", message: "Workflow CLI error adapter is missing.", file: cliPath });
+  } else {
+    const cli = readText(context.root, cliPath);
+    for (const token of ["structuredError(caught)", "failureEnvelope", "errorWithoutHint", "INPUT_SCHEMA_INVALID"]) {
+      if (!cli.includes(token)) {
+        findings.push({ rule: "errors", severity: "hard_fail", message: `Workflow CLI error envelope is missing ${token}.`, file: cliPath });
+      }
+    }
+    if (cli.includes("JSON.stringify({ error:") || cli.includes("throw new Error(JSON.stringify")) {
+      findings.push({ rule: "errors", severity: "hard_fail", message: "Workflow CLI must not expose a bare string/object error outside the versioned envelope.", file: cliPath });
+    }
   }
   return findings;
 }

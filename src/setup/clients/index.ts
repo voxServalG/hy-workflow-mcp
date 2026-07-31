@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { McpDefinition } from "../types.js";
 
@@ -32,13 +33,26 @@ export function resolveExecutable(name: string): string | null {
   }
 }
 
-export function runExecutable(executable: string, args: string[], timeout = 15_000): CommandResult {
+export function neutralCommandCwd(projectRoot: string): string {
+  const root = path.resolve(projectRoot);
+  const outside = (candidate: string): boolean => {
+    const relative = path.relative(root, path.resolve(candidate));
+    return relative.startsWith("..") || path.isAbsolute(relative);
+  };
+  for (const candidate of [path.dirname(process.execPath), os.tmpdir(), path.dirname(root)]) {
+    if (outside(candidate)) return candidate;
+  }
+  throw new Error(`No neutral command directory exists outside the project root: ${root}`);
+}
+
+export function runExecutable(executable: string, args: string[], timeout = 15_000, options: { cwd?: string } = {}): CommandResult {
   try {
     const invocation = executableInvocation(executable, args);
     const stdout = execFileSync(invocation.command, invocation.args, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout,
+      ...(options.cwd ? { cwd: options.cwd } : {}),
     });
     return { ok: true, stdout: stdout.trim(), stderr: "", status: 0 };
   } catch (error: any) {
@@ -75,7 +89,7 @@ export function definitionEquals(left: McpDefinition | null, right: McpDefinitio
   return JSON.stringify(norm(left)) === JSON.stringify(norm(right));
 }
 
-export function versionOf(executable: string): string | null {
-  const result = runExecutable(executable, ["--version"], 5_000);
+export function versionOf(executable: string, cwd?: string): string | null {
+  const result = runExecutable(executable, ["--version"], 5_000, { cwd });
   return result.ok ? result.stdout.split(/\r?\n/)[0]?.trim() || null : null;
 }

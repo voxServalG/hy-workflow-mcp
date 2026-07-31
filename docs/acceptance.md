@@ -1,25 +1,126 @@
-# Acceptance gates
+# Acceptance Gates
 
-本项目有两个互补 gate，不能互相替代。
+Acceptance proves the installed npm artifact and migration behavior, not merely the source checkout. This document states required release evidence. A requirement is not considered satisfied until the corresponding suite has run successfully against the canonical tarball in CI or an equivalent recorded environment.
 
-## Dev acceptance baseline
+## Gate structure
 
-npm run test:acceptance:baseline 是每次进入 dev 前的项目级、离线、确定性 baseline；npm run verify:dev 先执行常规 verify，再执行该 baseline。独立 workflow .github/workflows/acceptance-baseline.yml 在 PR target 为 dev 及 push 到 dev 时运行，稳定 check 名为 Acceptance Baseline，仓库 ruleset 应将它设为 required。
+The project has three complementary gates:
 
-baseline 先 npm pack，检查 tarball 不含源码、测试和本地运行态，再从解包后的 dist 执行产品。它不访问 registry 或外部仓库；运行依赖来自本次 npm ci，docs-gardener 使用只实现版本与 MCP catalog 握手的有限 stub。隔离 HOME、XDG、客户端状态、npm prefix/cache 和凭证边界沿用 acceptance harness。
+- `npm run test:acceptance:baseline` is the deterministic, offline development baseline. Its migration case synthesizes the known legacy state shape without downloading the old package. `npm run verify:dev` runs normal verification followed by this baseline.
+- `npm run test:acceptance:pressure` is the release-only public-repository pressure suite. `npm run test:acceptance` is its compatibility alias.
+- `npm run test:acceptance:migration -- --legacy @voxstudio/hy-workflow@0.4.0 --candidate <tgz-or-npm-spec>` is the online public migration oracle. It installs and operates the real public 0.4.0 package before replacing it with the candidate.
 
-test/acceptance/baseline-matrix.json 用六个确定性 fixture 覆盖 Node/main、TypeScript/dev monorepo、Python/trunk、Rust/master、混合语言/非标准目录，以及 `INC-LINT-INTERNAL-OFFLINE`。每个 fixture 必须绑定唯一 INC-* 历史事故 ID，并执行 dry-run 无副作用、两次 setup 收敛、offline doctor、项目文件边界、unset 保留团队产物与清理 runtime artifacts；lint fixture 还证明已安装 tarball 能离线产出十条规则的统一报告，且三个旧兼容 JSON 不出现。场景不得 skip；缺项、超时、非零退出、非 JSON envelope、边界越界或清理不完整均 fail closed。
+No gate may silently skip a declared scenario. Timeout, partial result, malformed envelope, missing oracle or unrecorded mutation fails closed. The offline synthetic fixture gives deterministic development coverage; it does not substitute for the online public-package oracle at release time.
 
-新增重大 bug 时，修复 PR 必须先增加能复现该 bug 的事故 fixture/oracle；优先扩展现有 pairwise fixture，只有出现新的独立项目维度才增加 fixture。baseline 不负责公网兼容压力，也不允许以减少 release 场景换取速度。
+## Canonical package boundary
 
-## Release acceptance pressure
+The baseline, pressure suite and candidate side of the migration oracle must consume a packed package. Release pressure and the pre-publication migration oracle receive the exact archive built by the publish workflow. Required package oracles are:
 
-npm run test:acceptance 保持兼容入口，等价于 npm run test:acceptance:pressure。它是发布专用、允许联网、45 分钟预算的完整压力门禁，不属于 npm test 或日常 dev baseline。runner 测试同一个 canonical tarball，并安装固定的 @voxstudio/docs-gardener@1.0.0-next.0。
+- npm `main` and `bin["hy-workflow"]` execute `dist/main.js`;
+- `dist/server.js` and an active MCP entrypoint are absent;
+- exactly the 12 cataloged stage Skills are present;
+- source, tests, local runtime directories and user/client state are absent;
+- `hy-workflow lint --json` runs offline from the installed package;
+- the package never mutates a project merely because npm installation occurred.
 
-release matrix 固定为五个公开仓库：Vite、Flask、Express、GitHub CLI、ripgrep；HTTPS URL、full commit、生态、分支和预期目录都在 test/acceptance/matrix.json。本地可通过各仓库的 HY_ACCEPTANCE_*_MIRROR 指向含精确 commit 的只读 clone；未提供时才走有界 HTTPS fetch。release workflow 预先 checkout 五个固定 commit，再把本地路径传给 runner。
+The acceptance harness isolates HOME/XDG/Agent config, npm prefix/cache/config and credentials. Remote write commands are rejected. Timeouts must terminate process trees on POSIX and Windows so an abandoned child cannot keep changing the worktree or `dist/`.
 
-release pressure 直接通过已安装 tarball 运行统一内置 lint，不下载或准备第三方 lint 包。它允许真实仓库存在结构化 lint findings，但要求报告 schema、十条规则、适用性、计数、确定性顺序和退出码一致，并证明兼容 JSON 字节不变。其余覆盖仍包括 PTY、managed AGENTS 迁移、客户端 shadow refusal、artifact drift、32 并发 setup、七个持久化 failpoint 的精确回滚、MCP 文档读取、unset、进程树/磁盘预算、远程写拒绝和 worktree 边界。任何 timeout、partial result、skip、零文件假绿或 structured evidence 缺失都失败。
+## Fresh helper installation oracle
 
-## Verify integration
+Every representative fixture must run the installed helper in a clean Git worktree and prove:
 
-baseline 和 pressure 都是长命令。PlanDoc 应把它们列入 tests/entry points，但执行时使用异步 verify-as-oracle：hy_exam_plan 获取带 nonce 的精确命令，agent 在 MCP 外执行并收集退出码与 stdout tail，再用 hy_exam_submit 阅卷。不要把长 acceptance 塞进同步 hy_verify；两个 verify 路径成功后生成等价 verifyHash；异步阅卷还必须原子持久化 implementation manifest、manifest hash 和 implementation digest，hy_commit 才能消费该证据。
+1. `helper install` emits `hy-workflow.helper.v1` with explicit `skills`, `project` and `mcp` layers;
+2. `projectFilesChanged` is exactly `[]` in every outcome;
+3. the complete Skill bundle is installed only in isolated user roots and exact selected Agent targets;
+4. project registration, config and state remain outside the worktree and Git common directory;
+5. no `hy-workflow.json`, GitHub Actions workflow, `AGENTS.md`, `.mcp.json`, project Agent directory, `.hy/` or compatibility lint JSON is created;
+6. a repeated install converges without rewriting unchanged resources;
+7. `helper status` reports the same bundle hash, targets and external project identity;
+8. `init` returns local cognition and changes no project file or Git metadata;
+9. `helper remove` removes only owned Skill resources and preserves external project state.
+
+Target coverage must include Codex, Claude Code and OpenCode, symlink and copy behavior where supported, and explicit target selection when detection is empty.
+
+## Skill ownership and fault oracles
+
+The baseline must inject failures around staging, projection and manifest replacement. After each failure, it compares the full isolated user-state fingerprint and proves either rollback to the exact pre-state or a structured partial result with truthful completed layers and exact recovery argv.
+
+It must also prove:
+
+- unmanaged same-name content is not overwritten or removed;
+- target paths cannot escape to the project, `.git` or an unsafe root;
+- normal update preserves an intentionally deleted projection;
+- `update --repair` restores only the recorded missing projection;
+- target set and projection preference cannot change during update;
+- concurrent operations serialize or return structured retryable contention;
+- remove uses current hashes and refuses ownership drift.
+
+## Seamless MCP-to-CLI migration oracle
+
+`INC-UPGRADE-INJECTION-INTERFERENCE` is the mandatory offline compatibility fixture, and the public migration oracle independently exercises the same boundary with the real package published as `@voxstudio/hy-workflow@0.4.0`. The legacy starting point has a repository-root `hy-workflow.json`, a schema-3 deployment and registry/client ownership, active workflow/scope/approval/verification state, owned MCP entries and no external runtime-config authority marker. Migration may create exactly that external marker, declaring the unchanged root `hy-workflow.json` as project authority. It must otherwise prove:
+
+- Skills are available before legacy MCP retirement is attempted;
+- on an unmoved checkout, the root `hy-workflow.json`, schema-3 deployment and registry, workflow state and scope are byte-for-byte identical after helper install;
+- the newly created external authority marker is the only permitted external state addition;
+- the current phase, approval, verified evidence and worktree are preserved;
+- client configuration and ownership change only by removing the exactly owned `hy-workflow` MCP entry;
+- `docs-gardener`, unrelated MCP definitions, project overrides and unowned same-name content are unchanged;
+- failure during retirement rolls back owned client configuration or returns a recovery-required layer without reporting success;
+- old tracked project config/workflow/AGENTS/client/lint artifacts remain byte-for-byte unchanged;
+- helper remove does not restore the retired MCP entry or delete preserved project state.
+
+Equivalent GitHub SSH/HTTPS/default-port/case/`.git` locator spellings must resolve to one project identity. A single legacy raw-locator deployment continues without copied state; simultaneous canonical/legacy or multiple legacy candidates must return `PROJECT_IDENTITY_CONFLICT`.
+
+If the checkout genuinely moved, helper status remains read-only and reports the exact `helper install --json` recovery command. Install may then reconcile only deployment and registry identity fields in one transaction after proving a unique safe alias; external config, workflow, scope, cache, DocsGraph and client ownership remain unchanged. Equivalent remote spelling changes within the same checkout must not rewrite deployment or registry bytes.
+
+## Local cognition oracle
+
+`init` acceptance uses repositories with Node/TypeScript, Python, Rust and mixed/nonstandard layouts. The result must identify locally supported ecosystems, candidate commands, documentation entry points, branch/head/upstream/dirty facts, recent commits and merge commits, and the fixed test-scale contract.
+
+Network, Feishu/Lark and remote PR access are disabled in this scenario. Missing evidence is represented as unavailable. Candidate commands are observations, not passing-test claims. Worktree and `.git` fingerprints must remain unchanged.
+
+## Test-scale and verification oracle
+
+Fixtures must bind change characteristics to expected semantic scale:
+
+- every change has Small checks;
+- cross-module, process, storage, schema, API, CLI, configuration, concurrency or recovery changes add Medium checks;
+- installation, migration, packaging, release, CI, cross-platform, external-service, security or historical-incident changes add Large checks.
+
+The suite verifies that CLI-required checks cannot be dropped and that synchronous verify and asynchronous `exam-plan`/`exam-submit` persist equivalent implementation manifest/digest evidence. A successful new verification must supersede stale commit-recovery state; a failed or incomplete verification must preserve it.
+
+## Commit and merge incidents
+
+Release acceptance retains incident fixtures for the failure modes that motivated recovery logic.
+
+Commit recovery must prove that a failure after commit creation cannot cause a second commit on retry, while any mismatch in repository, branch, base, HEAD or verified digest fails closed. After a repair and successful re-verification, the stale recovery record must no longer hijack publication.
+
+`INC-MERGE-UNKNOWN-OUTCOME` must prove:
+
+- immutable repository/PR/base/head/verified-OID identity is separate from mutable lifecycle;
+- an attempted receipt is persisted before the sole merge mutation and a confirmed receipt after remote confirmation;
+- a retry reconciles GitHub state or fresh-fetch ancestry and does not repeat the mutation;
+- the read-only Git fallback never merges or pushes the base;
+- downstream candidates are real proven stacks, not unrelated branches;
+- confirmed sync pins `syncBaseOid`, computes rebases in detached staging, installs local refs by compare-and-swap and pushes by exact force-with-lease;
+- local/remote drift fails closed and cannot be overwritten;
+- `POST_MERGE_SYNC_INCOMPLETE` reports completed/remaining work and resumes only the remainder;
+- terminal outcomes distinguish `merged_now`, `already_merged` and `already_integrated` with actual executor evidence.
+
+The incident promises recovery after persisted state boundaries and ordinary process interruption. It does not claim power-loss durability beyond the implementation's explicit write guarantees.
+
+## Release pressure repositories
+
+The release matrix uses five public repositories pinned by full commit: Vite, Flask, Express, GitHub CLI and ripgrep. The release workflow checks out those commits and passes local mirror paths to the runner; a local invocation may use the matching `HY_ACCEPTANCE_*_MIRROR` variables or bounded HTTPS acquisition.
+
+For every repository, the installed package must run real doclint/codelint pressure, report `hy-workflow.lint.v1` deterministically, distinguish passed/failed/warning/not-applicable/not-configured rules, reject zero-scan false green, and preserve all compatibility bytes. The validator must also require the retired dependency slots to stay fixed at `C003=not_configured` and `C004=not_applicable`, with no findings. Pressure setup must use helper's zero-project-write contract, not the removed two-artifact setup behavior.
+
+## CI and release evidence
+
+Acceptance is not itself installed into consumer repositories. This repository owns its development and release workflows. The npm publish job must validate tag/main ancestry, build exactly one tarball, record its SHA-512, run release pressure against that exact path, run the online public 0.4.0-to-tarball migration oracle, recheck the digest and publish the same bytes.
+
+A stable release is complete only after the publish job is green, npm shows the released version under `latest`, and the online oracle is repeated with `--candidate @voxstudio/hy-workflow@latest`. A GitHub Release alone is not sufficient evidence.
+
+## Long-suite execution in a managed workflow
+
+When hy-workflow is used to develop this repository, acceptance belongs to Large verification. The active `hy-verify` Skill should use `exam-plan`, execute every issued command exactly with its nonce/binding, and submit one complete result set through `exam-submit`. Do not run the long suite through the synchronous `verify` path. Any implementation change invalidates the old exam and requires refreshed post-edit/documentation evidence plus a new exam.

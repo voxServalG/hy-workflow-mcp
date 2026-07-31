@@ -69,7 +69,7 @@ const report: AcceptanceReport = {
 async function main(): Promise<void> {
   const { run } = await import("./harness.js");
   report.sourceCommit = (await run("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, env: workspace.env })).stdout.trim();
-  report.packageArchive = await packAndInstall(workspace, matrix.companionPackage, packageArchive);
+  report.packageArchive = await packAndInstall(workspace, packageArchive);
   for (const [index, repo] of matrix.repositories.entries()) {
     const result = await runRepositoryScenario(workspace, repo, index);
     report.results.push(result);

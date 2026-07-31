@@ -1,14 +1,18 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { handleApprove } from "../../src/tools/approve.js";
 import { handlePlan } from "../../src/tools/plan.js";
 import { handleReadDocs } from "../../src/tools/read_docs.js";
-import { readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { handleStatus } from "../../src/tools/status.js";
+import { planDecisionId, readState, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 import { projectPaths } from "../../src/runtime/user-paths.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
+import { RUNTIME_CONFIG_SOURCE_ENV, RUNTIME_CONFIG_SOURCE_SCHEMA } from "../../src/config.js";
+
+process.env[RUNTIME_CONFIG_SOURCE_ENV] = RUNTIME_CONFIG_SOURCE_SCHEMA;
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -50,6 +54,12 @@ function planState(): WorkflowState {
   };
 }
 
+function currentPlanDecisionId(): string {
+  const decisionId = planDecisionId(readState().plan);
+  if (!decisionId) throw new Error("expected a current PlanDoc decision id");
+  return decisionId;
+}
+
 const originalCwd = cwd();
 useRuntimeHome("hy-docs-read-runtime-");
 const root = mkdtempSync(join(tmpdir(), "hy-docs-read-"));
@@ -70,6 +80,7 @@ try {
   writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   run("git add .", root);
   run("git commit -m init", root);
+  chmodSync(join(root, "AGENTS.md"), 0o000);
   chdir(root);
 
   const plan = basePlan();
@@ -82,8 +93,12 @@ try {
   }
 
   const baseline = await handleReadDocs({ stage: "before_plan", task: baselineTask });
-  if (baseline.phase !== "plan" || baseline.stage !== "before_plan") {
+  if (baseline.phase !== "plan" || baseline.stage !== "plan.before_plan") {
     throw new Error(`before_plan should keep workflow in plan, got ${JSON.stringify(baseline)}`);
+  }
+  const baselineStatus = await handleStatus();
+  if (baselineStatus.nextAction.tool !== null || baselineStatus.nextAction.phase !== "plan" || baselineStatus.nextAction.stage !== "plan.compose" || baselineStatus.control.reason !== "information_required") {
+    throw new Error(`status should expose plan composition without inventing task or PlanDoc arguments, got ${JSON.stringify(baselineStatus)}`);
   }
   // Check new graph-driven fields in the returned snapshot
   const bsnap = baseline.snapshot;
@@ -93,12 +108,15 @@ try {
   if (!bsnap.traversalRoots || bsnap.traversalRoots.length === 0) {
     throw new Error(`before_plan snapshot should include traversalRoots, got ${JSON.stringify(bsnap)}`);
   }
+  if (Object.hasOwn(bsnap, "purpose") || Object.hasOwn(bsnap, "findings")) {
+    throw new Error(`read-docs snapshots must contain facts rather than model-facing prose: ${JSON.stringify(bsnap)}`);
+  }
   if (!existsSync(projectPaths(root).docsGraph) || existsSync(join(root, ".git", "hy-workflow", "docs-graph.json"))) {
     throw new Error("before_plan should create DocsGraph only in the identity-scoped user cache");
   }
   const baselineFiles = bsnap.files.map((file: any) => file.path);
-  if (!baselineFiles.includes("guides/README.md") || !baselineFiles.includes("AGENTS.md")) {
-    throw new Error(`before_plan should consistently read custom docsDir README and AGENTS.md supplemental entries, got ${baselineFiles.join(", ")}`);
+  if (!baselineFiles.includes("guides/README.md") || baselineFiles.includes("AGENTS.md")) {
+    throw new Error(`before_plan should read configured docs while leaving legacy AGENTS.md unread, got ${baselineFiles.join(", ")}`);
   }
 
   const stateWithBaseline = readState();
@@ -115,28 +133,91 @@ try {
   if (planned.phase !== "approve") {
     throw new Error(`hy_plan should pass after before_plan even when task text differs, got ${JSON.stringify(planned)}`);
   }
-  if (!planned.warnings?.some((warning: string) => warning.includes("before_plan task differs"))) {
+  if (!planned.warnings?.some((warning: any) =>
+    warning?.code === "BEFORE_PLAN_TASK_MISMATCH"
+      && warning.beforePlanTask === baselineTask
+      && warning.planTask === plan.task
+  )) {
     throw new Error(`hy_plan should warn when before_plan task differs, got ${JSON.stringify(planned)}`);
   }
+  const waitingDecision = await handleStatus();
+  if (waitingDecision.userAction?.kind !== "approval" || waitingDecision.nextAction.tool !== null || waitingDecision.stage !== "approve.decision") {
+    throw new Error(`status must wait for the first user decision before the automatic before_approve audit: ${JSON.stringify(waitingDecision)}`);
+  }
 
-  const missingAudit = await handleApprove({ approved: "approve", note: "user approved" });
+  const stateBeforeStaleDecision = JSON.stringify(readState());
+  const staleDecision = await handleApprove({ approved: "approve", decisionId: "plan:000000000000" });
+  if (staleDecision.error?.code !== "APPROVAL_DECISION_ID_MISMATCH"
+      || staleDecision.userAction?.decisionId !== currentPlanDecisionId()
+      || JSON.stringify(readState()) !== stateBeforeStaleDecision) {
+    throw new Error(`a stale approval decision must be rejected without mutation: ${JSON.stringify(staleDecision)}`);
+  }
+
+  const stateBeforePrematureAudit = JSON.stringify(readState());
+  const prematureAudit = await handleReadDocs({ stage: "before_approve" });
+  if (prematureAudit.phase !== "approve"
+      || prematureAudit.stage !== "approve.decision"
+      || prematureAudit.userAction?.kind !== "approval"
+      || prematureAudit.nextAction.tool !== null
+      || prematureAudit.control.reason !== "approval_required") {
+    throw new Error(`before_approve must stop at the user decision when no approval has been persisted: ${JSON.stringify(prematureAudit)}`);
+  }
+  const stateAfterPrematureAudit = readState();
+  if (JSON.stringify(stateAfterPrematureAudit) !== stateBeforePrematureAudit
+      || stateAfterPrematureAudit.documentReads?.beforeApprove
+      || stateAfterPrematureAudit.pendingApproval
+      || stateAfterPrematureAudit.approval) {
+    throw new Error(`a premature before_approve call must not audit, persist, or imply approval: ${JSON.stringify(stateAfterPrematureAudit)}`);
+  }
+
+  const missingAudit = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
   if (!(missingAudit.error?.message ?? String(missingAudit.error)).includes("before_approve")) {
     throw new Error(`hy_approve should require before_approve audit, got ${JSON.stringify(missingAudit)}`);
   }
+  const pendingAudit = await handleStatus();
+  if (pendingAudit.userAction !== null || pendingAudit.nextAction.tool !== "hy_read_docs" || pendingAudit.nextAction.arguments?.stage !== "before_approve") {
+    throw new Error(`the existing approval should resume through an automatic document audit without another user gate: ${JSON.stringify(pendingAudit)}`);
+  }
+  const stateBeforeDrift = readState();
 
   writeFileSync(join(root, "guides", "workflow.md"), `${DOC_BODY}\nNew approval-relevant workflow fact.\n`);
   const driftAudit = await handleReadDocs({ stage: "before_approve" });
-  if (driftAudit.changedSinceBaseline !== true) {
+  if (driftAudit.changedSinceBaseline !== true || driftAudit.status !== "warning") {
     throw new Error(`before_approve should report document drift, got ${JSON.stringify(driftAudit)}`);
   }
-  const driftApproval = await handleApprove({ approved: "approve", note: "user approved" });
-  if (!String(driftApproval.hint).includes("document changes since before_plan")) {
-    throw new Error(`hy_approve should reject before_approve document drift, got ${JSON.stringify(driftApproval)}`);
+  const auditedDecision = await handleStatus();
+  if (auditedDecision.userAction !== null
+      || auditedDecision.nextAction.tool !== null
+      || auditedDecision.control.reason !== "review_required"
+      || !auditedDecision.control.stop) {
+    throw new Error(`document drift should stop for an agent audit decision without asking the user again: ${JSON.stringify(auditedDecision)}`);
+  }
+  const driftAuditState = readState();
+  const missingAuditDecision = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
+  if (missingAuditDecision.error?.code !== "APPROVAL_AUDIT_DECISION_REQUIRED" || missingAuditDecision.userAction !== null) {
+    throw new Error(`document drift must require an explicit agent audit decision, not another user approval: ${JSON.stringify(missingAuditDecision)}`);
+  }
+  const replanned = await handleApprove({ approved: "approve", note: "user approved", auditDecision: "replan", decisionId: currentPlanDecisionId() });
+  if (replanned.phase !== "plan"
+      || replanned.nextAction.tool !== "hy_read_docs"
+      || replanned.nextAction.arguments?.stage !== "before_plan"
+      || replanned.nextAction.arguments?.task !== plan.task
+      || replanned.userAction !== null
+      || readState().plan !== null
+      || readState().pendingApproval !== null) {
+    throw new Error(`material document drift must return to a fresh plan baseline without fabricating a user revision: ${JSON.stringify(replanned)}`);
   }
 
+  writeState(driftAuditState);
+  const driftApproval = await handleApprove({ approved: "approve", note: "user approved", auditDecision: "continue", decisionId: currentPlanDecisionId() });
+  if (driftApproval.phase !== "branch" || driftApproval.approved !== true) {
+    throw new Error(`digest drift alone must not consume another user approval; the agent decides whether facts require replanning: ${JSON.stringify(driftApproval)}`);
+  }
+
+  writeState(stateBeforeDrift);
   writeFileSync(join(root, "guides", "workflow.md"), DOC_BODY);
   const audit = await handleReadDocs({ stage: "before_approve" });
-  if (audit.phase !== "approve" || audit.stage !== "before_approve") {
+  if (audit.phase !== "approve" || audit.stage !== "approve.before_approve") {
     throw new Error(`before_approve should keep workflow in approve, got ${JSON.stringify(audit)}`);
   }
   if (audit.changedSinceBaseline !== false) {
@@ -151,10 +232,21 @@ try {
     throw new Error("before_approve snapshot missing docsGraphDigest");
   }
 
-  const changedPlan = { ...plan, discussion: `${plan.discussion} Changed after the approval audit.` };
-  writeState({ ...stateWithAudit, plan: changedPlan });
-  const staleAudit = await handleApprove({ approved: "approve", note: "user approved" });
-  if (!String(staleAudit.hint).includes("before_approve plan hash does not match")) {
+  writeState({
+    ...stateWithAudit,
+    documentReads: {
+      ...(stateWithAudit.documentReads ?? {}),
+      beforeApprove: stateWithAudit.documentReads?.beforeApprove
+        ? { ...stateWithAudit.documentReads.beforeApprove, planHash: "000000000000" }
+        : null,
+    },
+  });
+  const staleAudit = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
+  if (staleAudit.ok !== false
+      || staleAudit.error?.type !== "docs"
+      || staleAudit.error?.subtype !== "docs_missing"
+      || staleAudit.documentReadHealth?.blockedBy?.gate !== "beforeApprove"
+      || staleAudit.documentReadHealth.blockedBy.reason !== "before_approve plan hash does not match the current PlanDoc.") {
     throw new Error(`hy_approve should reject stale before_approve audit, got ${JSON.stringify(staleAudit)}`);
   }
 
@@ -167,10 +259,11 @@ try {
   unlinkSync(join(root, "guides", "unread.md"));
 
   writeState(stateWithAudit);
-  const approved = await handleApprove({ approved: "approve", note: "user approved" });
+  const approved = await handleApprove({ approved: "approve", note: "user approved", decisionId: currentPlanDecisionId() });
   if (approved.phase !== "branch" || approved.approved !== true) {
     throw new Error(`hy_approve should pass after before_approve, got ${JSON.stringify(approved)}`);
   }
 } finally {
+  try { chmodSync(join(root, "AGENTS.md"), 0o644); } catch {}
   chdir(originalCwd);
 }

@@ -1,13 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { readDeployment, readDeploymentById, readRegistry, type DeploymentManifest } from "../runtime/deployment.js";
+import { readDeployment, readDeploymentById, readRegistry } from "../runtime/deployment.js";
 import { findProjectRoot } from "../runtime/project.js";
-import { projectPaths, userRoots } from "../runtime/user-paths.js";
+import { projectPaths, sameProjectCheckoutIdentity, userRoots } from "../runtime/user-paths.js";
 import { clientSnapshotEquals } from "./clients/effective.js";
 import { definitionEquals } from "./clients/index.js";
 import { createClientAdapters, readOwnership } from "./operations.js";
 import { inspectSetupTools } from "./preflight.js";
-import { sharedArtifactEvidence } from "./shared.js";
+import { SHARED_PROJECT_FILES, sharedArtifactEvidence } from "./shared.js";
 import { MCP_DEFINITIONS, type ServerName } from "./types.js";
 import { redactDiagnosticValue } from "../errs/structured.js";
 
@@ -69,7 +69,7 @@ function toolEvidenceMatches(recorded: unknown, live: unknown): boolean {
 
 function globalDeploymentGraphIssues(registry: ReturnType<typeof readRegistry>): string[] {
   const projectsDir = path.join(userRoots().state, "projects");
-  const deployments = new Map<string, DeploymentManifest>();
+  const deployments = new Map<string, NonNullable<ReturnType<typeof readDeploymentById>>>();
   const issues: string[] = [];
   if (fs.existsSync(projectsDir)) {
     for (const id of fs.readdirSync(projectsDir)) {
@@ -82,7 +82,7 @@ function globalDeploymentGraphIssues(registry: ReturnType<typeof readRegistry>):
       if (!stat.isDirectory() || !fs.existsSync(path.join(directory, "deployment.json"))) continue;
       try {
         const deployment = readDeploymentById(id);
-        if (!deployment || deployment.schemaVersion !== "3") issues.push(`project ${id} has missing or legacy deployment evidence`);
+        if (!deployment) issues.push(`project ${id} has missing deployment evidence`);
         else {
           if (deployment.identity.id !== id) issues.push(`project ${id} deployment identity is ${deployment.identity.id}`);
           deployments.set(id, deployment);
@@ -127,15 +127,20 @@ export async function runSetupDoctor(root: string, options: { offline?: boolean 
     const issues = globalDeploymentGraphIssues(registry);
     add(checks, issues.length
       ? { id: "coherence.global", status: "fail", message: "Global registry/deployment graph contains orphaned or drifted projects.", hint: "Preserve every listed registry and deployment file; reconcile these project ids before retrying global unset.", detail: { issues } }
-      : { id: "coherence.global", status: "pass", message: "Every registered project has one matching schema 3 deployment manifest." });
+      : { id: "coherence.global", status: "pass", message: "Every registered project has one matching external deployment manifest." });
   }
 
   let deployment: ReturnType<typeof readDeployment> = null;
   try {
     deployment = readDeployment(projectRoot);
     if (!deployment) add(checks, { id: "deployment", status: "warn", message: "No local deployment manifest exists.", hint: "Run hy-workflow setup." });
-    else if (deployment.schemaVersion !== "3") add(checks, { id: "deployment", status: "fail", message: `Deployment schema ${deployment.schemaVersion} requires migration.`, hint: "Run hy-workflow setup to produce schema 3 external state." });
-    else add(checks, { id: "deployment", status: "pass", message: `Deployment ${deployment.setupVersion} uses schema 3.` });
+    else add(checks, {
+      id: "deployment",
+      status: "pass",
+      message: deployment.schemaVersion === "3" && deployment.projectContract
+        ? `Deployment ${deployment.setupVersion} uses the minimal project contract.`
+        : `Legacy deployment ${deployment.setupVersion} remains compatible; repository injections are inert.`,
+    });
   } catch (error) { add(checks, failure("deployment", error)); }
 
   if (registryRecord && !deployment) {
@@ -151,7 +156,7 @@ export async function runSetupDoctor(root: string, options: { offline?: boolean 
   } catch (error) { add(checks, failure("ownership", error)); }
 
   if (deployment?.schemaVersion === "3") {
-    const identityCurrent = sameIdentity(deployment.identity, paths.identity);
+    const identityCurrent = sameProjectCheckoutIdentity(deployment.identity, paths.identity);
     add(checks, identityCurrent
       ? { id: "coherence.identity", status: "pass", message: "Deployment identity matches the current Git project identity." }
       : { id: "coherence.identity", status: "fail", message: "Deployment identity does not match the current Git project identity.", hint: "Do not delete external state. Reconcile the project move or remote identity, then rerun setup.", detail: { deployment: deployment.identity, current: paths.identity } });
@@ -173,6 +178,27 @@ export async function runSetupDoctor(root: string, options: { offline?: boolean 
       add(checks, missing.length
         ? { id: "coherence.ownership", status: "fail", message: `Ownership evidence is missing or drifted for: ${missing.join(", ")}.`, hint: "Preserve global client configuration and rerun setup for the declared clients.", detail: { missing } }
         : { id: "coherence.ownership", status: "pass", message: "Every declared client/server pair has matching desired ownership evidence." });
+    }
+    if (deployment.projectContract) {
+      const expectedFiles = [...SHARED_PROJECT_FILES].sort();
+      const recordedFiles = [...deployment.projectFiles].sort();
+      const evidenceFiles = Object.keys(deployment.artifacts).sort();
+      const surfaceCurrent = sameStrings(recordedFiles, expectedFiles) && sameStrings(evidenceFiles, expectedFiles);
+      add(checks, surfaceCurrent
+        ? { id: "artifacts.contract", status: "pass", message: "Minimal project artifact surface contains exactly the config and thin workflow." }
+        : { id: "artifacts.contract", status: "fail", message: "Minimal project artifact surface or recorded evidence is incomplete.", hint: "Rerun setup after reviewing the exact two-file artifact diff.", detail: { expectedFiles, projectFiles: recordedFiles, evidenceFiles } });
+      try {
+        const live = sharedArtifactEvidence(projectRoot);
+        for (const file of SHARED_PROJECT_FILES) {
+          const recorded = deployment.artifacts[file];
+          const current = live[file];
+          add(checks, recorded && current && recorded.sha256 === current.sha256 && recorded.size === current.size
+            ? { id: `artifact.${file}`, status: "pass", message: `${file} matches its recorded setup evidence.` }
+            : { id: `artifact.${file}`, status: "fail", message: `${file} differs from its recorded setup evidence.`, hint: "Review the project-owned change, then rerun setup with exact artifact hashes if replacement is intended.", detail: { recorded: recorded ?? null, current: current ?? null } });
+        }
+      } catch (error) {
+        add(checks, failure("artifacts.read", error, "Replace unsafe project artifact paths with normal files, then rerun doctor."));
+      }
     }
   }
 
@@ -242,20 +268,6 @@ export async function runSetupDoctor(root: string, options: { offline?: boolean 
     }
   }
 
-  if (deployment?.schemaVersion === "3") {
-    const actual = sharedArtifactEvidence(projectRoot);
-    for (const file of ["hy-workflow.json", ".github/workflows/hy-workflow.yml"]) {
-      const expected = deployment.artifacts[file];
-      const current = actual[file];
-      add(checks, expected && current?.sha256 === expected.sha256
-        ? { id: `artifact.${file}`, status: "pass", message: `${file} matches deployment hash.` }
-        : { id: `artifact.${file}`, status: "fail", message: `${file} is missing or drifted from deployment state.`, hint: "Review hy-workflow setup --dry-run --json, then use the interactive TUI or pass --accept-artifact-changes with the exact --review-artifact file:before:after tuples shown by that review.", detail: { expected, current } });
-    }
-  }
-
-  for (const legacy of [".mcp.json", ".codex", ".opencode"]) {
-    if (fs.existsSync(path.join(projectRoot, legacy))) add(checks, { id: `legacy.${legacy}`, status: "warn", message: `Legacy/project-local client source exists: ${legacy}`, hint: "Review it manually. hy-workflow never deletes tracked legacy configuration." });
-  }
   const summary = {
     pass: checks.filter(item => item.status === "pass").length,
     warn: checks.filter(item => item.status === "warn").length,
@@ -281,7 +293,7 @@ export async function runDoctorCli(argv: string[] = [], root = process.cwd()): P
     }
     return result.ok ? 0 : 1;
   } catch (error) {
-    const check = failure("doctor", error);
+    const check = redactDiagnosticValue(failure("doctor", error)) as DoctorCheck;
     const payload = { ok: false, offline: argv.includes("--offline"), checks: [check], summary: { pass: 0, warn: 0, fail: 1 } };
     if (argv.includes("--json")) process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     else process.stderr.write(`hy-workflow doctor: ${check.message}${check.hint ? `\n${check.hint}` : ""}\n`);
