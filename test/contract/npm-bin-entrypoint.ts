@@ -69,7 +69,7 @@ if (process.platform === "win32") {
         "--no-audit",
         "--no-fund",
         "--package-lock=false",
-        "--offline",
+        "--prefer-offline",
         archive,
       ],
       packageRoot,

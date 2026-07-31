@@ -14,6 +14,7 @@ import {
   updateHelperSkills,
   type HelperSkillPaths,
 } from "../../src/helper/skills.js";
+import { resolvedDirectory } from "../../src/helper/skill-fs.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -67,6 +68,19 @@ for (const required of ["progressive local documentation", "pull-request evidenc
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "hy-helper-skills-"));
+if (process.platform !== "win32") {
+  const realParent = path.join(root, "resolved-real");
+  const aliasParent = path.join(root, "resolved-alias");
+  const missingTarget = path.join(aliasParent, "missing", "skills");
+  fs.mkdirSync(realParent);
+  fs.symlinkSync(realParent, aliasParent, "dir");
+  const beforeCreation = resolvedDirectory(missingTarget);
+  fs.mkdirSync(path.join(realParent, "missing", "skills"), { recursive: true });
+  const afterCreation = resolvedDirectory(missingTarget);
+  assert(beforeCreation === afterCreation, "resolved target identity must remain stable when an aliased parent gains missing descendants");
+  assert(afterCreation === path.join(fs.realpathSync.native(realParent), "missing", "skills"), "resolved target identity must use the canonical nearest existing ancestor");
+}
+
 const bundleRoot = path.join(root, "bundle");
 fs.cpSync(repositoryBundle, bundleRoot, { recursive: true });
 const paths = pathsFor(root);

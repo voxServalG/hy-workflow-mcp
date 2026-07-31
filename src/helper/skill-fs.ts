@@ -183,7 +183,18 @@ export function stagePath(destination: string): string {
 }
 
 export function resolvedDirectory(directory: string): string {
-  try { return fs.realpathSync.native(directory); } catch { return path.resolve(directory); }
+  const absolute = path.resolve(directory);
+  const suffix: string[] = [];
+  let current = absolute;
+  for (;;) {
+    if (lstat(current)) {
+      try { return path.join(fs.realpathSync.native(current), ...suffix); } catch { return absolute; }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return absolute;
+    suffix.unshift(path.basename(current));
+    current = parent;
+  }
 }
 
 export function normalizeTargets(

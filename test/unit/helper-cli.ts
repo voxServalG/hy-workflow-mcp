@@ -209,7 +209,10 @@ assert(
   `unavailable MCP client must produce partial-safe recovery: ${JSON.stringify(partial.envelope)}`,
 );
 assert(partial.envelope.layers.skills.status === "installed" && partial.envelope.layers.project.status === "registered", "Skills and external registration must remain complete when retirement is pending");
-assert(partial.envelope.layers.mcp.status === "partial", "MCP retirement must identify the incomplete layer");
+assert(
+  partial.envelope.layers.mcp.status === "partial",
+  `MCP retirement must identify the incomplete layer: ${JSON.stringify(partial.envelope.layers.mcp)}`,
+);
 assert(
   JSON.stringify(partial.envelope.recovery?.argv)
     === JSON.stringify(["hy-workflow", "helper", "install", "--clients", "codex", "--mode", "copy", "--json"]),
