@@ -40,6 +40,10 @@ assert(
   packageManifest.scripts?.["test:acceptance:migration"] === "npx tsx test/acceptance/public-migration-oracle.ts",
   "public migration oracle must have one stable npm script",
 );
+assert(
+  packageManifest.scripts?.["test:acceptance"] === "npm run test:acceptance:pressure --",
+  "release pressure alias must forward the canonical package archive argument",
+);
 const reusableWorkflow = readFileSync(".github/workflows/reusable-verify.yml", "utf8").replace(/\r\n?/g, "\n");
 const reusablePackageSpecs = [...reusableWorkflow.matchAll(/@voxstudio\/hy-workflow@([^\s]+)\s+hy-workflow\s+lint\s+--json/g)].map(match => match[1]);
 assert(

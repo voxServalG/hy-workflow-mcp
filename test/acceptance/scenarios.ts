@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { normalizeCodeExt } from "../../src/code_ext.js";
 import type { AcceptanceRepo, AcceptanceWorkspace } from "./harness.js";
 import { validateLintPressureEnvelope, type LintPressureSummary } from "./lint-report.js";
 import {
@@ -158,7 +159,7 @@ function assertExternalProjectConfig(envelope: any, repo: AcceptanceRepo, root: 
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   assert(config.project?.baseBranch === repo.defaultBranch, repo.id + " inferred wrong base branch");
   assert(config.project?.docsDir === repo.expected.docsDir, repo.id + " inferred wrong documentation root");
-  const codeExt = stringList(config.project?.codeExt);
+  const codeExt = normalizeCodeExt(config.project?.codeExt);
   const codeDirs = stringList(config.project?.codeDirs);
   const lintDirs = stringList(config.codelint?.lintDirs);
   for (const extension of repo.expected.codeExt) assert(codeExt.includes(extension), repo.id + " missed code extension " + extension);
@@ -287,7 +288,12 @@ export async function runConcurrencyScenario(workspace: AcceptanceWorkspace): Pr
       successes += 1;
     } else {
       assertHelperEnvelope(envelope, "install", false);
-      assert(envelope.error?.code === "HELPER_SKILL_BUSY" && envelope.error?.retryable === true, "concurrency accepted an error other than HELPER_SKILL_BUSY: " + result.stdout);
+      assert(
+        envelope.error?.code === "HELPER_OPERATION_BUSY"
+          && envelope.error?.subtype === "operation_lock"
+          && envelope.error?.retryable === true,
+        "concurrency accepted an error other than retryable HELPER_OPERATION_BUSY: " + result.stdout,
+      );
       retryableContention += 1;
     }
   }
