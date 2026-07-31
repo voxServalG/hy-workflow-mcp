@@ -69,7 +69,7 @@ try {
   writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nSee [Usage](./usage.md).\n");
   writeFileSync(join(root, "docs", "usage.md"), "# Usage\n\nUse the app.\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
-    project: { baseBranch: "main", codeExt: ".ts", codeDirs: ["src"], docsDir: "docs" },
+    project: { baseBranch: "main", codeExt: ".txt", codeDirs: ["src"], docsDir: "docs" },
     codelint: { lintDirs: ["src"] },
   }, null, 2) + "\n");
   writeFileSync(join(root, "codelint.json"), JSON.stringify({ baseBranch: "dev", codeExt: ".py", codeDirs: ["legacy-src"] }, null, 2) + "\n");
@@ -159,6 +159,19 @@ try {
   }
 
   const syncedState = readState();
+  syncedState.approval = syncedState.approval
+    ? {
+        ...syncedState.approval,
+        commitRecovery: {
+          version: 1,
+          commitOid: "0000000000000000000000000000000000000000",
+          implementationDigest: "stale-before-ci-fix",
+          branch: "feat/docs-sync-flow",
+          baseBranch: "main",
+          repository: "github.com/example/project",
+        },
+      }
+    : null;
   writeState({
     ...syncedState,
     phase: "edit",
@@ -176,9 +189,13 @@ try {
 
   writeState(syncedState);
   writeFileSync(join(root, "README.md"), "# App\n\nValue is 2.\n");
+  writeFileSync(join(root, "docs", "index.md"), "# Docs\n\nValue 2. See [Usage](./usage.md).\n");
   const verified = await handleVerify();
   if ((verified.error?.message ?? String(verified.error)).includes("after_edit") || (verified.error?.message ?? String(verified.error)).includes("hy_sync_docs") || (verified.error?.message ?? String(verified.error)).includes("Implementation diff changed")) {
     throw new Error(`hy_verify should pass the document sync preflight after docs-only edits, got ${JSON.stringify(verified)}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(readState().approval ?? {}, "commitRecovery")) {
+    throw new Error("a successful fresh verification must supersede the stale commit recovery identity");
   }
 
   writeState({ ...readState(), phase: "edit" });

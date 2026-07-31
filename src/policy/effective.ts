@@ -18,6 +18,12 @@ import {
 
 type JsonObject = Record<string, any>;
 
+const RETIRED_DEPENDENCY_POLICY_RULES = new Set(["code.tier-dependency", "code.dependency-cycle"]);
+
+function isRetiredDependencyPolicyRule(value: unknown): boolean {
+  return typeof value === "string" && RETIRED_DEPENDENCY_POLICY_RULES.has(value);
+}
+
 export type PolicySource = {
   layer: "safety" | "profile" | "legacy" | "project" | "override" | "exception";
   reference: string;
@@ -237,11 +243,13 @@ export function explainEffectivePolicy(
 
 export function resolveLintPolicyRule(
   config: JsonObject,
-  lintRule: keyof typeof LINT_RULE_TO_POLICY_RULE,
+  lintRule: string,
   file?: string,
   now?: Date | string,
 ): EffectivePolicyRule {
-  return resolveEffectivePolicyRule(config, LINT_RULE_TO_POLICY_RULE[lintRule], { file, now }).rule;
+  const policyRule = LINT_RULE_TO_POLICY_RULE[lintRule as keyof typeof LINT_RULE_TO_POLICY_RULE];
+  if (!policyRule) throw new Error(`Lint rule ${lintRule} has no configurable policy`);
+  return resolveEffectivePolicyRule(config, policyRule, { file, now }).rule;
 }
 
 export function findingSeverity(
@@ -313,6 +321,7 @@ function validatePolicyRules(value: unknown, field: string, file: string, issues
     return;
   }
   for (const [rule, ruleValue] of Object.entries(value as JsonObject)) {
+    if (isRetiredDependencyPolicyRule(rule)) continue;
     if (isImmutableSafetyRule(rule)) {
       issues.push(`${file} ${field}.${rule} is an immutable safety invariant and cannot be overridden`);
       continue;
@@ -375,7 +384,7 @@ export function validatePolicyConfig(
       const extra = Object.keys(exception).filter(key => !["rule", "files", "reason", "owner", "issue", "expires", "severity"].includes(key));
       if (extra.length) issues.push(`${file} ${field} has unknown fields: ${extra.join(", ")}`);
       if (isImmutableSafetyRule(exception.rule)) issues.push(`${file} ${field}.rule is immutable and cannot be excepted: ${exception.rule}`);
-      else if (!isQualityPolicyRule(exception.rule)) issues.push(`${file} ${field}.rule must name a configurable quality rule`);
+      else if (!isQualityPolicyRule(exception.rule) && !isRetiredDependencyPolicyRule(exception.rule)) issues.push(`${file} ${field}.rule must name a configurable quality rule`);
       validatePolicyFiles(exception.files, `${field}.files`, file, issues);
       for (const key of ["reason", "owner"] as const) {
         const value = exception[key];

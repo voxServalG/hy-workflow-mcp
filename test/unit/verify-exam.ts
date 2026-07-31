@@ -8,6 +8,8 @@ import { issueExam, submitExam, computeScopeFingerprint } from "../../src/verify
 import { computePlanHash, createPlanApproval, readState, writeState } from "../../src/state.js";
 import { handleExamSubmit } from "../../src/tools/exam-submit.js";
 import { handleExamPlan } from "../../src/tools/exam-plan.js";
+import { handleStatus } from "../../src/tools/status.js";
+import { toWorkflowCliEnvelope } from "../../src/cli/workflow.js";
 import { buildImplementationManifest } from "../../src/checks.js";
 import { implementationDigest } from "../../src/tools/sync_docs.js";
 import { useRuntimeHome } from "../helpers/runtime-home.js";
@@ -61,19 +63,30 @@ try {
     phase: "edit",
     plan,
     branch: "fix/test",
-    approval: createPlanApproval(plan, "approved for exam"),
+    approval: {
+      ...createPlanApproval(plan, "approved for exam"),
+      commitRecovery: {
+        version: 1,
+        commitOid: "0000000000000000000000000000000000000000",
+        implementationDigest: "stale-before-async-fix",
+        branch: "fix/test",
+        baseBranch: "main",
+        repository: "github.com/example/project",
+      },
+    },
     implementationManifest,
     documentReads: {
       afterEdit: {
         stage: "after_edit",
-        purpose: "test exam preflight",
         time: new Date().toISOString(),
         task: plan.task,
         planHash,
         docsDir: ".",
         digest: auditDigest,
         files: [],
-        findings: [],
+        docsGraphDigest: "verify-exam-graph",
+        entryPoints: [],
+        traversalRoots: [],
         implementationFiles: [],
         implementationDigest: currentImplementationDigest,
       },
@@ -99,7 +112,27 @@ try {
   assert(fingerprint.length > 0, "fingerprint should be a non-empty hash");
 
   // Issue exam
-  const exam = issueExam(root, plan);
+  const issued = await handleExamPlan();
+  assert(issued.ok === true, `exam plan should issue successfully: ${JSON.stringify(issued)}`);
+  const exam = readState().activeExam!;
+  assert(Boolean(exam), "issued exam must be persisted in workflow state");
+  assert((issued as any).examId === exam.examId, "handler result and active state must identify the same exam");
+
+  // Simulate a new Agent session: recover every submission fact through status alone.
+  const recoveredStatus = await handleStatus();
+  assert((recoveredStatus as any).examId === exam.examId, "status must recover the active exam id");
+  assert(JSON.stringify((recoveredStatus as any).checks) === JSON.stringify(exam.checks), "status must recover the exact issued checks");
+  assert(recoveredStatus.allowedTools?.includes("hy_exam_submit"), "status must allow only the active exam submission path");
+  const recoveredEnvelope = toWorkflowCliEnvelope("status", recoveredStatus);
+  assert(recoveredEnvelope.route.action.command === "exam-submit", "public status route must hand off to exam-submit");
+  assert(recoveredEnvelope.route.action.argv === null, "status cannot form argv before external results exist");
+  assert(recoveredEnvelope.route.action.input?.examId === exam.examId, "status route must preserve the signed exam id");
+  assert(recoveredEnvelope.route.action.inputRequired?.some(item => item.path === "results"), "status route must require only external results");
+  assert(recoveredEnvelope.route.control.stop === true, "status must stop while external exam commands are pending");
+
+  const wrongActive = await handleExamSubmit({ examId: "deadbeef".repeat(4), results: [] });
+  assert(wrongActive.error?.code === "EXAM_NOT_ACTIVE", "submission must not replace the active exam identity");
+  assert(readState().activeExam?.examId === exam.examId, "mismatched submission must preserve the active exam");
   assert(exam.checks.length >= 2, `expected at least 2 checks, got ${exam.checks.length}`);
   assert(exam.scopeFingerprint === fingerprint, "exam fingerprint should match current tree");
   assert(exam.planHash === planHash, "exam must bind the exact PlanDoc hash");
@@ -124,6 +157,8 @@ try {
   assert(persisted.phase === "commit", "passing exam should advance to commit");
   assert(Boolean(persisted.implementationManifest), "passed exam should persist implementation manifest");
   assert(persisted.verifiedImplementationDigest && persisted.verifiedImplementationDigest.length === 12, "implementation digest should be 12-char hex");
+  assert(!Object.prototype.hasOwnProperty.call(persisted.approval ?? {}, "commitRecovery"), "a successful async exam must supersede stale commit recovery");
+  assert(persisted.activeExam === null, "passing exam must clear the active binding");
   const outcome = { implementationManifest: persisted.implementationManifest, verifiedImplementationDigest: persisted.verifiedImplementationDigest };
 
   const repeatedOutcome = submitExam(root, readState(), exam.examId, results);
@@ -150,6 +185,19 @@ try {
 
   // Reset phase back to edit for failure-path tests
   writeState({ ...readState(), phase: "edit", verifiedImplementationDigest: null, implementationManifest: null });
+  const failureIssue = await handleExamPlan();
+  assert(failureIssue.ok === true, "failure-path exam should issue");
+  const failureExam = readState().activeExam!;
+  const failureResults = failureExam.checks.map(check => ({
+    id: check.id,
+    command: check.command,
+    nonce: check.nonce,
+    exitCode: check.expectExitCode,
+  }));
+  failureResults[0] = { ...failureResults[0], nonce: "wrong-nonce" };
+  const handledFailure = await handleExamSubmit({ examId: failureExam.examId, results: failureResults });
+  assert((handledFailure as any).passed === false, "failed active exam should return a failed result");
+  assert(readState().phase === "edit" && readState().activeExam === null, "failed exam must clear the active binding and return to edit");
 
   // Nonce mismatch
   const badExam = issueExam(root, plan);

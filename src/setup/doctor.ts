@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readDeployment, readDeploymentById, readRegistry } from "../runtime/deployment.js";
 import { findProjectRoot } from "../runtime/project.js";
-import { projectPaths, userRoots } from "../runtime/user-paths.js";
+import { projectPaths, sameProjectCheckoutIdentity, userRoots } from "../runtime/user-paths.js";
 import { clientSnapshotEquals } from "./clients/effective.js";
 import { definitionEquals } from "./clients/index.js";
 import { createClientAdapters, readOwnership } from "./operations.js";
@@ -156,7 +156,7 @@ export async function runSetupDoctor(root: string, options: { offline?: boolean 
   } catch (error) { add(checks, failure("ownership", error)); }
 
   if (deployment?.schemaVersion === "3") {
-    const identityCurrent = sameIdentity(deployment.identity, paths.identity);
+    const identityCurrent = sameProjectCheckoutIdentity(deployment.identity, paths.identity);
     add(checks, identityCurrent
       ? { id: "coherence.identity", status: "pass", message: "Deployment identity matches the current Git project identity." }
       : { id: "coherence.identity", status: "fail", message: "Deployment identity does not match the current Git project identity.", hint: "Do not delete external state. Reconcile the project move or remote identity, then rerun setup.", detail: { deployment: deployment.identity, current: paths.identity } });
@@ -293,7 +293,7 @@ export async function runDoctorCli(argv: string[] = [], root = process.cwd()): P
     }
     return result.ok ? 0 : 1;
   } catch (error) {
-    const check = failure("doctor", error);
+    const check = redactDiagnosticValue(failure("doctor", error)) as DoctorCheck;
     const payload = { ok: false, offline: argv.includes("--offline"), checks: [check], summary: { pass: 0, warn: 0, fail: 1 } };
     if (argv.includes("--json")) process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     else process.stderr.write(`hy-workflow doctor: ${check.message}${check.hint ? `\n${check.hint}` : ""}\n`);

@@ -8,6 +8,7 @@ import { requireGhExecutor, requireGitExecutor, type ExecutorCapability } from "
 import { requireRuntimeConfig } from "./config.js";
 import { parsePullRequestSnapshot, type GitIntegrationEvidence, type MergeIdentity, type PullRequestEvidence } from "./merge-recovery.js";
 import { isRuntimeIgnoredArtifact, runtimeArtifactExclusionPathspecs } from "./policy/artifacts.js";
+import { redactGitRemote, redactGitRemoteCredentialsInText } from "./runtime/user-paths.js";
 
 type RunResult = { ok: boolean; stdout: string; stderr: string; exitCode: number | null };
 
@@ -205,8 +206,8 @@ export function resolveOriginRepository(root: string): OriginRepositoryResult {
   if (!required.ok) return { ok: false, error: required.error as GitOperationError, executor: required.executor };
   const fetchRemote = run("git", ["remote", "get-url", "--all", "origin"], root);
   const pushRemote = run("git", ["remote", "get-url", "--push", "--all", "origin"], root);
-  const fetchUrls = fetchRemote.ok ? fetchRemote.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean) : [];
-  const pushUrls = pushRemote.ok ? pushRemote.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean) : [];
+  const fetchUrls = fetchRemote.ok ? fetchRemote.stdout.split(/\r?\n/).map(value => redactGitRemote(value)).filter((value): value is string => Boolean(value)) : [];
+  const pushUrls = pushRemote.ok ? pushRemote.stdout.split(/\r?\n/).map(value => redactGitRemote(value)).filter((value): value is string => Boolean(value)) : [];
   const fetchRepositories = fetchUrls.map(parseOriginRepository);
   const pushRepositories = pushUrls.map(parseOriginRepository);
   if (!fetchUrls.length || !pushUrls.length || fetchRepositories.some(value => !value) || pushRepositories.some(value => !value)) {
@@ -219,7 +220,7 @@ export function resolveOriginRepository(root: string): OriginRepositoryResult {
         message: "Could not resolve one GitHub repository from both the origin fetch and push URLs.",
         hint: "Set origin fetch and push URLs to the same repository HTTPS or SSH identity, then retry; GH_REPO and GH_HOST are intentionally ignored.",
         detail: { fetchUrls, pushUrls },
-        cause: [fetchRemote.ok ? "" : fetchRemote.stderr, pushRemote.ok ? "" : pushRemote.stderr].filter(Boolean).join("; ") || undefined,
+        cause: redactGitRemoteCredentialsInText([fetchRemote.ok ? "" : fetchRemote.stderr, pushRemote.ok ? "" : pushRemote.stderr].filter(Boolean).join("; ")) || undefined,
         retryable: false,
       },
       executor: required.executor,

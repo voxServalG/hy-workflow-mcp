@@ -28,11 +28,11 @@ export type ToolRecoveryCompatibilityFields = {
 
 type ToolRecoveryRequirements = {
   retry: { tool: string };
-  repair_and_retry: { tool: string; instruction: string };
-  wait_and_retry: { tool: string; instruction: string };
-  replan: { tool: string; instruction: string };
-  reset: { tool: "hy_reset"; instruction: string };
-  external_action: { instruction: string };
+  repair_and_retry: { tool: string };
+  wait_and_retry: { tool: string };
+  replan: { tool: string };
+  reset: { tool: "hy_reset" };
+  external_action: Record<never, never>;
 };
 
 export type ToolRecovery = {
@@ -142,9 +142,6 @@ function checkedRecovery(recovery: ToolRecovery | undefined): ToolRecovery | und
   }
   if (strategy !== "external_action" && typeof candidate.tool !== "string") {
     throw new TypeError(`Tool recovery strategy ${strategy} requires a tool.`);
-  }
-  if (strategy !== "retry" && typeof candidate.instruction !== "string") {
-    throw new TypeError(`Tool recovery strategy ${strategy} requires an instruction.`);
   }
   if (strategy === "reset" && candidate.tool !== "hy_reset") {
     throw new TypeError("Tool recovery strategy reset must route to hy_reset.");

@@ -1,53 +1,112 @@
 # CLI Contract
 
-The public package `@voxstudio/hy-workflow` exposes one bin: `hy-workflow`. Running it without a subcommand starts MCP stdio. Registry installs use the prebuilt npm tarball and never compile locally.
+The public executable is `hy-workflow`, built from `src/main.ts` to `dist/main.js`. It is a normal process, not an MCP stdio server. Workflow, helper and `skills list` operations reserve stdout for one structured JSON document. `skills read` emits exact packaged Markdown by default and a structured document with `--json`. Exit code zero means success; exit code one means attention or failure.
 
-## Commands
+## Top-level commands
 
-- `hy-workflow`
-- `hy-workflow --help`
-- `hy-workflow --version`
-- `hy-workflow setup`
-- `hy-workflow unset`
-- `hy-workflow setup --yes --clients codex,claude,opencode --json`
-- `hy-workflow setup --yes --clients codex --json`
-- `hy-workflow setup --yes --clients codex --sync-project-artifacts --accept-artifact-changes --review-artifact <file:before:after> --json`
-- `hy-workflow setup --yes --clients codex --force-client-overwrite codex --json`
-- `hy-workflow unset --yes --clients all --remove-global --json`
-- `hy-workflow config --check --json`
-- `hy-workflow config --apply --json --docs-dir '<existing-project-relative-dir>'`
-- `hy-workflow config --apply-suggested --json`
-- `hy-workflow lint --json`
-- `hy-workflow lint-contract`
+```text
+hy-workflow helper install|update|status|remove [options]
+hy-workflow skills list|read [options]
+hy-workflow setup [options]      # alias: helper install
+hy-workflow unset [--json]       # alias: helper remove
+hy-workflow <workflow-command> [--input <JSON>]
+hy-workflow <workflow-command> --input-file <path>
+hy-workflow lint --json
+hy-workflow config ...
+hy-workflow doctor ...
+hy-workflow lint-contract
+hy-workflow --version
+```
 
-`setup`/`unset` share one Node engine. Fresh setup creates exactly two repository artifacts: `hy-workflow.json` and a small exact-version `.github/workflows/hy-workflow.yml`. It never injects or migrates `AGENTS.md` or project client files. Deployment, state, cache, and client ownership stay external. If either new target is already occupied without an exact deployment, ordinary setup leaves both untouched and selects complete external configuration instead. Reading those occupied targets requires the separate `--sync-project-artifacts` intent together with acceptance and complete exact review tuples; it is never inferred from ordinary setup or upgrade flags.
+The 15 workflow commands are `init`, `status`, `read-docs`, `plan`, `approve`, `branch`, `edit`, `sync-docs`, `verify`, `exam-plan`, `exam-submit`, `amend-plan`, `commit`, `merge`, and `reset`.
 
-With `--json`, setup and unset failures use canonical `setup.apply` or `setup.unset` stages plus typed `nextAction`, `control`, `userAction`, and `recovery`. Recovery distinguishes `wait_and_retry` from `repair_and_retry` and preserves the complete CLI argv in `arguments`, so an agent can retry the same noninteractive operation without inventing flags or asking for another approval.
+## Skill bundle inspection
 
-## Config safety
+`skills list` and `skills read` inspect content shipped with the running CLI package rather than an arbitrary project path.
 
-`hy-workflow config --check --json` validates only the selected authority: a complete external config, an exactly authorized root config, or detected project facts with frozen compatible defaults. It never opens an unselected root `hy-workflow.json`. Project evidence comes from Git-tracked files, manifests, multi-extension source directories and origin/current/conventional refs. `package.json` alone is not TypeScript evidence; material mixed/unknown/low-confidence Git inference requires explicit values. Optional `ci.commands` must be a non-empty bounded single-line string array and is preserved as a manual team choice.
+```bash
+hy-workflow skills list --json
+hy-workflow skills read hy-status
+hy-workflow skills read hy-verify SKILL.md --json
+```
 
-`config --apply` preserves the selected configuration and changes only explicitly supplied fields; it is the recovery command for replacing an invalid or missing `project.docsDir`. `config --apply-suggested` intentionally applies the detected project and lint defaults. With an exact project marker or CI signal they update root `hy-workflow.json`; otherwise they update complete external configuration and leave any orphan root file untouched. Malformed selected JSON, invalid field types, unsafe branch/path characters, unknown flags, missing values, or a docsDir that cannot be resolved to an existing directory return a structured nonzero result without writing. Suggested shell commands quote dynamic values and never recommend a command known to fail the same validation.
+List output uses `hy-workflow.skills.v1` and includes the package version plus bundle and content hashes. Raw read output is byte-identical UTF-8 content; `--json` adds the same identity and hashes. Relative reference paths are allowed only inside a canonical bundled Skill and are rejected on traversal, backslash, directory or symbolic-link input.
 
-Root `codelint.json`, `doclint.json`, and `docs-gardener.json` are not read, hashed, validated, migrated, or used as drift inputs by setup, config, or lint. They remain untouched and non-authoritative.
 
-`hy-workflow lint --json` emits the `hy-workflow.lint.v1` report with ten D001–D005/C001–C005 checks. Warnings exit zero; any error, invalid configuration, supported parser failure, or configured-language zero scan exits one. Unsupported languages are explicit `not_applicable`, and absent tiers are `not_configured`.
+Each workflow invocation accepts exactly one JSON object. Omitting both input flags means `{}`.
 
-The generated workflow runs only for pull requests or manual dispatch. It uses pinned checkout, read-only contents, and the exact package version for centralized lint/policy. It does not infer ecosystems, install project toolchains, run repository-native CI, or embed the former large bundle. Zero scans, malformed lint evidence, no GitHub checks, or only skipped/neutral checks are not success. A repository administrator must separately mark Verify required; setup does not mutate administration settings.
+```bash
+hy-workflow status
+hy-workflow read-docs --input '{"stage":"before_plan","task":"fix retry recovery"}'
+hy-workflow plan --input-file /tmp/hy-plan-input.json
+hy-workflow approve --input '{"approved":"approve","decisionId":"plan:<issued-id>"}'
+```
 
-## MCP tools
+Rules:
 
-The MCP surface is canonical in `src/commands/catalog.ts` and registered by `src/server.ts`:
+- use either `--input` or `--input-file`, never both;
+- either option may occur only once;
+- input is limited to 1 MiB;
+- an input file must be a regular file and not a symbolic link;
+- the root value must be an object containing only fields allowed for that command;
+- values must be finite, JSON-representable data;
+- unknown commands, options and nested exam-result fields fail closed.
 
-- `hy_init`, `hy_read_docs`, `hy_plan`, `hy_approve`
-- `hy_branch`, `hy_edit`, `hy_sync_docs`, `hy_verify`, `hy_exam_plan`, `hy_exam_submit`, `hy_amend_plan`
-- `hy_commit`, `hy_merge`, `hy_reset`, `hy_status`
+The CLI returns future calls as argv arrays. A Skill should execute that array directly through its process API, not join it into a shell string.
 
-Contract lint checks that README, tool docs, server registration, and tests agree on this surface.
+## Command inputs
 
-Ordinary development preserves this sequence: `hy_status -> hy_read_docs(before_plan) -> hy_plan -> [one user decision] hy_approve -> hy_read_docs(before_approve) -> hy_approve(automatic resume, or agent continue/replan on drift) -> hy_branch -> hy_edit -> [code edits] -> hy_read_docs(after_edit) -> [declared doc edits] -> hy_sync_docs -> hy_verify -> hy_commit -> hy_merge -> hy_reset`. The first `hy_approve` persists the exact human decision. No drift replays it automatically; drift stops only for the agent to choose `auditDecision=continue` when intent remains unchanged or `auditDecision=replan` when a fresh PlanDoc is required. The same PlanDoc is never sent back for another human approval. `hy_edit` and `after_edit` stop for real file editing, while `hy_sync_docs` records completed documentation evidence and automatically routes verification. The exam path substitutes `hy_exam_plan -> hy_exam_submit` for `hy_verify`.
+| Command | Accepted input fields |
+|---|---|
+| `init`, `status`, `edit`, `sync-docs`, `verify`, `exam-plan`, `merge`, `reset` | none |
+| `read-docs` | `stage`, `task`, `cursor` |
+| `plan` | `task`, `plan` |
+| `approve` | `approved`, `decisionId`, `note`, `auditDecision` |
+| `branch` | `category`, `topic` |
+| `exam-submit` | `examId`, `results` |
+| `amend-plan` | `approved`, `decisionId`, `note` |
+| `commit` | `title`, `body` |
 
-## Long verification commands
+`approved` follows the command-specific decision contract. Both decision commands require the exact `decisionId` signed into the current route; a missing or stale identity fails without changing state. `approve.auditDecision` accepts only `continue` or `replan`. Each exam result accepts only `id`, `command`, `nonce`, `exitCode`, optional `durationMs`, `stdoutTail`, and `stderrTail`.
 
-Use hy_verify only for short suites. For verify:dev or acceptance, call hy_exam_plan, execute its exact commands outside the MCP transport, then submit bounded evidence with hy_exam_submit.
+PlanDoc shape is defined by the project schema and PlanDoc gate; a syntactically valid object is not necessarily a valid or complete plan.
+
+## Helper grammar
+
+```text
+install [--clients all|codex,claude,opencode] [--mode auto|symlink|copy] [--json]
+update  [--clients ...] [--mode ...] [--repair] [--json]
+status  [--json]
+remove  [--json]
+```
+
+On first install, omitted clients are selected from an existing deployment or positively detected Agent installations. If none are detected, the user must pass an exact client set. The comma-separated list contains no whitespace or duplicates.
+
+Once installed, target set and projection preference are immutable. `update` accepts matching values for repeatability but rejects a change; use remove followed by install to choose a different set. `--repair` is update-only and restores intentionally missing owned projections. Helper output uses `hy-workflow.helper.v1` and always includes `projectFilesChanged: []`.
+
+## Machine route contract
+
+Workflow output uses `hy-workflow.cli.v1`. Its load-bearing fields are:
+
+- `phase`, `stage`, `status` and `ok`;
+- fact fields produced by the kernel;
+- a structured `error` without prompt-like hints;
+- `route.nextPhase`;
+- `route.action.command`, `input`, `argv`, target phase/stage and `automatic`;
+- `route.allowed` and `route.blocked`;
+- `route.control` and structured `route.userAction`;
+- optional structured `route.recovery` with a safe command and argv when available.
+
+The adapter deliberately removes `display`, `summary`, top-level `hint`, human prompt/instruction strings and shell command strings. Those were transport-era presentation concerns. The active Skill renders a human explanation from facts and may not turn its own prose into CLI evidence.
+
+## Dispatch and setup gate
+
+Before a workflow handler runs, the CLI verifies external project deployment and configuration readiness. A missing or ambiguous identity returns a structured failure and a status route; it never falls back to a root file merely because that file exists. `init` cannot launch helper installation from inside the workflow.
+
+## Support commands
+
+`hy-workflow lint --json` runs offline first-party doclint and codelint. It does not create compatibility JSON and does not perform dependency-graph lint. For report-schema compatibility, it always emits `C003` as `not_configured` and `C004` as `not_applicable`; neither slot emits findings.
+
+`config` inspects or changes the selected policy authority where supported. Except for explicit `--help`, it emits one compact `hy-workflow.config.v1` JSON envelope. Recovery actions contain exact `argv` elements and no presentation fields or joined shell command. `doctor` diagnoses external installation and ownership state. Neither changes the rule that helper fresh install writes no project files.
+
+`lint-contract` is primarily for this package's maintainers. It checks that the shipped CLI/Skill/package contracts agree; consuming repositories normally use `lint` instead.

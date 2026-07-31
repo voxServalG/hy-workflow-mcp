@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { codeExtOr, formatCodeExt, normalizeCodeExt, type CodeExt, validateCodeExt } from "./code_ext.js";
+import { configPolicyEnvelope, configResultEnvelope } from "./config-output.js";
 import { inspectProject, type ProfileConfidence, type ProjectKind as ProfileProjectKind } from "./project-profile.js";
 import { explainEffectivePolicy, validatePolicyConfig } from "./policy/effective.js";
 import {
@@ -36,20 +37,11 @@ export type ConfigDrift = {
 
 export type ConfigCheckResult = {
   ok: boolean;
-  phase: "config";
-  next: "config";
-  display: { title: string; body: string };
-  hint: string;
-  requires_user?: boolean;
-  stop_here?: boolean;
-  allowedTools?: string[];
-  recovery?: { strategy: "external_action"; tool?: string; instruction: string };
   error?: {
     type: "config";
     subtype: "invalid_arguments";
     code: "UNKNOWN_OPTION" | "INVALID_ARGUMENTS";
     message: string;
-    hint: string;
     retryable: false;
     detail: { issues: string[] };
   };
@@ -65,7 +57,7 @@ export type ConfigCheckResult = {
   issues: string[];
   drift: ConfigDrift[];
   suggestion: ConfigSuggestion;
-  suggestedCommand: string;
+  recoveryArgv: string[];
   changed?: string[];
   preserved?: Record<string, string[]>;
   dryRun?: boolean;
@@ -128,7 +120,6 @@ export class RuntimeConfigError extends Error {
   readonly type = "config" as const;
   readonly subtype = "config_invalid" as const;
   readonly code: "ROOT_CONFIG_REQUIRED" | "ROOT_CONFIG_INVALID";
-  readonly hint = "Run hy-workflow setup in the project root, or repair hy-workflow.json with hy-workflow config --apply --json.";
   readonly retryable = false;
   readonly detail: { source: string; issues: string[] };
 
@@ -736,11 +727,6 @@ export function applyConfig(root: string, suggestion: ConfigSuggestion, options:
     dryRun: options.dryRun,
     source: targetPath,
     candidate: unified,
-    display: {
-      title: options.dryRun ? "Config dry run complete" : result.ok ? "Config updated" : "Config update needs attention",
-      body: (options.dryRun ? "Would update " : "Updated ") + (changed.length ? targetPath : "no config files") + " while preserving unknown fields.",
-    },
-    hint: result.ok ? "The selected config is valid and can be used immediately." : result.hint,
   };
 }
 
@@ -846,58 +832,6 @@ function validateLineThresholds(raw: JsonObject, field: string, issues: string[]
   }
 }
 
-function normalizedTierPath(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function validateTiers(root: string, raw: JsonObject, checkExists: boolean, issues: string[]): void {
-  if (!hasOwn(raw, "tiers")) return;
-  if (!Array.isArray(raw.tiers) || raw.tiers.length === 0) {
-    issues.push(`${UNIFIED_CONFIG_FILE} codelint.tiers must be a non-empty array when configured`);
-    return;
-  }
-  const names = new Set<string>();
-  const paths: Array<{ name: string; path: string }> = [];
-  raw.tiers.forEach((value: unknown, index: number) => {
-    const label = `codelint.tiers[${index}]`;
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      issues.push(`${UNIFIED_CONFIG_FILE} ${label} must be an object with name and paths`);
-      return;
-    }
-    const tier = value as JsonObject;
-    const unknown = Object.keys(tier).filter(key => key !== "name" && key !== "paths");
-    if (unknown.length) issues.push(`${UNIFIED_CONFIG_FILE} ${label} has unknown fields: ${unknown.join(", ")}`);
-    if (typeof tier.name !== "string" || !tier.name.trim() || tier.name !== tier.name.trim() || /[\0\r\n]/.test(tier.name)) {
-      issues.push(`${UNIFIED_CONFIG_FILE} ${label}.name must be a non-empty trimmed single-line string`);
-    } else if (names.has(tier.name)) {
-      issues.push(`${UNIFIED_CONFIG_FILE} codelint.tiers names must be unique: ${tier.name}`);
-    } else names.add(tier.name);
-    if (!Array.isArray(tier.paths) || tier.paths.length === 0 || !tier.paths.every((item: unknown) => typeof item === "string")) {
-      issues.push(`${UNIFIED_CONFIG_FILE} ${label}.paths must be a non-empty array of strings`);
-      return;
-    }
-    for (const tierPath of tier.paths as string[]) {
-      if (!isSafeRelativePath(tierPath)) {
-        issues.push(`${UNIFIED_CONFIG_FILE} ${label}.paths entry is not a safe relative path: ${tierPath}`);
-        continue;
-      }
-      if (checkExists && !directoryExists(root, tierPath)) {
-        issues.push(`${UNIFIED_CONFIG_FILE} ${label}.paths entry is not an existing directory: ${tierPath}`);
-      }
-      paths.push({ name: typeof tier.name === "string" ? tier.name : label, path: normalizedTierPath(tierPath) });
-    }
-  });
-  for (let left = 0; left < paths.length; left += 1) {
-    for (let right = left + 1; right < paths.length; right += 1) {
-      const a = paths[left];
-      const b = paths[right];
-      if (a.path === b.path || a.path.startsWith(`${b.path}/`) || b.path.startsWith(`${a.path}/`)) {
-        issues.push(`${UNIFIED_CONFIG_FILE} codelint.tiers paths must not duplicate or overlap: ${a.path} (${a.name}) and ${b.path} (${b.name})`);
-      }
-    }
-  }
-}
-
 function validateObjectField(raw: JsonObject, key: string, field: string, issues: string[]): void {
   if (!hasOwn(raw, key)) return;
   const value = raw[key];
@@ -936,7 +870,6 @@ function validateUnifiedConfig(
   validateStringArrayField(codelintRaw, "lintDirs", "codelint.lintDirs", issues);
   validateLineThresholds(codelintRaw, "codelint", issues);
   validateLineThresholds(doclintRaw, "doclint", issues);
-  validateTiers(root, codelintRaw, checkExists, issues);
   validateObjectField(docsGardenerRaw, "catalogs", "docsGardener.catalogs", issues);
   issues.push(...validatePolicyConfig(raw, { allowLegacyCompatible: options.allowLegacyCompatible }));
   if (hasOwn(raw, "ci")) {
@@ -971,12 +904,12 @@ function migrationInput(root: string): JsonObject | null {
   return selected.authority.kind === "legacy-detected" ? null : selected.raw;
 }
 
-function buildDocsRecoveryCommand(): string {
-  return ["hy-workflow config", "--apply", "--json", "--docs-dir", "existing-docs-dir"].join(" ");
+function buildDocsRecoveryArgv(): string[] {
+  return ["hy-workflow", "config", "--apply", "--json", "--docs-dir", "existing-docs-dir"];
 }
 
-function buildMigrationCommand(): string {
-  return "hy-workflow config --apply --json";
+function buildMigrationArgv(): string[] {
+  return ["hy-workflow", "config", "--apply", "--json"];
 }
 
 function configResult(root: string, suggestion: ConfigSuggestion, issues: string[], drift: ConfigDrift[], ambiguous: boolean): ConfigCheckResult {
@@ -988,38 +921,19 @@ function configResult(root: string, suggestion: ConfigSuggestion, issues: string
     : typeof existingDocsDir === "string" && directoryExists(root, existingDocsDir) ? existingDocsDir : "";
   const recoverySuggestion = { ...suggestion, docsDir: recoveryDocsDir };
   const docsIssue = issues.some(issue => issue.includes("project.docsDir"));
-  const suggestedCommand = docsIssue && existing
-    ? buildDocsRecoveryCommand()
+  const recoveryArgv = docsIssue && existing
+    ? buildDocsRecoveryArgv()
     : existing
-      ? buildMigrationCommand()
-    : buildSuggestedCommand(recoverySuggestion, ambiguous);
+      ? buildMigrationArgv()
+      : buildSuggestedArgv(recoverySuggestion, ambiguous);
   const ok = issues.length === 0 && !ambiguous;
-  const driftBody = !ok && drift.length
-    ? ["", "Config drift:", ...drift.map(item => `- ${item.file}.${item.field}: expected ${JSON.stringify(item.expected)}, actual ${JSON.stringify(item.actual)}`)].join("\n")
-    : "";
   return {
     ok,
-    phase: "config",
-    next: "config",
-    display: {
-      title: ok ? "Config looks consistent" : "Project config needs confirmation",
-      body: ok
-        ? "The selected configuration authority is valid; historical injected files are not consulted."
-        : `${issues.length ? issues.join("\n") : `Project type is ${project.kind}; explicit confirmation is required.`}${driftBody}
-
-Suggested command:
-${suggestedCommand}`,
-    },
-    hint: ok ? "Continue with hy_init or the requested workflow task." : "Show display.body and run the suggested config command only after user approval.",
-    requires_user: ok ? false : true,
-    stop_here: ok ? false : true,
-    allowedTools: ok ? ["hy_init", "hy_status"] : ["terminal", "hy_init", "hy_status"],
-    recovery: ok ? undefined : { strategy: "external_action", tool: "terminal", instruction: suggestedCommand },
     project,
     issues,
     drift,
     suggestion,
-    suggestedCommand,
+    recoveryArgv,
   };
 }
 
@@ -1057,11 +971,12 @@ function portableCommandArg(value: string, label: string): string {
   return `INVALID_${label.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
 }
 
-export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplicit = false): string {
+export function buildSuggestedArgv(suggestion: ConfigSuggestion, needsExplicit = false): string[] {
   const mode = !suggestion.docsDir ? "--apply" : needsExplicit ? "--dry-run" : "--apply-suggested";
   const docsDir = suggestion.docsDir || "existing-docs-dir";
   return [
-    "hy-workflow config",
+    "hy-workflow",
+    "config",
     mode,
     "--json",
     "--code-ext", portableCommandArg(formatCodeExt(suggestion.codeExt), "code_ext"),
@@ -1069,7 +984,7 @@ export function buildSuggestedCommand(suggestion: ConfigSuggestion, needsExplici
     "--lint-dirs", portableCommandArg(suggestion.lintDirs.join(","), "lint_dirs"),
     "--docs-dir", portableCommandArg(docsDir, "docs_dir"),
     "--base-branch", portableCommandArg(suggestion.baseBranch, "base_branch"),
-  ].join(" ");
+  ];
 }
 
 function parseList(value: string | undefined): string[] | undefined {
@@ -1135,10 +1050,10 @@ export function configHelp(): string {
     "hy-workflow",
     "",
     "Usage:",
-    "  hy-workflow                 Start MCP stdio server",
-    "  hy-workflow setup           Configure MCP clients and shared project checks",
-    "  hy-workflow unset           Remove the local project deployment",
-    "  hy-workflow doctor          Diagnose tools, client config, state, and artifact drift",
+    "  hy-workflow --help          Show the CLI and stage command surface",
+    "  hy-workflow setup           Alias for helper install and external registration",
+    "  hy-workflow unset           Alias for helper remove; preserve project registration",
+    "  hy-workflow doctor          Diagnose external installation and ownership state",
     "  hy-workflow lint --json      Run built-in D001-D005 and C001-C005 rules",
     "  hy-workflow --version       Show the installed package version",
     "  hy-workflow --help          Show this help",
@@ -1149,7 +1064,7 @@ export function configHelp(): string {
     "  hy-workflow config --python --code-dirs src,test --docs-dir docs --base-branch dev --json",
     "",
     "Configuration is stored externally unless an exact new marker or CI signal selects hy-workflow.json.",
-    "Config commands emit a single JSON envelope when --json is passed.",
+    "Config operations emit one hy-workflow.config.v1 JSON envelope; --help is the human-text exception.",
   ].join("\n");
 }
 
@@ -1232,24 +1147,12 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
     const resolved = resolveRuntimeConfig(root);
     const issues = [...args.errors, ...resolved.issues];
     if (issues.length) {
-      const payload = {
-        ok: false,
-        phase: "config",
-        status: "failed",
-        authority: resolved.authority,
-        issues,
-      };
-      return { exitCode: 1, stdout: args.json ? JSON.stringify(payload, null, 2) + "\n" : `${issues.join("\n")}\n` };
+      const envelope = configPolicyEnvelope(resolved.authority, issues);
+      return { exitCode: 1, stdout: JSON.stringify(envelope) + "\n" };
     }
     const explanation = explainEffectivePolicy(resolved.config, rule as PolicyRuleId, { file: args.explainFile });
-    const payload = {
-      ok: true,
-      phase: "config",
-      status: "completed",
-      authority: resolved.authority,
-      explanation,
-    };
-    return { exitCode: 0, stdout: args.json ? JSON.stringify(payload, null, 2) + "\n" : `${JSON.stringify(explanation, null, 2)}\n` };
+    const envelope = configPolicyEnvelope(resolved.authority, [], explanation);
+    return { exitCode: 0, stdout: JSON.stringify(envelope) + "\n" };
   }
   const suggestion = mergeSuggestion(root, args.explicit);
   if (!args.explicit.lintDirs && args.explicit.codeDirs) suggestion.lintDirs = args.explicit.codeDirs;
@@ -1264,7 +1167,6 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
         subtype: "invalid_arguments",
         code,
         message: args.errors.join("; "),
-        hint: "Use hy-workflow config --help and retry with supported options.",
         retryable: false,
         detail: { issues: [...args.errors] },
       },
@@ -1299,7 +1201,8 @@ export function runConfigCli(argv: string[], root = process.cwd()): { exitCode: 
       throw error;
     }
   }
-  return { exitCode: result.ok ? 0 : 1, stdout: args.json ? JSON.stringify(result, null, 2) + "\n" : `${result.display.title}
-${result.display.body}
-` };
+  const command = args.mode === "apply" ? "apply" : "check";
+  const recoveryArgv = result.error ? ["hy-workflow", "config", "--help"] : result.recoveryArgv;
+  const envelope = configResultEnvelope(command, result, recoveryArgv);
+  return { exitCode: result.ok ? 0 : 1, stdout: JSON.stringify(envelope) + "\n" };
 }

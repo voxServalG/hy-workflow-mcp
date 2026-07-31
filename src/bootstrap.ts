@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { projectRoot, statePath, type Phase } from "./state.js";
 import { toolResult, type ToolResult } from "./tools/_base.js";
-import { projectPaths } from "./runtime/user-paths.js";
+import { projectPaths, sameProjectCheckoutIdentity } from "./runtime/user-paths.js";
 import {
   MINIMAL_PROJECT_CONTRACT,
   readDeployment,
@@ -13,10 +13,6 @@ import {
 export const SETUP_VERSION = "2026.07.16.1";
 export const SETUP_STAMP = path.join(".git", "hy-workflow", "setup.json");
 export const LEGACY_SETUP_STAMP = path.join(".hy", "hy-workflow-setup.json");
-export const INSTALL_COMMAND = "npm install -g @voxstudio/hy-workflow@latest @voxstudio/docs-gardener@latest";
-export const MIRROR_INSTALL_COMMAND = `${INSTALL_COMMAND} --registry=https://registry.npmmirror.com`;
-export const SETUP_COMMAND = `${INSTALL_COMMAND}\nhy-workflow setup`;
-export const WINDOWS_SETUP_COMMAND = SETUP_COMMAND;
 
 export type SetupStamp = DeploymentManifest | LegacyDeploymentManifest;
 
@@ -57,10 +53,7 @@ function validDeployment(root: string, deployment: SetupStamp): boolean {
     && Array.isArray(deployment.clients)
     && deployment.clients.every(client => client === "codex" || client === "claude" || client === "opencode")
     && Boolean(identity)
-    && identity.id === expected.id
-    && identity.root === expected.root
-    && identity.gitCommonDir === expected.gitCommonDir
-    && identity.remote === expected.remote;
+    && sameProjectCheckoutIdentity(identity, expected);
 }
 
 export function readSetupStamp(root = projectRoot()): SetupStamp | null {
@@ -124,7 +117,6 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
       subtype: "setup_update_required",
       code: "SETUP_UPDATE_REQUIRED",
       message: `hy-workflow setup is required. ${reason}`,
-      hint: "Run setup only to create or repair external deployment identity; existing repository injections are not migration inputs.",
       status: check.status,
       currentVersion: check.currentVersion,
       latestVersion: check.latestVersion,
@@ -132,24 +124,12 @@ export function setupUpdateRequiredResult(check: SetupCheck): ToolResult {
       issues: check.issues,
       retryable: true,
     },
-    display: {
-      title: "hy-workflow setup required",
-      body: [
-        reason,
-        "",
-        "Install the tools and run setup in the project root:",
-        SETUP_COMMAND,
-        "",
-        "Mainland China mirror alternative:",
-        `${MIRROR_INSTALL_COMMAND}\nhy-workflow setup`,
-      ].join("\n"),
-    },
-    hint: "Stop here only because external deployment identity is missing or unsafe.",
     requires_user: true,
     stop_here: true,
     allowedTools: ["hy_status"],
     blockedTools: BLOCKED_TOOLS,
-    recovery: { strategy: "external_action", tool: "terminal", instruction: SETUP_COMMAND },
+    recovery: { strategy: "external_action", tool: "terminal" },
+    userAction: { kind: "external_action" },
     setupUpdateCheck: check,
   });
 }

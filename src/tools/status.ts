@@ -1,6 +1,6 @@
 import { amendmentDecisionId, approvalMatchesPlan, documentReadHealth, pendingApprovalMatchesPlan, planDecisionId, projectRoot, readState } from "../state.js";
 import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
-import { initArtifactGuidance } from "./init.js";
+import { INIT_COMMIT_ARTIFACTS } from "./init.js";
 import { checkSetupStamp, readSetupStamp } from "../bootstrap.js";
 import { getStartupExecutorCapabilities } from "../executors.js";
 import { projectPaths } from "../runtime/user-paths.js";
@@ -36,7 +36,6 @@ export async function handleStatus(): Promise<ToolResult> {
       "Reset the impossible workflow state before starting a new approved task.",
     );
   }
-  const artifactGuidance = initArtifactGuidance();
   const setupUpdateCheck = checkSetupStamp();
   let deployment: ReturnType<typeof readSetupStamp> = null;
   try { deployment = readSetupStamp(); } catch {}
@@ -57,6 +56,9 @@ export async function handleStatus(): Promise<ToolResult> {
     : planDecisionId(state.plan);
   const waitingForAmendmentApproval = state.phase === "verify" && Boolean(state.pendingAmendment);
   const waitingForPlanApproval = state.phase === "approve" && !approved && !approvalAuditInProgress;
+  const activeExam = state.phase === "verify" ? state.activeExam ?? null : null;
+  const activeExamExpired = Boolean(activeExam && Date.now() >= Date.parse(activeExam.expiresAt));
+  const waitingForExamResults = Boolean(activeExam && !activeExamExpired);
   let allowedTools: string[];
   let nextTool: string | null;
   let nextPhase: Phase = state.phase;
@@ -92,7 +94,12 @@ export async function handleStatus(): Promise<ToolResult> {
     allowedTools = ["hy_approve", "hy_status"];
     nextTool = "hy_approve";
     nextStage = "approve.decision";
-    nextArguments = { approved: "approve", note: state.pendingApproval?.note ?? "", auditDecision: "continue" };
+    nextArguments = {
+      approved: "approve",
+      decisionId,
+      note: state.pendingApproval?.note ?? "",
+      auditDecision: "continue",
+    };
   } else if (state.phase === "approve" && approved) {
     allowedTools = ["hy_branch", "hy_status"];
     nextTool = null;
@@ -108,7 +115,7 @@ export async function handleStatus(): Promise<ToolResult> {
       nextTool = null;
       nextStage = "edit.after_edit";
     } else if (persistedStage === "edit.sync_docs") {
-      allowedTools = ["hy_verify", "hy_edit", "hy_status"];
+      allowedTools = ["hy_verify", "hy_exam_plan", "hy_edit", "hy_status"];
       nextTool = "hy_verify";
       nextPhase = "verify";
       nextStage = "verify.run";
@@ -128,15 +135,28 @@ export async function handleStatus(): Promise<ToolResult> {
       nextPhase = "edit";
       nextStage = "edit.after_edit";
       nextArguments = blocked.tool === "hy_read_docs" ? { stage: "after_edit" } : undefined;
+    } else if (activeExam && !activeExamExpired) {
+      allowedTools = ["hy_exam_submit", "hy_status"];
+      nextTool = null;
+      nextStage = "verify.run";
+    } else if (activeExamExpired) {
+      allowedTools = ["hy_exam_plan", "hy_status"];
+      nextTool = "hy_exam_plan";
+      nextStage = "verify.run";
     } else {
-      allowedTools = ["hy_verify", "hy_status"];
+      allowedTools = ["hy_verify", "hy_exam_plan", "hy_status"];
       nextTool = "hy_verify";
       nextStage = "verify.run";
     }
   } else if (state.phase === "commit") {
     allowedTools = ["hy_commit", "hy_status"];
-    nextTool = null;
     nextStage = state.stage ?? "commit.prepare";
+    if (state.commitIntent) {
+      nextTool = "hy_commit";
+      nextArguments = { title: state.commitIntent.title, body: state.commitIntent.body };
+    } else {
+      nextTool = null;
+    }
   } else if (state.phase === "merge") {
     allowedTools = ["hy_merge", "hy_status"];
     nextTool = "hy_merge";
@@ -155,10 +175,11 @@ export async function handleStatus(): Promise<ToolResult> {
   const needsAgentInput = readyToComposePlan
     || state.phase === "plan" && !needsBeforePlan
     || state.phase === "branch"
-    || state.phase === "commit"
+    || state.phase === "commit" && !state.commitIntent
     || state.phase === "approve" && approved;
-  const needsExternalWork = state.phase === "edit"
-    && (persistedStage === "edit.implementation" || persistedStage === "edit.after_edit");
+  const needsExternalWork = waitingForExamResults
+    || (state.phase === "edit"
+      && (persistedStage === "edit.implementation" || persistedStage === "edit.after_edit"));
   const continueAutomatically = !waitingForPlanApproval
     && !waitingForAmendmentApproval
     && !needsTaskInformation
@@ -181,9 +202,8 @@ export async function handleStatus(): Promise<ToolResult> {
       && state.implementationManifest
       && state.verifiedImplementationDigest
     ),
-    hint: "Use phase for persisted state, stage for intra-phase progress, and nextAction/control/userAction for continuation. The legacy next field remains for compatibility.",
     allowedTools,
-    commitArtifacts: artifactGuidance.commitArtifacts,
+    commitArtifacts: [...INIT_COMMIT_ARTIFACTS],
     localArtifacts: [paths.configDir, paths.stateDir, paths.cacheDir],
     projectIdentity: paths.identity,
     runtimePaths: {
@@ -200,11 +220,27 @@ export async function handleStatus(): Promise<ToolResult> {
     } : null,
     capabilities: getStartupExecutorCapabilities(),
     pendingAmendment: state.pendingAmendment ?? undefined,
+    decisionId: decisionId ?? undefined,
     implementationManifest: state.implementationManifest ?? undefined,
     documentReads: state.documentReads ?? undefined,
     documentReadHealth: health,
     blockedBy: health.blockedBy ?? undefined,
     staleDocumentReads: health.staleDocumentReads.length ? health.staleDocumentReads : undefined,
+    ...(state.commitIntent ? {
+      commitArguments: {
+        title: state.commitIntent.title,
+        body: state.commitIntent.body,
+      },
+    } : {}),
+    ...(activeExam ? {
+      examId: activeExam.examId,
+      issuedAt: activeExam.issuedAt,
+      expiresAt: activeExam.expiresAt,
+      scopeFingerprint: activeExam.scopeFingerprint,
+      nonce: activeExam.nonce,
+      checks: activeExam.checks,
+      examExpired: activeExamExpired,
+    } : {}),
     nextAction: {
       tool: nextTool,
       arguments: nextArguments,
@@ -228,10 +264,7 @@ export async function handleStatus(): Promise<ToolResult> {
     userAction: waitingForPlanApproval || waitingForAmendmentApproval
       ? { kind: "approval", decisionId: decisionId ?? undefined, options: ["approve", "reject", "revise"] }
       : needsTaskInformation
-        ? {
-            kind: "provide_information",
-            instruction: "Use the current user development request as hy_read_docs(before_plan).task; ask only when no concrete task exists.",
-          }
+        ? { kind: "provide_information" }
         : null,
   });
 

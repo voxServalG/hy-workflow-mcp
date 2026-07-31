@@ -12,8 +12,6 @@ export const QUALITY_POLICY_RULES = [
   "docs.structure",
   "docs.max-lines",
   "code.max-lines",
-  "code.tier-dependency",
-  "code.dependency-cycle",
 ] as const;
 export type QualityPolicyRuleId = typeof QUALITY_POLICY_RULES[number];
 
@@ -43,8 +41,6 @@ export const LINT_RULE_TO_POLICY_RULE = {
   D005: "docs.max-lines",
   C001: "code.scan-integrity",
   C002: "code.max-lines",
-  C003: "code.tier-dependency",
-  C004: "code.dependency-cycle",
   C005: "code.parser-integrity",
 } as const satisfies Record<string, PolicyRuleId>;
 
@@ -70,8 +66,6 @@ export const PROFILE_RULES: Record<EffectivePolicyProfileName, Record<PolicyRule
     "docs.structure": { severity: "warning" },
     "docs.max-lines": { severity: "advisory", warning: 300, error: 800 },
     "code.max-lines": { severity: "advisory", warning: 500, error: 1200 },
-    "code.tier-dependency": { severity: "warning" },
-    "code.dependency-cycle": { severity: "warning" },
   },
   standard: {
     ...SAFETY_DEFAULTS,
@@ -80,8 +74,6 @@ export const PROFILE_RULES: Record<EffectivePolicyProfileName, Record<PolicyRule
     "docs.structure": { severity: "error" },
     "docs.max-lines": { severity: "error", warning: 200, error: 500 },
     "code.max-lines": { severity: "error", warning: 300, error: 500 },
-    "code.tier-dependency": { severity: "error" },
-    "code.dependency-cycle": { severity: "error" },
   },
   strict: {
     ...SAFETY_DEFAULTS,
@@ -90,8 +82,6 @@ export const PROFILE_RULES: Record<EffectivePolicyProfileName, Record<PolicyRule
     "docs.structure": { severity: "error" },
     "docs.max-lines": { severity: "error", warning: 120, error: 300 },
     "code.max-lines": { severity: "error", warning: 200, error: 350 },
-    "code.tier-dependency": { severity: "error" },
-    "code.dependency-cycle": { severity: "error" },
   },
   "legacy-compatible": {
     ...SAFETY_DEFAULTS,
@@ -100,8 +90,6 @@ export const PROFILE_RULES: Record<EffectivePolicyProfileName, Record<PolicyRule
     "docs.structure": { severity: "error" },
     "docs.max-lines": { severity: "error", warning: 200, error: 500 },
     "code.max-lines": { severity: "error", warning: 300, error: 500 },
-    "code.tier-dependency": { severity: "error" },
-    "code.dependency-cycle": { severity: "error" },
   },
 };
 

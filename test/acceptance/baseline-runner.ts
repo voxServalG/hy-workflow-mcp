@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createWorkspace, packAndMountOffline, terminateAllAcceptanceChildren } from "./harness.js";
-import { installDocsGardenerStub } from "./baseline-harness.js";
 import { runBaselineFixture } from "./baseline-scenarios.js";
 
 const sourceRoot = process.cwd();
@@ -17,7 +16,6 @@ const results: Array<Record<string, unknown>> = [];
 let timer: NodeJS.Timeout | undefined;
 try {
   await packAndMountOffline(workspace);
-  installDocsGardenerStub(workspace);
   await Promise.race([
     (async () => {
       for (const fixture of matrix.fixtures) {

@@ -1,10 +1,13 @@
-import * as fs from "node:fs";
+import { readFileSync } from "node:fs";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-const workflow = fs.readFileSync("templates/hy-workflow.yml", "utf-8");
+const project = readFileSync("src/helper/project.ts", "utf-8");
+for (const token of ["resolveRuntimeConfig(root)", "completeExternalConfig", "projectPaths(root)", "writeDeployment", "atomicWriteJson(paths.config"]) {
+  assert(project.includes(token), `helper project registration is missing deterministic external configuration token ${token}`);
+}
 for (const forbidden of [
   "pnpm-lock.yaml",
   "yarn.lock",
@@ -17,9 +20,9 @@ for (const forbidden of [
   "cargo test",
   "go test",
   "pytest",
-  "No supported project ecosystem detected",
-  "No native verification command detected",
-]) assert(!workflow.includes(forbidden), `workflow must not infer or rerun project CI from ${forbidden}`);
+  ".github/workflows",
+]) {
+  assert(!project.includes(forbidden), `helper registration must not infer an ecosystem or inject CI from ${forbidden}`);
+}
 
-assert(workflow.includes("hy-workflow lint --json"), "workflow must run only the centralized hy-workflow policy entry point");
-console.log("setup-workflow-ecosystems: no ecosystem inference or native CI duplication");
+console.log("setup-workflow-ecosystems: helper registers external project facts without ecosystem-specific CI injection");

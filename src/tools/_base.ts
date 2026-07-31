@@ -12,7 +12,7 @@ export function invalidWorkflowStateResult(
   state: WorkflowState,
   code: string,
   message: string,
-  hint: string,
+  _legacyInstruction?: string,
 ): ToolResult {
   const stage = state.stage ?? DEFAULT_STAGE_BY_PHASE[state.phase];
   return buildToolResult(state.phase, {
@@ -23,14 +23,12 @@ export function invalidWorkflowStateResult(
       subtype: "invalid_phase",
       code,
       message,
-      hint,
     },
-    hint,
     allowedTools: ["hy_reset", "hy_status"],
     blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
-    recovery: { strategy: "reset", tool: "hy_reset", instruction: hint },
+    recovery: { strategy: "reset", tool: "hy_reset" },
     nextAction: { tool: "hy_reset", phase: state.phase, stage, automatic: false },
     control: { automatic: false, stop: true, reason: "review_required" },
-    userAction: { kind: "review_failure", instruction: hint },
+    userAction: { kind: "review_failure" },
   });
 }

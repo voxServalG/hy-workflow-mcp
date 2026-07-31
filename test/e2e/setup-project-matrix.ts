@@ -130,7 +130,10 @@ const ambiguous = fixture("main", {
   "README.md": "# Empty package\n\nThe implementation language has not been chosen.\n",
 });
 const ambiguousDryRun = ensureConfigDefaults(ambiguous, { dryRun: true });
-assert(!ambiguousDryRun.ok && ambiguousDryRun.requires_user, "low-confidence projects must fail closed instead of silently selecting TypeScript/src");
+assert(
+  !ambiguousDryRun.ok && ambiguousDryRun.project?.confidence === "low" && ambiguousDryRun.project?.ambiguous === true,
+  "low-confidence projects must fail closed and expose ambiguity facts instead of silently selecting TypeScript/src",
+);
 assert(!fs.existsSync(path.join(ambiguous, "hy-workflow.json")), "ambiguous dry-run must not write a root config");
 
 const mixed = fixture("main", {
@@ -139,5 +142,8 @@ const mixed = fixture("main", {
   "docs/index.md": "# Mixed project\n\nBoth components require explicit configuration.\n",
 });
 const mixedDryRun = ensureConfigDefaults(mixed, { dryRun: true });
-assert(!mixedDryRun.ok && mixedDryRun.requires_user, "material mixed ecosystems must require explicit code extension/directory confirmation");
+assert(
+  !mixedDryRun.ok && mixedDryRun.project?.kind === "mixed" && mixedDryRun.project?.ambiguous === true,
+  "material mixed ecosystems must fail closed and expose facts requiring explicit code extension/directory confirmation",
+);
 assert(!fs.existsSync(path.join(mixed, "hy-workflow.json")), "mixed inference must not write before confirmation");

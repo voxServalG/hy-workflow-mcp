@@ -389,14 +389,19 @@ function rollbackInstalled(mutations: ClientMutation[], transaction?: SetupTrans
   }
 }
 
-function removeClients(root: string, selected: ClientAdapter[], transaction?: SetupTransaction): ClientOutcome {
+function removeClients(
+  root: string,
+  selected: ClientAdapter[],
+  transaction?: SetupTransaction,
+  servers: ServerName[] = Object.keys(MCP_DEFINITIONS) as ServerName[],
+): ClientOutcome {
   const ownership = readOwnership(root);
   const clients: SetupResult["clients"] = [];
   const mutations: ClientMutation[] = [];
   try {
     for (const adapter of selected) {
       const detection = adapter.detect();
-      for (const server of Object.keys(MCP_DEFINITIONS) as ServerName[]) {
+      for (const server of servers) {
         const entry = ownership.clients[adapter.name]?.[server];
         if (!entry) {
           clients.push({ name: adapter.name, status: "skipped", detail: `${server}: not owned` });
@@ -450,6 +455,55 @@ function rollbackRemoved(mutations: ClientMutation[], transaction?: SetupTransac
       transaction?.unmarkClient(item.resource);
     } catch {}
   }
+}
+
+export type RetiredWorkflowMcpResult = {
+  clients: SetupResult["clients"];
+  remainingOwnedClients: ClientName[];
+  ownershipPath: string;
+  transactionId: string;
+};
+
+/**
+ * Retire only the legacy hy-workflow MCP entry after the replacement Skill
+ * bundle is installed. docs-gardener and every unselected or unowned
+ * definition remain untouched. Exact snapshots, rollback, and the global
+ * setup lock are shared with setup and unset.
+ */
+export async function retireOwnedWorkflowMcp(
+  root: string,
+  clients: ClientName[],
+  adapters: ClientAdapter[] = createClientAdapters(root),
+): Promise<RetiredWorkflowMcpResult> {
+  assertSafeRuntimeBoundary(root);
+  const selected = selectedAdapters({
+    action: "unset",
+    mode: "shared",
+    clients,
+    language: "en",
+    yes: true,
+    dryRun: false,
+    json: true,
+    removeGlobal: false,
+  }, adapters);
+  const paths = projectPaths(root);
+  return withSetupTransaction(root, "setup", transaction => {
+    transaction.capture([paths.clientOwnership]);
+    const removed = removeClients(root, selected, transaction, ["hy-workflow"]);
+    try {
+      writeOwnership(root, removed.ownership, transaction);
+      transaction.markApplied([paths.clientOwnership]);
+      return {
+        clients: removed.clients,
+        remainingOwnedClients: ownedClients(removed.ownership),
+        ownershipPath: paths.clientOwnership,
+        transactionId: transaction.id,
+      };
+    } catch (error) {
+      rollbackRemoved(removed.mutations, transaction);
+      throw error;
+    }
+  }, { reconcileClient: resource => reconcileClientResource(adapters, resource) });
 }
 
 function ownedClients(ownership: OwnershipManifest): ClientName[] {

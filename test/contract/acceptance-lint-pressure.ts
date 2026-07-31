@@ -13,7 +13,7 @@ function makeReport(options: {
   docs?: number;
   code?: number;
 } = {}): any {
-  const statuses = options.statuses ?? {};
+  const statuses = { C003: "not_configured", C004: "not_applicable", ...(options.statuses ?? {}) };
   const findings = options.findings ?? [];
   const checks = rules.map(rule => {
     const own = findings.filter(finding => finding.rule === rule);
@@ -51,8 +51,8 @@ function rejects(report: any, status: number, message: string): void {
   throw new Error(message);
 }
 
-const clean = validate(makeReport({ statuses: { C003: "not_configured" } }));
-assert(clean.ok && clean.docs === 1 && clean.code === 2 && clean.notConfiguredRules.includes("C003"), "clean internal lint report must pass with an explicit not-configured tier status");
+const clean = validate(makeReport());
+assert(clean.ok && clean.docs === 1 && clean.code === 2 && clean.notConfiguredRules.includes("C003") && clean.notApplicableRules.includes("C004"), "clean internal lint report must preserve both fixed dependency compatibility statuses");
 
 const warningFinding = { rule: "C002", severity: "warning" as const, path: "src/large.py", line: 301, message: "effective line warning" };
 const warning = validate(makeReport({ findings: [warningFinding] }));
@@ -62,11 +62,14 @@ const errorFinding = { rule: "C005", severity: "error" as const, path: "src/brok
 const dirty = validate(makeReport({ findings: [errorFinding] }), 1);
 assert(!dirty.ok && dirty.errors === 1 && dirty.failed === 1, "structured OSS lint errors must remain inspectable without being mistaken for an engine crash");
 
-const unsupported = validate(makeReport({ statuses: { C003: "not_applicable", C004: "not_applicable", C005: "not_applicable" } }));
-assert(unsupported.ok && unsupported.notApplicableRules.join(",") === "C003,C004,C005", "unsupported languages must report honest per-rule N/A evidence");
+const unsupported = validate(makeReport({ statuses: { C005: "not_applicable" } }));
+assert(unsupported.ok && unsupported.notConfiguredRules.join(",") === "C003" && unsupported.notApplicableRules.join(",") === "C004,C005", "unsupported languages must preserve compatibility statuses while reporting parser N/A evidence");
 
 rejects(makeReport({ docs: 0 }), 0, "zero-document scan must fail pressure validation");
 rejects(makeReport(), 1, "clean report with a failing exit must be rejected");
+rejects(makeReport({ statuses: { C003: "passed" } }), 0, "C003 must not be reactivated through report status drift");
+rejects(makeReport({ statuses: { C004: "passed" } }), 0, "C004 must not be reactivated through report status drift");
+rejects(makeReport({ findings: [{ rule: "C004", severity: "warning", path: "src/app.ts", message: "legacy dependency finding" }] }), 0, "compatibility-only dependency slots must reject findings");
 const missingRule = makeReport();
 missingRule.checks.pop();
 rejects(missingRule, 0, "missing D/C rule must be rejected");
@@ -83,7 +86,7 @@ assert(!existsSync("test/acceptance/lint-pressure-child.mjs"), "external lint ch
 for (const token of ["codeload.github.com", "DOCLINT_SOURCE", "CODELINT_SOURCE", "HY_ACCEPTANCE_LINT_ARCHIVE_DIR", "prepareLintPressurePackages"]) {
   assert(!scenarios.includes(token) && !runner.includes(token) && !harness.includes(token), "acceptance must not retain external lint token " + token);
 }
-for (const token of ['run("hy-workflow", ["lint", "--json"]', "validateLintPressureEnvelope", "assertCompatibilityUnchanged", "LINT_PRESSURE_TIMEOUT_MS", "DEPENDENCY_SCANNER_EXTENSIONS", "summary.notApplicableRules", "unsupported language did not report an honest C004 N/A", "unsupported language did not report an honest C005 N/A", "lintPressure"]) {
+for (const token of ['run("hy-workflow", ["lint", "--json"]', "validateLintPressureEnvelope", "assertCompatibilityUnchanged", "LINT_PRESSURE_TIMEOUT_MS", "PARSER_SCANNER_EXTENSIONS", 'summary.notConfiguredRules.includes("C003")', 'summary.notApplicableRules.includes("C004")', "unsupported language did not report C005 as N/A", "lintPressure"]) {
   assert(scenarios.includes(token), "real-repository internal lint pressure scenario is missing " + token);
 }
 const packageScripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;

@@ -30,6 +30,8 @@ const report = JSON.parse(result.stdout);
 assert(report.schema === "hy-workflow.lint.v1" && report.version === 1, "lint CLI must emit the unified versioned envelope");
 assert(report.root === "." && report.counts.checks === 10 && report.checks.length === 10, "lint CLI must emit all D001-D005 and C001-C005 checks");
 assert(report.checks.some((check: any) => check.rule === "C003" && check.status === "not_configured"), "missing tiers must be explicit rather than inferred");
+assert(report.checks.some((check: any) => check.rule === "C004" && check.status === "not_applicable"), "C004 must remain a fixed compatibility slot");
+assert(!report.findings.some((finding: any) => finding.rule === "C003" || finding.rule === "C004"), "compatibility-only dependency slots must not emit findings");
 assert(result.stdout === JSON.stringify(report) + "\n", "lint --json must emit exactly one compact JSON document on stdout");
 assert(fs.readFileSync(path.join(root, "codelint.json"), "utf-8") === legacyText, "lint must preserve an existing legacy compatibility file byte-for-byte");
 assert(!fs.existsSync(path.join(root, "doclint.json")) && !fs.existsSync(path.join(root, "docs-gardener.json")), "lint must not materialize missing compatibility files");

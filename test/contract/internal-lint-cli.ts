@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const RULES = ["D001", "D002", "D003", "D004", "D005", "C001", "C002", "C003", "C004", "C005"];
-const server = join(process.cwd(), "dist", "server.js");
+const server = join(process.cwd(), "dist", "main.js");
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -19,7 +19,12 @@ function fixture(extension = ".py", source = "value = 1\n"): string {
   writeFileSync(join(root, "docs/guide.md"), "# Guide\n\nSubstantive project facts.\n");
   writeFileSync(join(root, "hy-workflow.json"), JSON.stringify({
     project: { baseBranch: "main", codeExt: [extension], codeDirs: ["src"], docsDir: "docs" },
-    codelint: { lintDirs: ["src"], maxLinesWarning: 300, maxLinesError: 500 },
+    codelint: {
+      lintDirs: ["src"],
+      maxLinesWarning: 300,
+      maxLinesError: 500,
+      tiers: [{ name: "legacy", paths: ["src"] }],
+    },
     doclint: { maxLinesWarning: 200, maxLinesError: 500 },
   }, null, 2) + "\n");
   for (const [file, content] of [
@@ -60,7 +65,9 @@ const clean = run(cleanRoot);
 assert(clean.status === 0 && clean.report.schema === "hy-workflow.lint.v1" && clean.report.version === 1 && clean.report.ok === true, "clean built-in lint must exit zero with schema v1");
 assert(clean.report.counts?.checks === 10 && clean.report.checks?.map((check: any) => check.rule).join(",") === RULES.join(","), "built-in lint must return exactly ten ordered rules");
 assert(clean.report.counts?.advisories === 0, "lint report must expose an advisory count without changing clean compatibility");
-assert(clean.report.checks.find((check: any) => check.rule === "C003")?.status === "not_configured", "absent tiers must be explicit not_configured");
+assert(clean.report.checks.find((check: any) => check.rule === "C003")?.status === "not_configured", "C003 compatibility slot must remain not_configured");
+assert(clean.report.checks.find((check: any) => check.rule === "C004")?.status === "not_applicable", "C004 compatibility slot must remain not_applicable");
+assert(!clean.report.findings.some((finding: any) => finding.rule === "C003" || finding.rule === "C004"), "dependency compatibility slots must not emit findings");
 assertCompatibility(cleanRoot);
 
 const unsupportedRoot = fixture(".go", "package main\n");

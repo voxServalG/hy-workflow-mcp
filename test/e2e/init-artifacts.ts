@@ -2,10 +2,11 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { runWorkflowCli, toWorkflowCliEnvelope } from "../../src/cli/workflow.js";
 import { projectRuntimeConfigSource } from "../../src/config.js";
 import { MINIMAL_PROJECT_CONTRACT, writeDeployment } from "../../src/runtime/deployment.js";
 import { atomicWriteJson, projectPaths } from "../../src/runtime/user-paths.js";
-import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, initArtifactGuidance } from "../../src/tools/init.js";
+import { ensureLocalArtifactIgnores, handleInit, harnessArtifactStatus, INIT_COMMIT_ARTIFACTS } from "../../src/tools/init.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -56,9 +57,7 @@ process.env.HY_WORKFLOW_CONFIG_HOME = path.join(runtime, "config");
 process.env.HY_WORKFLOW_STATE_HOME = path.join(runtime, "state");
 process.env.HY_WORKFLOW_CACHE_HOME = path.join(runtime, "cache");
 
-const guidance = initArtifactGuidance();
-assert(guidance.commitArtifacts.length === 0, "hy_init must never request a project commit");
-assert(guidance.body.includes("hy_init changes no project files") && guidance.body.includes("Historical repository injections are inert"), "init guidance must state the seamless boundary plainly");
+assert(INIT_COMMIT_ARTIFACTS.length === 0, "hy_init must never request a project commit");
 const ignoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hy-init-ignore-"));
 assert(!ensureLocalArtifactIgnores(ignoreRoot) && !fs.existsSync(path.join(ignoreRoot, ".gitignore")), "hy_init must never change .gitignore");
 
@@ -101,6 +100,40 @@ try {
   process.chdir(invalidRoot);
   const result = await handleInit();
   assert(result.error?.code === "ROOT_CONFIG_INVALID" && result.requires_user === true, "invalid authoritative new config must stop init with a typed repair action");
+  const envelope = toWorkflowCliEnvelope("init", result);
+  const detail = envelope.error?.detail as { issues?: string[] } | undefined;
+  assert(detail?.issues?.length, "invalid config issue facts must survive the workflow CLI projection");
+  assert(!("hint" in envelope.error!), "invalid config recovery prose must not enter the workflow CLI error");
+} finally {
+  process.chdir(oldCwd);
+}
+
+const readinessRoot = project("hy-init-readiness-");
+const readinessConfig = fullConfig() as { project: { baseBranch: string } };
+readinessConfig.project.baseBranch = "definitely-missing-init-base-branch";
+atomicWriteJson(projectPaths(readinessRoot).config, readinessConfig);
+deployment(readinessRoot, { minimal: true });
+try {
+  process.chdir(readinessRoot);
+  const run = await runWorkflowCli(["init"]);
+  const envelope = run.envelope;
+  const detail = envelope.error?.detail as
+    | { issues?: Array<{ code?: string; message?: string; recovery?: unknown }> }
+    | undefined;
+  const issue = detail?.issues?.[0];
+  assert(
+    run.exitCode === 1
+      && envelope.error?.code === "BASE_BRANCH_NOT_FOUND"
+      && issue?.code === "BASE_BRANCH_NOT_FOUND"
+      && typeof issue.message === "string",
+    "init readiness issue facts must survive the workflow CLI projection",
+  );
+  assert(
+    !("recovery" in issue)
+      && !("hint" in envelope.error!)
+      && !("issues" in envelope.error!),
+    "init readiness output must leave recovery explanation to the Skill",
+  );
 } finally {
   process.chdir(oldCwd);
 }

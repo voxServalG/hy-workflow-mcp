@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { chdir, cwd } from "node:process";
 import { buildImplementationManifest, runScopeCheck, suggestPlanAmendment } from "../../src/checks.js";
 import { handleAmendPlan, isNonMaterialScopeNarrowing } from "../../src/tools/amend_plan.js";
-import { computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
+import { amendmentDecisionId, computePlanHash, readState, rebindApprovalForNonMaterialNarrowing, scopePath, writeState, type PlanDoc, type WorkflowState } from "../../src/state.js";
 
 function run(cmd: string, root: string): void {
   execSync(cmd, { cwd: root, stdio: "ignore" });
@@ -45,6 +45,13 @@ function baseState(plan: PlanDoc): WorkflowState {
   };
 }
 
+function currentAmendmentDecisionId(): string {
+  const state = readState();
+  const decisionId = amendmentDecisionId(state.plan, state.pendingAmendment);
+  if (!decisionId) throw new Error("expected a pending amendment decision id");
+  return decisionId;
+}
+
 const originalCwd = cwd();
 const root = mkdtempSync(join(tmpdir(), "hy-amend-plan-"));
 
@@ -80,7 +87,7 @@ try {
       warnings: [],
     },
   });
-  const externalResult = await handleAmendPlan({ approved: "approve", note: "reject external" });
+  const externalResult = await handleAmendPlan({ approved: "approve", note: "reject external", decisionId: currentAmendmentDecisionId() });
   if (!String(externalResult.error?.message).includes("outside the project root")) {
     throw new Error(`hy_amend_plan should reject external amendment paths, got ${JSON.stringify(externalResult)}`);
   }
@@ -93,7 +100,7 @@ try {
       warnings: [],
     },
   });
-  const excludedResult = await handleAmendPlan({ approved: "approve", note: "reject authority-excluded path" });
+  const excludedResult = await handleAmendPlan({ approved: "approve", note: "reject authority-excluded path", decisionId: currentAmendmentDecisionId() });
   if (!String(excludedResult.error?.message).includes(".opencode/opencode.json")
       || !String(excludedResult.error?.message).includes("permanently outside hy-workflow authority")) {
     throw new Error(`hy_amend_plan should reject authority-excluded amendment paths, got ${JSON.stringify(excludedResult)}`);
@@ -107,7 +114,7 @@ try {
       warnings: [],
     },
   });
-  const emptyResult = await handleAmendPlan({ approved: "approve", note: "reject empty" });
+  const emptyResult = await handleAmendPlan({ approved: "approve", note: "reject empty", decisionId: currentAmendmentDecisionId() });
   if (!String(emptyResult.error?.message).includes("amended PlanDoc scope is empty")) {
     throw new Error(`hy_amend_plan should reject amendments that empty the PlanDoc scope, got ${JSON.stringify(emptyResult)}`);
   }
@@ -227,14 +234,15 @@ try {
     documentReads: {
       afterEdit: {
         stage: "after_edit",
-        purpose: "stale amendment evidence",
         time: new Date().toISOString(),
         task: plan.task,
         planHash: oldPlanHash,
         docsDir: "docs",
         digest: "old-after-edit",
         files: [],
-        findings: [],
+        docsGraphDigest: "amend-plan-docs-graph",
+        entryPoints: [],
+        traversalRoots: [],
         implementationFiles: manifest.changed,
         implementationDigest: "old-implementation",
       },
@@ -252,7 +260,15 @@ try {
   if (invalidDecision.error?.code !== "AMENDMENT_DECISION_INVALID" || JSON.stringify(readState()) !== beforeInvalidDecision) {
     throw new Error(`invalid amendment decision must preserve pending state: ${JSON.stringify(invalidDecision)}`);
   }
-  const amendResult = await handleAmendPlan({ approved: "approve", note: "test approved amendment" });
+  const expectedAmendmentDecisionId = currentAmendmentDecisionId();
+  const staleDecision = await handleAmendPlan({ approved: "approve", note: "stale", decisionId: "amendment:000000000000" });
+  if (staleDecision.error?.code !== "AMENDMENT_DECISION_ID_MISMATCH"
+      || staleDecision.userAction?.decisionId !== expectedAmendmentDecisionId
+      || JSON.stringify(readState()) !== beforeInvalidDecision) {
+    throw new Error(`stale amendment decision must preserve pending state: ${JSON.stringify(staleDecision)}`);
+  }
+
+  const amendResult = await handleAmendPlan({ approved: "approve", note: "test approved amendment", decisionId: expectedAmendmentDecisionId });
   if (amendResult.phase !== "edit"
       || amendResult.stage !== "edit.implementation"
       || !amendResult.amended

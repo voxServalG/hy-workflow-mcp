@@ -28,14 +28,15 @@ function resetPlanState(task = "test task"): void {
     documentReads: {
       beforePlan: {
         stage: "before_plan",
-        purpose: "test baseline",
         time: new Date().toISOString(),
         task,
         planHash: null,
         docsDir: "docs",
         digest: "test",
         files: [],
-        findings: [],
+        docsGraphDigest: "plan-scope-paths-graph",
+        entryPoints: [],
+        traversalRoots: [],
       },
     },
   }, null, 2));
@@ -112,7 +113,7 @@ async function expectAccepted(): Promise<void> {
   });
   resetPlanState(plan.task);
   const result = await handlePlan({ task: plan.task, plan });
-  if (result.next !== "approve" || !result.summary) {
+  if (result.next !== "approve" || result.plan?.task !== plan.task || typeof result.decisionId !== "string") {
     throw new Error(`valid scope, including the exact new project artifacts, should be accepted: ${result.error?.message ?? JSON.stringify(result)}`);
   }
 }

@@ -37,6 +37,8 @@ export async function runMergeRecoveryIncident(
   try {
     harness = createGitGhHarness(fixture.id, workspace.repos);
     chdir(harness.root);
+    const sourceBranch = harness.sourceBranch;
+    const baseBranch = harness.baseBranch;
     const [{ handleMerge }, { readState, writeState }] = await Promise.all([
       import(pathToFileURL(join(packageRoot, "dist", "tools", "merge.js")).href),
       import(pathToFileURL(join(packageRoot, "dist", "state.js")).href),
@@ -104,9 +106,9 @@ export async function runMergeRecoveryIncident(
     assert(harness.ghCalls("pr merge ").length === 1, "installed package retry must not repeat the remote merge");
     const retryFetches = harness.gitCalls("fetch ").slice(fetchesBeforeRetry);
     assert(retryFetches.length === 1 && retryFetches[0].includes(harness.baseBranch), `confirmed receipt retry must refresh configured-base ancestry exactly once: ${JSON.stringify(retryFetches)}`);
-    assert(harness.remoteOid(harness.sourceBranch) === null, "installed package retry must not recreate the deleted source branch");
-    assert(!harness.gitCalls("push ").some(call => call.includes(harness.sourceBranch)), "installed package retry must exclude the merged source branch from downstream pushes");
-    assert(!harness.gitCalls("push ").some(call => call.split(/\s+/).some(token => token === harness.baseBranch || token.endsWith(`refs/heads/${harness.baseBranch}`))), "read-only Git fallback must never push the configured base branch");
+    assert(harness.remoteOid(sourceBranch) === null, "installed package retry must not recreate the deleted source branch");
+    assert(!harness.gitCalls("push ").some(call => call.includes(sourceBranch)), "installed package retry must exclude the merged source branch from downstream pushes");
+    assert(!harness.gitCalls("push ").some(call => call.split(/\s+/).some(token => token === baseBranch || token.endsWith(`refs/heads/${baseBranch}`))), "read-only Git fallback must never push the configured base branch");
 
     return {
       name: fixture.id,

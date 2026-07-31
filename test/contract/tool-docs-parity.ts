@@ -1,35 +1,56 @@
-import { COMMAND_NAMES } from "../../src/commands/catalog.js";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import {
+  CLI_COMMAND_NAMES,
+  COMMAND_CONTRACTS,
+  LEGACY_ACTION_NAMES,
+  assertCommandCatalogMatchesCli,
+} from "../../src/commands/catalog.js";
+import { WORKFLOW_CLI_COMMANDS } from "../../src/cli/workflow.js";
 
-const EXPECTED_TOOL_LITERALS = [
-  "hy_init",
-  "hy_read_docs",
-  "hy_plan",
-  "hy_approve",
-  "hy_branch",
-  "hy_edit",
-  "hy_sync_docs",
-  "hy_verify",
-  "hy_exam_plan",
-  "hy_exam_submit",
-  "hy_amend_plan",
-  "hy_commit",
-  "hy_merge",
-  "hy_reset",
-  "hy_status",
-];
+const EXPECTED_CLI_COMMANDS = [
+  "init",
+  "status",
+  "read-docs",
+  "plan",
+  "approve",
+  "branch",
+  "edit",
+  "sync-docs",
+  "verify",
+  "exam-plan",
+  "exam-submit",
+  "amend-plan",
+  "commit",
+  "merge",
+  "reset",
+] as const;
 
-const docs = ["README.md", "docs/tools.md", "docs/cli.md"].map(file => readFileSync(file, "utf-8")).join("\n");
-const server = readFileSync("src/server.ts", "utf-8");
-const testSurface = COMMAND_NAMES.join("\n");
-
-for (const tool of COMMAND_NAMES) {
-  if (!docs.includes(tool)) throw new Error("docs missing tool " + tool);
-  if (!server.includes('name: "' + tool + '"')) throw new Error("server missing tool " + tool);
-  if (!testSurface.includes(tool)) throw new Error("test surface missing tool " + tool);
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
 }
 
+assertCommandCatalogMatchesCli(WORKFLOW_CLI_COMMANDS);
+assert(
+  JSON.stringify([...CLI_COMMAND_NAMES].sort()) === JSON.stringify([...EXPECTED_CLI_COMMANDS].sort()),
+  "literal CLI command list drifted from the canonical catalog",
+);
+assert(COMMAND_CONTRACTS.length === 15 && new Set(LEGACY_ACTION_NAMES).size === 15, "CLI commands must keep 15 unique one-to-one legacy kernel actions");
+assert(!existsSync("src/server.ts"), "removed MCP server source must not exist");
 
-if (JSON.stringify([...COMMAND_NAMES].sort()) !== JSON.stringify([...EXPECTED_TOOL_LITERALS].sort())) {
-  throw new Error("literal tool test list drifted from command catalog");
+const cli = readFileSync("src/cli/workflow.ts", "utf-8");
+const main = readFileSync("src/main.ts", "utf-8");
+for (const contract of COMMAND_CONTRACTS) {
+  assert(existsSync(contract.handlerFile), `missing handler for ${contract.command}: ${contract.handlerFile}`);
+  const handlerImport = contract.handlerFile.replace(/^src\//, "../").replace(/\.ts$/, ".js");
+  assert(cli.includes(handlerImport), `CLI adapter missing handler import for ${contract.command}`);
+  assert(cli.includes(`tool: "${contract.legacyAction}"`), `CLI adapter missing legacy kernel binding for ${contract.command}`);
+  assert(contract.phases.length > 0 && contract.stages.length > 0, `${contract.command} must declare phase/stage ownership`);
 }
+for (const token of ["runWorkflowCli", "WORKFLOW_CLI_COMMANDS", "hy-workflow.cli.v1"]) {
+  assert(main.includes(token) || cli.includes(token), `public CLI surface missing ${token}`);
+}
+for (const forbidden of ["@modelcontextprotocol/sdk", "StdioServerTransport", "new Server(", "server.connect("]) {
+  assert(!main.includes(forbidden) && !cli.includes(forbidden), `public CLI source must not start MCP: ${forbidden}`);
+}
+
+console.log("tool-docs-parity: 15 CLI commands, handlers, legacy kernel mapping, and no-MCP entrypoint pass");

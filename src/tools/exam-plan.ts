@@ -1,7 +1,7 @@
-import { invalidWorkflowStateResult, readState, writeState, assertPhase } from "./_base.js";
+import { readState, writeState, assertPhase } from "./_base.js";
 import { approvalMatchesPlan, documentReadHealth, projectRoot, transition } from "../state.js";
 import { toolResult, type ToolResult } from "./_base.js";
-import { issueExam } from "../verify-exam.js";
+import { computeScopeFingerprint, issueExam } from "../verify-exam.js";
 import { buildImplementationManifest } from "../checks.js";
 import { implementationDigest } from "./sync_docs.js";
 import { validatePlanScopePaths } from "../plan_validation.js";
@@ -18,12 +18,23 @@ export async function handleExamPlan(): Promise<ToolResult> {
   const currentStage = state.stage ?? (state.phase === "verify" ? "verify.run" : "edit.implementation");
 
   if (!state.plan) {
-    return invalidWorkflowStateResult(
-      state,
-      "EXAM_PLAN_MISSING",
-      "Workflow state reached asynchronous verification without an active PlanDoc.",
-      "Reset the impossible workflow state, then create and approve a new PlanDoc.",
-    );
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "EXAM_PLAN_MISSING",
+        message: "Workflow state reached asynchronous verification without an active PlanDoc.",
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
   }
   if (!approvalMatchesPlan(state.approval, state.plan)) {
     return toolResult(state.phase, {
@@ -34,26 +45,36 @@ export async function handleExamPlan(): Promise<ToolResult> {
         subtype: "approval_missing",
         code: "EXAM_APPROVAL_PLAN_MISMATCH",
         message: "The current PlanDoc is not bound to a valid approval.",
-        hint: "Reset the invalid workflow state before issuing an exam.",
       },
       allowedTools: ["hy_reset", "hy_status"],
       blockedTools: ["hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
-      recovery: { strategy: "reset", tool: "hy_reset", instruction: "Reset the invalid approval state before replanning." },
+      recovery: { strategy: "reset", tool: "hy_reset" },
       nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
       control: { automatic: false, stop: true, reason: "review_required" },
-      userAction: { kind: "review_failure", instruction: "An exam cannot replace a missing PlanDoc approval." },
+      userAction: { kind: "review_failure" },
     });
   }
 
   const root = projectRoot();
   const scopeErrors = validatePlanScopePaths(root, state.plan, "verify");
   if (scopeErrors.length) {
-    return invalidWorkflowStateResult(
-      state,
-      "EXAM_SCOPE_INVALID",
-      `Stored PlanDoc scope contains invalid paths: ${scopeErrors.join("; ")}`,
-      "Reset the invalid workflow state and create a new PlanDoc containing only paths authoritative for this project.",
-    );
+    return toolResult(state.phase, {
+      phase: state.phase,
+      stage: currentStage,
+      status: "blocked",
+      error: {
+        type: "workflow_state",
+        subtype: "invalid_phase",
+        code: "EXAM_SCOPE_INVALID",
+        message: `Stored PlanDoc scope contains invalid paths: ${scopeErrors.join("; ")}`,
+      },
+      allowedTools: ["hy_reset", "hy_status"],
+      blockedTools: ["hy_plan", "hy_approve", "hy_branch", "hy_edit", "hy_amend_plan", "hy_verify", "hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
+      recovery: { strategy: "reset", tool: "hy_reset" },
+      nextAction: { tool: "hy_reset", phase: state.phase, stage: currentStage, automatic: false },
+      control: { automatic: false, stop: true, reason: "review_required" },
+      userAction: { kind: "review_failure" },
+    });
   }
   const implementationManifest = buildImplementationManifest(root);
   const currentImplementationDigest = implementationDigest(root, state.plan, implementationManifest);
@@ -65,17 +86,20 @@ export async function handleExamPlan(): Promise<ToolResult> {
       stage: currentStage,
       error: blocked?.reason ?? "after_edit document audit and hy_sync_docs must be current before hy_exam_plan.",
       documentReadHealth: health,
-      hint: blocked?.tool === "hy_sync_docs"
-        ? "Complete declared documentation edits, then call hy_sync_docs before issuing an exam."
-        : "Call hy_read_docs with stage after_edit, complete declared documentation edits, then call hy_sync_docs before issuing an exam.",
       allowedTools: [blocked?.tool ?? "hy_read_docs", "hy_status"],
       blockedTools: ["hy_exam_plan", "hy_exam_submit", "hy_commit", "hy_merge"],
     });
   }
+  const currentScopeFingerprint = computeScopeFingerprint(root);
+  const manifest = state.activeExam
+    && Date.now() < Date.parse(state.activeExam.expiresAt)
+    && state.activeExam.scopeFingerprint === currentScopeFingerprint
+    ? state.activeExam
+    : issueExam(root, state.plan);
   const next = transition(state, "verify");
   next.stage = "verify.run";
+  next.activeExam = manifest;
   writeState(next);
-  const manifest = issueExam(root, state.plan);
 
   return toolResult("verify", {
     phase: "verify",
@@ -98,14 +122,6 @@ export async function handleExamPlan(): Promise<ToolResult> {
       mustContain: c.mustContain,
       mustNotContain: c.mustNotContain,
     })),
-    display: {
-      title: "Exam issued — run each command via Bash and submit results with hy_exam_submit",
-      body: [
-        `${manifest.checks.length} checks issued. Run each command exactly as printed via the Bash tool, collect exitCode + last 4KB stdout, then call hy_exam_submit({ examId: "${manifest.examId}", results: [...] }).`,
-        "Exam expires in 2 hours or when the working tree changes.",
-        "Submit one complete result set. Any failed check returns to edit; after a fix, refresh document evidence and issue a new exam.",
-      ].join("\n"),
-    },
     allowedTools: ["hy_exam_submit", "hy_status"],
     blockedTools: ["hy_commit", "hy_merge"],
     requires_user: false,

@@ -37,7 +37,6 @@ export type AcceptanceRepo = {
 
 export type AcceptanceMatrix = {
   schemaVersion: "1";
-  companionPackage: string;
   repositories: AcceptanceRepo[];
 };
 
@@ -88,6 +87,10 @@ const REMOTE_WRITES = new Set([
 const ACTIVE_CHILDREN = new Set<ReturnType<typeof spawn>>();
 let ACCEPTANCE_ABORT_REASON: Error | null = null;
 export const ACCEPTANCE_WORKSPACE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
+export const ACCEPTANCE_SKILL_NAMES = [
+  "hy-init", "hy-status", "hy-read-docs", "hy-plan", "hy-approve", "hy-branch",
+  "hy-edit", "hy-sync-docs", "hy-verify", "hy-commit", "hy-merge", "hy-reset",
+] as const;
 
 function rejectRemoteWrite(command: string, args: string[]): void {
   const key = [basename(command), ...args].slice(0, 2).join(" ");
@@ -282,7 +285,16 @@ export function createWorkspace(sourceRoot: string): AcceptanceWorkspace {
   };
 }
 
-export async function packAndInstall(workspace: AcceptanceWorkspace, companionPackage: string, packageArchive?: string): Promise<string> {
+function assertCliSkillArchive(listing: string, label: string): void {
+  if (!listing.includes("package/dist/main.js")) throw new Error(label + " tgz is missing dist/main.js");
+  if (listing.includes("package/dist/server.js")) throw new Error(label + " tgz still contains retired dist/server.js");
+  for (const skill of ACCEPTANCE_SKILL_NAMES) {
+    const manifest = "package/skills/" + skill + "/SKILL.md";
+    if (!listing.includes(manifest)) throw new Error(label + " tgz is missing " + manifest);
+  }
+}
+
+export async function packAndInstall(workspace: AcceptanceWorkspace, packageArchive?: string): Promise<string> {
   let archive: string;
   if (packageArchive) {
     const requested = resolve(packageArchive);
@@ -306,12 +318,12 @@ export async function packAndInstall(workspace: AcceptanceWorkspace, companionPa
   for (const forbidden of ["package/src/", "package/test/", "package/.hy/", "package/.codex/", "package/.opencode/"]) {
     if (listing.stdout.includes(forbidden)) throw new Error("Local tgz contains forbidden path: " + forbidden);
   }
-  if (!listing.stdout.includes("package/dist/server.js")) throw new Error("Local tgz is missing dist/server.js");
+  assertCliSkillArchive(listing.stdout, "Local");
 
   const installAttempts = 2;
   let installFailure = "";
   for (let attempt = 1; attempt <= installAttempts; attempt += 1) {
-    const installed = await run("npm", ["install", "--global", archive, companionPackage, "--no-audit", "--no-fund",
+    const installed = await run("npm", ["install", "--global", archive, "--no-audit", "--no-fund",
       "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--fetch-timeout=60000",
     ], {
       env: workspace.env,
@@ -327,7 +339,7 @@ export async function packAndInstall(workspace: AcceptanceWorkspace, companionPa
   if (installFailure) throw new Error(`isolated npm package installation failed after ${installAttempts} attempts: ${installFailure}`);
   const globalRoot = (await run("npm", ["root", "--global"], { env: workspace.env, timeoutMs: 30_000 })).stdout.trim();
   const packageRoot = realpathSync(join(globalRoot, "@voxstudio", "hy-workflow"));
-  if (!existsSync(join(packageRoot, "dist", "setup-cli.js"))) throw new Error("Installed local tgz is missing dist/setup-cli.js");
+  if (!existsSync(join(packageRoot, "dist", "main.js"))) throw new Error("Installed local tgz is missing dist/main.js");
   workspace.env.HY_ACCEPTANCE_PACKAGE_ROOT = packageRoot;
   const executable = process.platform === "win32" ? join(workspace.prefix, "hy-workflow.cmd") : join(workspace.prefix, "bin", "hy-workflow");
   if (!existsSync(executable)) throw new Error("Installed local tgz did not expose hy-workflow");
@@ -348,16 +360,16 @@ export async function packAndMountOffline(workspace: AcceptanceWorkspace): Promi
   for (const forbidden of ["package/src/", "package/test/", "package/.hy/", "package/.codex/", "package/.opencode/"]) {
     if (listing.stdout.includes(forbidden)) throw new Error("Baseline tgz contains forbidden path: " + forbidden);
   }
-  if (!listing.stdout.includes("package/dist/server.js")) throw new Error("Baseline tgz is missing dist/server.js");
+  assertCliSkillArchive(listing.stdout, "Baseline");
   await run("tar", ["-xzf", archive, "-C", workspace.root], { env: workspace.env, timeoutMs: 30_000 });
   const packageRoot = join(workspace.root, "package");
-  chmodSync(join(packageRoot, "dist", "server.js"), 0o755);
+  chmodSync(join(packageRoot, "dist", "main.js"), 0o755);
   symlinkSync(join(workspace.sourceRoot, "node_modules"), join(packageRoot, "node_modules"), "dir");
   const executable = join(workspace.bin, process.platform === "win32" ? "hy-workflow.cmd" : "hy-workflow");
   if (process.platform === "win32") {
-    writeFileSync(executable, `@echo off\r\n"${process.execPath}" "${join(packageRoot, "dist", "server.js")}" %*\r\n`);
+    writeFileSync(executable, `@echo off\r\n"${process.execPath}" "${join(packageRoot, "dist", "main.js")}" %*\r\n`);
   } else {
-    symlinkSync(join(packageRoot, "dist", "server.js"), executable);
+    symlinkSync(join(packageRoot, "dist", "main.js"), executable);
   }
   workspace.env.HY_ACCEPTANCE_PACKAGE_ROOT = packageRoot;
   return archive;
@@ -420,9 +432,9 @@ export async function assertProjectBoundary(
 ): Promise<string[]> {
   const result = await run("git", ["status", "--porcelain=v1", "-uall"], { cwd: root, env });
   const changed = result.stdout.split(/\r?\n/).filter(Boolean).map(line => line.slice(3).replace(/^"|"$/g, ""));
-  const allowed = new Set(["hy-workflow.json", ".github/workflows/hy-workflow.yml", ...additionalAllowed]);
+  const allowed = new Set(additionalAllowed);
   const illegal = changed.filter(file => !allowed.has(file));
-  if (illegal.length) throw new Error("setup changed files outside its two-file team-artifact boundary: " + illegal.join(", "));
+  if (illegal.length) throw new Error("helper changed files inside the project boundary: " + illegal.join(", "));
   return changed;
 }
 
@@ -433,180 +445,71 @@ export function parseJsonOutput(output: string): any {
   throw new Error("Command did not return one JSON envelope:\n" + output.slice(-4_000));
 }
 
-function shellQuote(value: string): string {
-  return "'" + value.replace(/'/g, "'\\''") + "'";
+function assertNoPresentationFields(value: unknown, location = "envelope"): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoPresentationFields(item, location + "[" + index + "]"));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (["display", "summary", "hint", "prompt", "instruction"].includes(key)) {
+      throw new Error("CLI acceptance envelope leaked presentation field " + location + "." + key);
+    }
+    assertNoPresentationFields(child, location + "." + key);
+  }
 }
 
-export async function probeTui(workspace: AcceptanceWorkspace, root: string): Promise<number> {
-  assertAcceptanceActive();
-  if (process.platform === "win32") throw new Error("Release acceptance TUI probe requires a PTY-capable Linux runner");
-  const command = ["hy-workflow", "setup"].map(shellQuote).join(" ");
-  const started = Date.now();
-  return await new Promise((resolveProbe, reject) => {
-    const child = spawn("script", ["-q", "-e", "-c", command, "/dev/null"], {
-      cwd: root,
-      env: workspace.env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    ACTIVE_CHILDREN.add(child);
-    let introOutputMs: number | null = null;
-    let output = "";
-    let settled = false;
-    let cancellationSent = false;
-    let cancellationTimer: NodeJS.Timeout | undefined;
-    const rejectProbe = (error: Error): void => {
-      if (settled) return;
-      settled = true;
-      ACTIVE_CHILDREN.delete(child);
-      clearTimeout(timer);
-      if (cancellationTimer) clearTimeout(cancellationTimer);
-      terminateTree(child, "SIGKILL");
-      reject(error);
-    };
-    const timer = setTimeout(() => {
-      rejectProbe(new Error("setup TUI did not render its recognizable intro within 1500ms: " + output.slice(-2_000)));
-    }, 1_500);
-    child.stdout.on("data", chunk => {
-      output += String(chunk);
-      if (!cancellationSent && /hy-workflow (?:安装与维护|setup and maintenance)/i.test(output)) {
-        introOutputMs = Date.now() - started;
-        cancellationSent = true;
-        clearTimeout(timer);
-        child.stdin.write("\u0003");
-        cancellationTimer = setTimeout(() => {
-          rejectProbe(new Error("setup TUI rendered but did not exit cleanly after Ctrl-C: " + output.slice(-2_000)));
-        }, 1_500);
-      }
-    });
-    child.stderr.on("data", chunk => { output += String(chunk); });
-    child.on("error", error => rejectProbe(error));
-    child.on("close", (status, signal) => {
-      ACTIVE_CHILDREN.delete(child);
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (cancellationTimer) clearTimeout(cancellationTimer);
-      if (introOutputMs === null) {
-        reject(new Error("setup TUI exited without its recognizable intro: " + output.slice(-2_000)));
-      } else if ((status !== 0 && status !== 130) || signal !== null) {
-        reject(new Error(`setup TUI cancellation exited abnormally (status=${status}, signal=${signal}): ${output.slice(-2_000)}`));
-      } else if (/(?:npm ERR!|Unhandled|Error:|SETUP_[A-Z_]+)/i.test(output)) {
-        reject(new Error("setup TUI emitted an error during startup/cancellation: " + output.slice(-2_000)));
-      } else {
-        resolveProbe(introOutputMs);
-      }
-    });
-  });
-}
-
-export async function mcpDocsBaseline(
+export async function cliDocsBaseline(
   workspace: AcceptanceWorkspace,
   root: string,
   task: string,
-): Promise<{ chars: number; response: any }> {
+): Promise<{ chars: number; init: any; response: any }> {
   assertAcceptanceActive();
-  return await new Promise((resolveBaseline, reject) => {
-    const child = spawn("hy-workflow", [], {
-      cwd: root,
-      env: workspace.env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    ACTIVE_CHILDREN.add(child);
-    let stdout = "";
-    let stderr = "";
-    let consumed = 0;
-    let finalized = false;
-    let result: { chars: number; response: any } | null = null;
-    let failure: Error | null = null;
-    let shutdownTimer: NodeJS.Timeout | undefined;
-    let closeDeadline: NodeJS.Timeout | undefined;
-    const send = (message: unknown) => child.stdin.write(JSON.stringify(message) + "\n");
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      if (shutdownTimer) clearTimeout(shutdownTimer);
-      if (closeDeadline) clearTimeout(closeDeadline);
-      ACTIVE_CHILDREN.delete(child);
-    };
-    const finish = (): void => {
-      if (finalized) return;
-      finalized = true;
-      cleanup();
-      if (result && !failure) resolveBaseline(result);
-      else reject(failure ?? ACCEPTANCE_ABORT_REASON ?? new Error("MCP server exited before docs baseline: " + stderr.slice(-2_000)));
-    };
-    const stop = (error?: unknown): void => {
-      if (finalized) return;
-      if (error !== undefined) failure ??= error instanceof Error ? error : new Error(String(error));
-      clearTimeout(timer);
-      terminateTree(child, error === undefined ? "SIGTERM" : "SIGKILL");
-      shutdownTimer ??= setTimeout(() => terminateTree(child, "SIGKILL"), 1_500);
-      closeDeadline ??= setTimeout(() => {
-        failure ??= new Error("MCP docs baseline process tree did not exit after cancellation");
-        finish();
-      }, 5_000);
-    };
-    const timer = setTimeout(() => stop(new Error("MCP docs baseline timed out: " + stderr.slice(-2_000))), 30_000);
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", chunk => { stderr += chunk; });
-    child.stdout.on("data", chunk => {
-      stdout += chunk;
-      const lines = stdout.split(/\r?\n/);
-      for (; consumed < lines.length - 1; consumed += 1) {
-        const line = lines[consumed];
-        if (!line.trim()) continue;
-        try {
-          const message = JSON.parse(line);
-          if (message.id === 1) {
-            send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
-            send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "hy_init", arguments: {} } });
-          }
-          if (message.id === 2) {
-            if (message.error || message.result?.isError) throw new Error("hy_init failed: " + JSON.stringify(message));
-            send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "hy_read_docs", arguments: { stage: "before_plan", task } } });
-          }
-          if (message.id === 3) {
-            if (message.error || message.result?.isError) {
-              throw new Error("hy_read_docs failed: " + JSON.stringify(message));
-            }
-            const textBlocks = Array.isArray(message.result?.content)
-              ? message.result.content.filter((item: any) => item?.type === "text" && typeof item.text === "string").map((item: any) => item.text)
-              : [];
-            if (!textBlocks.length) throw new Error("hy_read_docs returned no text content");
-            let payload: any = null;
-            for (const text of textBlocks) {
-              try {
-                const candidate = JSON.parse(text);
-                if (candidate && typeof candidate === "object") { payload = candidate; break; }
-              } catch {}
-            }
-            if (!payload) throw new Error("hy_read_docs returned no JSON payload");
-            if (payload.error) throw new Error("hy_read_docs returned a structured error: " + JSON.stringify(payload.error));
-            const snapshot = payload.snapshot;
-            const files = Array.isArray(snapshot?.files) ? snapshot.files : [];
-            const facts = files.filter((file: any) => typeof file?.content === "string" && file.content.replace(/\s+/g, " ").trim().length >= 12);
-            const findings = Array.isArray(snapshot?.findings) ? snapshot.findings.filter((finding: any) => typeof finding === "string" && finding.trim()) : [];
-            if (!facts.length || !findings.length) {
-              throw new Error("hy_read_docs returned no substantive document facts: " + JSON.stringify({ files: files.length, facts: facts.length, findings: findings.length }));
-            }
-            const chars = facts.reduce((total: number, file: any) => total + file.content.length, 0);
-            result = { chars, response: payload };
-            stop();
-            return;
-          }
-        } catch (error) {
-          if (error instanceof SyntaxError) continue;
-          stop(error);
-          return;
-        }
-      }
-    });
-    child.once("error", error => stop(error));
-    child.once("close", finish);
-    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "hy-acceptance", version: "1" } } });
+  const initResult = await run("hy-workflow", ["init"], {
+    cwd: root,
+    env: workspace.env,
+    timeoutMs: 30_000,
   });
+  const init = parseJsonOutput(initResult.stdout);
+  if (init.schema !== "hy-workflow.cli.v1" || init.command !== "init" || init.ok !== true) {
+    throw new Error("init did not return a successful CLI envelope: " + initResult.stdout);
+  }
+  assertNoPresentationFields(init);
+
+  const docsResult = await run("hy-workflow", [
+    "read-docs",
+    "--input",
+    JSON.stringify({ stage: "before_plan", task }),
+  ], {
+    cwd: root,
+    env: workspace.env,
+    timeoutMs: 30_000,
+  });
+  const response = parseJsonOutput(docsResult.stdout);
+  if (response.schema !== "hy-workflow.cli.v1" || response.command !== "read-docs" || response.ok !== true) {
+    throw new Error("read-docs did not return a successful CLI envelope: " + docsResult.stdout);
+  }
+  assertNoPresentationFields(response);
+
+  const snapshot = response.snapshot ?? {};
+  if ("purpose" in snapshot || "findings" in snapshot) {
+    throw new Error("read-docs snapshot leaked Skill-owned presentation fields");
+  }
+  const files = Array.isArray(snapshot.files) ? snapshot.files : [];
+  const facts = files.filter((file: any) =>
+    typeof file?.content === "string" && file.content.replace(/\s+/g, " ").trim().length >= 12
+  );
+  const structured = typeof snapshot.docsGraphDigest === "string"
+    && Array.isArray(snapshot.traversalRoots)
+    && snapshot.traversalRoots.length > 0
+    && snapshot.budget?.selectedFiles === files.length;
+  if (!facts.length || !structured) {
+    throw new Error("read-docs returned no substantive document facts: "
+      + JSON.stringify({ files: files.length, facts: facts.length, structured }));
+  }
+  const chars = facts.reduce((total: number, file: any) => total + file.content.length, 0);
+  if (chars > 48_000) throw new Error("read-docs exceeded the 48k documentation budget: " + chars);
+  return { chars, init, response };
 }
 
 function scanWorkspace(root: string): number {

@@ -41,12 +41,15 @@ export async function handleBranch(args: { category: string; topic: string }): P
     return toolResult(attemptState.phase, {
       phase: attemptState.phase,
       stage: attemptState.stage,
-      error: result.error,
-      display: {
-        title: "Branch creation failed",
-        body: result.error?.message ?? "Could not create the requested branch.",
-      },
-      hint: result.error?.hint ?? "Fix the git branch setup issue, then retry hy_branch.",
+      error: result.error ? {
+        type: result.error.type,
+        subtype: result.error.subtype,
+        code: result.error.code,
+        message: result.error.message,
+        detail: result.error.detail,
+        cause: result.error.cause,
+        retryable: result.error.retryable,
+      } : undefined,
       requires_user: true,
       stop_here: true,
       allowedTools: ["hy_branch", "hy_status"],
@@ -55,8 +58,8 @@ export async function handleBranch(args: { category: string; topic: string }): P
         strategy: "repair_and_retry",
         tool: "hy_branch",
         arguments: { category: args.category, topic: args.topic },
-        instruction: result.error?.hint ?? "Fix the git branch setup issue, then retry hy_branch.",
       },
+      userAction: { kind: "fix_configuration" },
     });
   }
 
@@ -70,8 +73,6 @@ export async function handleBranch(args: { category: string; topic: string }): P
     branch: result.branch,
     stage: "edit.scope",
     status: "passed",
-    message: `Branch ${result.branch} created. Call hy_edit to lock scope.`,
-    hint: "Call hy_edit next to lock scope before editing files.",
     allowedTools: ["hy_edit", "hy_status"],
     blockedTools: ["hy_verify", "hy_commit", "hy_merge"],
     nextAction: { tool: "hy_edit", phase: "edit", stage: "edit.scope", automatic: true },

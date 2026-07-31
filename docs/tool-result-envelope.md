@@ -1,154 +1,97 @@
-# Tool Result Envelope
+# Kernel Result and Public CLI Projection
 
-hy-workflow tool handlers keep their existing top-level fields, such as `message`, `summary`, `checks`, `prNumber`, and `url`. They also return an agent-facing envelope. The envelope tells an agent what to show the user, when to stop, what to call next, and how to recover.
+The workflow kernel predates the public CLI adapter and still uses a rich internal result envelope. That internal contract supports the unchanged state machine and compatibility tests. It is not the Agent-facing transport. `src/cli/workflow.ts` projects each handler result into the compact `hy-workflow.cli.v1` contract documented in [Output](./output.md).
 
-The canonical field lists live in `src/output/contract.ts`. Runtime helpers and TypeScript types live in `src/output/envelope.ts`. Agents should not scrape prose from `message` when a structured field exists.
+## Why both shapes exist
 
-## Fields
+The migration changes transport and presentation without rewriting the high-risk workflow kernel at the same time. Existing handlers can continue to calculate state, approval, checks and recovery using their typed result shape. The adapter then:
 
-```ts
-type HyRecoveryCompatibilityFields = {
-  tool?: string;
-  arguments?: Record<string, unknown>;
-  command?: string;
-  instruction?: string;
-  byLayer?: Record<string, string>;
-};
+- retains evidence and domain facts;
+- maps internal compatibility actions to public CLI command names;
+- emits an exact argv array;
+- removes model-facing prose and shell instruction strings;
+- serializes exactly one versioned JSON document.
 
-type HyToolRecovery =
-  | (HyRecoveryCompatibilityFields & { strategy: "retry"; tool: string })
-  | (HyRecoveryCompatibilityFields & { strategy: "repair_and_retry"; tool: string; instruction: string })
-  | (HyRecoveryCompatibilityFields & { strategy: "wait_and_retry"; tool: string; instruction: string })
-  | (HyRecoveryCompatibilityFields & { strategy: "replan"; tool: string; instruction: string })
-  | (HyRecoveryCompatibilityFields & { strategy: "reset"; tool: "hy_reset"; instruction: string })
-  | (HyRecoveryCompatibilityFields & { strategy: "external_action"; instruction: string });
+Skills consume only the projected CLI envelope. They must not import handlers or reconstruct the internal envelope from private state.
 
-type HyToolResult = {
-  ok: boolean;
-  phase: string;
-  stage: string;
-  status: string;
-  nextAction: {
-    tool?: string;
-    arguments?: Record<string, unknown>;
-    phase: string;
-    stage: string;
-    automatic: boolean;
-  };
-  control: { automatic: boolean; stop: boolean; reason?: string };
-  userAction: {
-    kind: string;
-    decisionId?: string;
-    prompt?: string;
-    instruction?: string;
-    options?: string[];
-  } | null;
-  next: string; // legacy
-  data?: unknown;
-  error?: HyToolError;
-  display?: {
-    title?: string;
-    body?: string;
-    files?: string[];
-    urls?: string[];
-  };
-  summary?: string;
-  hint?: string;
-  requires_user?: boolean;
-  stop_here?: boolean;
-  allowedTools?: string[];
-  blockedTools?: string[];
-  recovery?: HyToolRecovery;
-  checks?: unknown[];
-  findings?: unknown[];
-  pagination?: {
-    has_more?: boolean;
-    page_token?: string;
-    next_page_token?: string;
-  };
-  meta?: {
-    command?: string;
-    cwd?: string;
-    identity?: string;
-    format?: string;
-    version?: string;
-    request_id?: string;
-    trace_id?: string;
-    duration_ms?: number;
-  };
-  _notice?: {
-    update?: {
-      message?: string;
-      command?: string;
-      current_version?: string;
-      latest_version?: string;
-    };
-  };
-};
+## Internal kernel fields
 
-type HyToolError = {
-  type: string;
-  subtype: string;
-  code?: string;
-  message: string;
-  hint?: string;
-  detail?: unknown;
-  cause?: string;
-  retryable?: boolean;
-  risk?: unknown;
-  permission_violations?: unknown[];
-  missing_scopes?: string[];
-  console_url?: string;
-  request_id?: string;
-  trace_id?: string;
-};
-```
+The compatibility catalogs in `src/output/contract.ts` describe internal fields such as:
 
-`phase` is persisted coarse state and `stage` is the current intra-phase step. `nextAction` names the next tool and arguments, target phase/stage, and whether it is automatic. `control` says whether automation may continue, whether it must stop, and why. `userAction` carries `kind`, `decisionId`, prompt/instruction, and options. Only `userAction.kind: "approval"` means ask the human to approve. Recovery, `requires_user`, `stop_here`, CI wait, `review_failure`, configuration, authentication, permissions, and external action are not approval and must retain their own kind.
+- control: `ok`, `phase`, `next`, `stage`, `status`, `nextAction`, `control`, `userAction`;
+- facts: `data`, `checks`, `findings` and command-specific values;
+- presentation compatibility: `display`, `summary`, `hint`;
+- stop compatibility: `requires_user`, `stop_here`, `allowedTools`, `blockedTools`;
+- recovery compatibility: `strategy`, `tool`, `arguments`, `command`, `instruction`, `byLayer`;
+- pagination: `has_more`, `page_token`, `next_page_token`;
+- metadata: `command`, `cwd`, `identity`, `format`, `version`, `request_id`, `trace_id`, `duration_ms`;
+- notices and structured errors.
 
-## CLI Agent Contract
+These names are implementation compatibility, not a promise that public CLI output exposes every field.
 
-Agents should handle tool results in this order:
+## Projection rules
 
-1. If `display` exists, show `display.title`, `display.body`, and any `display.files` or `display.urls` to the user. If `summary` exists for an approval gate, show it exactly.
-2. If `ok` is false, show `error.message`, include `error.code`, `error.hint`, `error.console_url`, `error.request_id`, and `error.trace_id` when present, then use `error.type` and `error.subtype` for recovery routing.
-3. Obey `control`. Ask for approval only when `userAction.kind` is `approval`; otherwise present the typed recovery, wait, review, configuration, authentication, permission, or external action without relabeling it.
-4. If `recovery` exists, route by its required `strategy`: `retry` invokes the named tool directly, `repair_and_retry` repairs before invoking it, `wait_and_retry` waits before invoking it, `replan` revises the plan or amendment, `reset` abandons the current workflow through `hy_reset`, and `external_action` requires work outside the MCP pipeline. When `recovery.tool` names an MCP or CLI tool, pass its complete `recovery.arguments`; never reconstruct required input from prose. `recovery.command` remains the shell command to run when provided; `recovery.byLayer` maps verify layers to targeted fixes. Do not infer a strategy from `instruction` prose.
-5. If continuing automatically, choose only from `allowedTools`. Never call a `blockedTools` entry.
-6. Use `phase` as coarse state, `stage` as the current step, and `nextAction` as the primary routing contract. `next` remains only for legacy clients.
-7. Use `pagination.has_more`, `pagination.page_token`, and `pagination.next_page_token` for paged output. Preserve `meta.command`, `meta.cwd`, `meta.identity`, `meta.format`, `meta.version`, `meta.request_id`, `meta.trace_id`, and `meta.duration_ms` in logs. Surface `_notice.update.message` and `_notice.update.command` when setup or CLI update guidance is returned.
-8. Treat legacy fields such as `message`, `prNumber`, and `url` as additional data, not as the primary control plane.
+| Kernel value | `hy-workflow.cli.v1` value |
+|---|---|
+| `phase`, `stage`, `status`, `ok` | top-level position fields |
+| domain-specific non-control fields | top-level fact fields |
+| `next` | `route.nextPhase` |
+| `nextAction.tool` | mapped `route.action.command`, or external `target` |
+| complete `nextAction.arguments` | signed `route.action.input` plus deterministic `route.action.argv` |
+| known handoff with missing input | `route.action.command`, signed partial `input`, null `argv`, and typed `inputRequired` |
+| bounded command selection | null action plus explicit `route.choices`; never inferred from `allowed` |
+| `allowedTools`, `blockedTools` | mapped `route.allowed`, `route.blocked` |
+| `control` | `route.control` |
+| `userAction` | `route.userAction` without `prompt` or `instruction` |
+| `recovery` | `route.recovery` without shell command or instruction prose, with mapped command/argv when safe |
+| structured error | top-level `error` without `hint` |
+| `display`, `summary`, top-level `hint` | omitted; the current Skill owns human presentation |
 
-Legacy `requires_user` and `stop_here` remain additive compatibility fields. They never imply approval without `userAction.kind: "approval"`.
+The adapter canonicalizes JSON input when constructing route argv. An Agent executes the returned array directly and does not concatenate it into a shell command.
 
-Terminal CLI commands follow the same control vocabulary when `--json` is passed. For example, `hy-workflow config --check --json` returns one JSON envelope with `ok`, `display`, `hint`, `issues`, `suggestedCommand`, and structured `recovery`. Setup and unset emit `phase: setup`, `action: setup|unset`, canonical `stage: setup.apply|setup.unset`, `status`, `nextAction`, `control`, `userAction`, and a strategy-discriminated recovery on failure. Retryable failures use wait-and-retry; repairable failures use repair-and-retry. Neither is an approval. Unattended calls must supply their noninteractive choices explicitly, and agents never need to scrape prose.
+## Skill consumption order
 
-## Examples
+1. Confirm `schema` and `version`.
+2. Read `phase`, `stage`, `status` and `ok`.
+3. Use structured fact/error fields to explain what happened.
+4. Obey `route.control.stop` and `route.userAction`.
+5. Ask for approval only when the structured user action is an approval for the current decision identity.
+6. When `route.action.argv` is non-null, execute that array unchanged after the structured stop condition is satisfied.
+7. When argv is null and `route.action.command` is non-null, hand off only to that command's Skill. It may fill exactly the declared `inputRequired` paths from their named sources, preserve signed partial input, and add no other fields.
+8. When both argv and command are null, process only explicit `route.choices`, an external target, recovery, or a terminal result. The Skill must not choose from `allowed` or infer a command from phase/stage.
+9. Use `route.recovery.strategy` and its exact argv after the named repair, wait, or external condition.
+10. Call `status` once when a route is absent or stale; a second ambiguous null route is a CLI contract failure, not a reason to form a status loop.
 
-`hy_plan` success returns the legacy `summary` and the same text in `display.body`. It also returns `userAction.kind: "approval"` with a `decisionId` bound to the exact PlanDoc hash. Submit that one human decision immediately through `hy_approve`; do not call `hy_read_docs(before_approve)` first. If the audit is missing, the first `hy_approve` persists the exact decision and returns an automatic `hy_read_docs(before_approve)` action. No drift returns an automatic replay. Drift returns `control.reason: "review_required"` with no user action; the agent calls `hy_approve` with `auditDecision=continue` if the PlanDoc remains materially valid or `auditDecision=replan` to refresh facts and produce a new PlanDoc. The same PlanDoc is never presented for a second approval. One approval covers unchanged intent through edits, retries, verify, `commit.ci`, merge, `merge.sync`, and reset. Pure scope removal or `changes`/`new_files` normalization preserves it. A new PlanDoc, real scope or risk expansion, or any new delete target requires a new decision. Unknown approval or audit-decision text changes no state.
+Natural-language messages are never parsed to infer phase, permission or approval.
 
-`hy_edit` returns `control.stop: true` with `external_action_required` after locking scope, because standard file tools must perform the code edits. `hy_read_docs(after_edit)` likewise stops so declared documentation edits can be completed. Only after those edits does `hy_sync_docs` record the current evidence and return an automatic `hy_verify` action.
+## Approval projection
 
-`hy_verify` failure returns `checks` and `failedChecks` as before. It also returns `findings` and `recovery.byLayer` guidance for lint, compile, scope, boundary, platform, smoke, and tests failures.
+The plan command stores a complete PlanDoc and returns facts that the `hy-plan` Skill turns into the approval presentation. The first explicit decision is submitted through `approve` with the exact `decisionId` fixed by the route. If the current documentation audit is missing, the kernel persists that bound decision and routes `read-docs(before_approve)`. No material drift reuses the same identity; material drift routes an Agent `continue`/`replan` judgment. A stale identity is rejected without mutation. The CLI does not emit or replay a hidden approval prompt.
 
-`hy_commit` performs and retries `commit.ci`. CI pending is a wait/retry result, not approval. Effective green checks advance to merge.
+One approval remains bound while intent, scope, risks and evidence bindings remain materially unchanged. A new PlanDoc, real scope/risk expansion or new delete target requires a new decision.
 
-`hy_commit` and `hy_merge` add `data.executor` without removing legacy fields. `hy_commit` reports per-step executors for commit, push, PR creation, and CI polling; failures include the capability that was actually checked. `hy_status.capabilities` exposes the startup git/gh snapshot for diagnosis.
+## Verification projection
 
-`hy_commit` performs bounded polling for pending CI checks after PR creation and revalidates the persisted repository/base/head/headRefOid identity in every poll. Only at least one effective check with every effective check successful returns `next: "merge"` without `requires_user` or `stop_here`. If GitHub reports no checks, the result remains `next: "commit"` with `noChecks: true`; if every reported check is skipped or neutral, it remains `next: "commit"` with `noEffectiveChecks: true`. Both cases return `error.code: "CI_CHECKS_REQUIRED"`, `requires_user: true`, `stop_here: true`, `blockedTools: ["hy_merge"]`, and structured `recovery`. Identity drift, CI failures, polling timeouts with checks still pending, and GitHub/API status problems also stop automatic progress; missing CI evidence is never treated as success.
+Verify failure preserves structured `checks`, failed-check facts and layer recovery while routing to edit. Verify success exposes the current implementation manifest/digest and routes to commit. Long suites use `exam-plan` and `exam-submit`; the public action remains an argv array rather than an instruction string.
 
-`hy_merge` success returns `phase: "done"` / `next: "done"` and exposes `data.outcome: "merged_now" | "already_merged" | "already_integrated"` plus `data.evidence` and `data.executor`. `merged_now` means this invocation issued the sole mutation and later confirmed it; `already_merged` means this invocation issued no mutation because GitHub lifecycle and Git ancestry already confirmed MERGED, including pending-receipt recovery; `already_integrated` means fresh Git ancestry confirmed integration while GitHub lifecycle was unavailable. `data.executor` reports the executor capability that supplied the final recovery/synchronization evidence, so Git-only evidence is never presented as GitHub confirmation.
+A successful new synchronous or exam verification supersedes stale commit recovery. Failure does not.
 
-Recovery detail preserves immutable repository/PR/base/head/verified-OID identity separately from mutable lifecycle and receipt stage, plus prepared/confirmed/`syncBaseOid`, ancestry evidence, completed sync work, and remaining sync work. The attempted receipt is persisted before the sole merge mutation and advanced to confirmed after remote confirmation. Stacked branch synchronization uses `detached staging`, persists `rebasing` intent and `resultOid`, installs the local ref by `compare-and-swap`, and pushes by exact `force-with-lease`. A retry can therefore reconcile or resume remaining sync without invoking the mutation twice or overwriting a moved ref.
+## Commit and merge projection
 
-If neither GitHub postcondition nor fresh-fetch ancestry confirms integration, the result remains `phase: "merge"`, `next: "merge"` with `error.code: "PR_MERGE_OUTCOME_UNCONFIRMED"`, `requires_user: true`, `stop_here: true`, and retry guidance limited to `hy_merge`/`hy_status`. If integration is confirmed but base/downstream synchronization is incomplete, the same stop shape uses `POST_MERGE_SYNC_INCOMPLETE`; its recovery identifies completed and remaining sync steps, and retry must not call `executePrMerge` again. `MERGE_LOCK_BUSY` and base evidence/ancestry drift are retryable after the external condition is repaired. Immutable identity, local-ref compare-and-swap, or downstream remote-lease drift is nonretryable and directs the user to inspect and explicitly `hy_reset` or repair state rather than loop automatically.
+Commit owns `commit.prepare`, `commit.publish` and `commit.ci`. Pending CI is a wait/retry state, not approval. Missing/no-effective checks produce `CI_CHECKS_REQUIRED` when CI evidence is active. The projected route never suggests merge until the kernel has valid green evidence.
 
-Legacy merge state without a receipt may recover after fresh Git ancestry proves the verified OID is integrated. It reconstructs only agent-prefix stacks whose verified ancestry and equal local/remote OIDs agree; unrelated branches are ignored, while a diverged true stack returns `POST_MERGE_SYNC_INCOMPLETE`. The result never claims a prior GitHub mutation that was not recorded.
+Merge success exposes `data.outcome` as `merged_now`, `already_merged` or `already_integrated`, along with evidence/executor and synchronization facts. Recovery keeps immutable repository/PR/base/head/verified-OID identity separate from mutable lifecycle and receipt stage.
 
-## Compatibility
+An attempted receipt precedes the sole merge mutation. Reconciliation may use fresh-fetch ancestry as a read-only Git fallback. Confirmed downstream sync uses detached staging, compare-and-swap and exact force-with-lease. `PR_MERGE_OUTCOME_UNCONFIRMED`, `POST_MERGE_SYNC_INCOMPLETE` and `MERGE_LOCK_BUSY` remain structured stops; Skills cannot replace them with direct mutations.
 
-The envelope is additive. Existing clients that read `next`, `message`, `summary`, `checks`, `prNumber`, `url`, or the compatibility recovery fields `tool`, `arguments`, `command`, `instruction`, and `byLayer` can keep doing so. New agents use typed `phase`, `stage`, `status`, `nextAction`, `control`, `userAction`, and `recovery.strategy`; display/recovery/pagination/meta/notice/error and other legacy details remain available.
+## Structured errors
 
-## Structured Errors
+The kernel error contract contains `type`, `subtype`, `code`, `message`, `hint`, `detail`, `cause`, `retryable`, `risk`, `permission_violations`, `missing_scopes`, `console_url`, `request_id`, and `trace_id`. The CLI omits `hint` because recovery prose belongs to Skills, while preserving the remaining structured context when present.
 
-Failures include `error.type`, `error.subtype`, and `error.message`, plus stable context fields such as `error.code`, `error.hint`, `error.detail`, `error.cause`, `error.retryable`, `error.risk`, `error.permission_violations`, `error.missing_scopes`, `error.console_url`, `error.request_id`, and `error.trace_id`. Implementations may pass a string to helper code, but `src/output/envelope.ts` normalizes it before returning JSON to MCP clients.
+Parse/dispatch failures also use the public versioned envelope. They route to status rather than emitting a bare object/string error.
+
+## Compatibility boundary
+
+Legacy handler fields and internal action names may remain until the kernel is deliberately refactored. They are allowed only behind the CLI adapter and in focused compatibility code. Public docs, Skills, package entrypoints and acceptance scenarios use CLI command names and `hy-workflow.cli.v1`.
+
+This boundary allows prompt text to move out of TypeScript transport code without changing verification, commit or merge semantics during the same release.

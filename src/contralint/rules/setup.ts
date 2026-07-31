@@ -1,28 +1,14 @@
 import { exists, readText } from "../files.js";
 import type { ContractFinding, ContractRuleContext } from "../types.js";
 
-const PROJECT_ARTIFACTS = ["hy-workflow.json", ".github/workflows/hy-workflow.yml"] as const;
-const AUTHORITY_DOC_TOKENS = [
-  "complete external",
-  "exact external",
-  "HY_WORKFLOW_RUNTIME_CONFIG_SOURCE",
-  "read-only project detection",
-  "frozen legacy-compatible defaults",
+const AUTHORITY_TOKENS = [
+  "projectPaths(root).config",
+  "isProjectRuntimeConfigSource",
+  "RUNTIME_CONFIG_SOURCE_ENV",
+  "RUNTIME_CONFIG_SOURCE_SCHEMA",
+  "legacyDetectedConfig",
+  "LEGACY_COMPATIBLE_POLICY_PROFILE",
 ] as const;
-const INERT_LEGACY_DOC_TOKENS = [
-  "do not read",
-  "hash",
-  "validate",
-  "rewrite",
-  "move",
-  "delete",
-  "upgrade gate",
-  "byte-for-byte untouched",
-] as const;
-
-function count(text: string, token: string): number {
-  return text.split(token).length - 1;
-}
 
 export function checkSetupContracts(context: ContractRuleContext): ContractFinding[] {
   const findings: ContractFinding[] = [];
@@ -32,100 +18,105 @@ export function checkSetupContracts(context: ContractRuleContext): ContractFindi
     }
   }
 
-  const cli = readText(context.root, "src/setup-cli.ts");
-  const prompts = readText(context.root, "src/setup/prompts.ts");
-  const operations = readText(context.root, "src/setup/operations.ts");
-  const shared = readText(context.root, "src/setup/shared.ts");
-  const template = readText(context.root, "templates/hy-workflow.yml");
-  const config = readText(context.root, "src/config.ts");
-  const setupDocs = readText(context.root, "docs/setup.md");
-  const architectureDocs = readText(context.root, "docs/architecture.md");
-
-  for (const token of ["setup", "unset", "--clients", "--yes", "--json", "--dry-run"]) {
-    if (!cli.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `setup CLI is missing ${token}.`, file: "src/setup-cli.ts" });
-  }
-  if (!prompts.includes("@clack/prompts") || !prompts.includes("multiselect")) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "setup TUI must use @clack/prompts with client multiselect.", file: "src/setup/prompts.ts" });
-  }
-  if (!cli.includes('mode: "shared"') || !cli.includes("--local has been removed")) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "setup CLI must use the single current deployment model and reject removed local mode.", file: "src/setup-cli.ts" });
-  }
-  if (prompts.includes("Choose deployment mode") || prompts.includes("选择部署模式")) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "setup TUI must not offer a deployment-mode choice.", file: "src/setup/prompts.ts" });
-  }
-  if (!operations.includes("writeSharedArtifacts(") || operations.includes('options.mode === "shared"')) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "Fresh setup must maintain the two current project artifacts without a deployment-mode branch.", file: "src/setup/operations.ts" });
-  }
-  for (const token of PROJECT_ARTIFACTS) {
-    if (!shared.includes(`"${token}"`)) {
-      findings.push({ rule: "setup", severity: "hard_fail", message: `Shared artifact plan must include ${token}.`, file: "src/setup/shared.ts" });
+  const mainPath = "src/main.ts";
+  const helperCliPath = "src/helper/cli.ts";
+  const helperCliContractPath = "src/helper/cli-contract.ts";
+  const helperCliPresentationPath = "src/helper/cli-presentation.ts";
+  const helperCliPaths = [helperCliPath, helperCliContractPath, helperCliPresentationPath] as const;
+  const helperProjectPath = "src/helper/project.ts";
+  for (const file of [mainPath, ...helperCliPaths, helperProjectPath]) {
+    if (!exists(context.root, file)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `Public helper module is missing: ${file}.`, file });
     }
   }
-  if (!shared.includes("SHARED_PROJECT_FILES = [CONFIG_FILE, WORKFLOW_FILE]")) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "Fresh setup must expose exactly the config and thin workflow as project artifacts.", file: "src/setup/shared.ts" });
-  }
-  for (const forbidden of ["AGENTS_FILE", "planAgentsFile", "agents-rules", "AGENTS.md"]) {
-    if (shared.includes(forbidden) || operations.includes(forbidden)) {
-      findings.push({ rule: "setup", severity: "hard_fail", message: `Setup must not create or manage AGENTS.md; found ${forbidden}.`, file: shared.includes(forbidden) ? "src/setup/shared.ts" : "src/setup/operations.ts" });
-    }
-  }
-  for (const client of ["codex", "claude", "opencode"]) {
-    if (!operations.includes(client)) findings.push({ rule: "setup", severity: "hard_fail", message: `setup operations must support ${client}.`, file: "src/setup/operations.ts" });
+  if (findings.some(finding => finding.severity === "hard_fail" && finding.file && [mainPath, ...helperCliPaths, helperProjectPath].includes(finding.file))) {
+    return findings;
   }
 
-  for (const trigger of ["  pull_request:\n", "  workflow_dispatch:\n"]) {
-    if (!template.includes(trigger)) findings.push({ rule: "setup", severity: "hard_fail", message: `Thin workflow must include ${trigger.trim()}.`, file: "templates/hy-workflow.yml" });
+  const main = readText(context.root, mainPath);
+  const helperCli = helperCliPaths.map(file => readText(context.root, file)).join("\n");
+  const helperProject = readText(context.root, helperProjectPath);
+  for (const token of ["runHelperCli", 'argv[0] === "helper"', 'argv[0] === "setup"', '"install"']) {
+    if (!main.includes(token)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `Public CLI setup/helper routing is missing ${token}.`, file: mainPath });
+    }
+  }
+  for (const forbidden of ["runSetupCli", "./setup-cli.js", "StdioServerTransport", "@modelcontextprotocol/sdk"]) {
+    if (main.includes(forbidden)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `Public CLI must use helper install rather than the legacy setup/MCP path: ${forbidden}.`, file: mainPath });
+    }
+  }
+
+  for (const token of [
+    'HELPER_CLI_SCHEMA = "hy-workflow.helper.v1"',
+    'HELPER_CLI_COMMANDS = ["install", "update", "status", "remove"]',
+    "installHelperSkills",
+    "registerHelperProject",
+    "retireOwnedWorkflowMcp",
+    "projectFilesChanged: []",
+  ]) {
+    if (!helperCli.includes(token)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `Helper CLI contract is missing ${token}.`, file: helperCliPath });
+    }
   }
   for (const token of [
-    "permissions:\n  contents: read",
-    "HY_WORKFLOW_RUNTIME_CONFIG_SOURCE: hy-workflow.runtime-config-source.v1",
-    "persist-credentials: false",
-    "__HY_WORKFLOW_PACKAGE_SPEC__",
-    "hy-workflow lint --json",
+    "assertHelperResourcesExternal",
+    "assertSafeRuntimeBoundary",
+    "projectPaths(root)",
+    "projectFiles: []",
+    "projectFilesChanged: []",
+    "atomicWriteJson(paths.config",
   ]) {
-    if (!template.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `Thin workflow is missing ${token}.`, file: "templates/hy-workflow.yml" });
+    if (!helperProject.includes(token)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `External-only helper registration is missing ${token}.`, file: helperProjectPath });
+    }
   }
-  if (!/actions\/checkout@[0-9a-f]{40}/.test(template)) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "Thin workflow checkout must use an immutable 40-hex commit.", file: "templates/hy-workflow.yml" });
-  }
-  if (count(template, "__HY_WORKFLOW_PACKAGE_SPEC__") !== 1 || count(template, "hy-workflow lint --json") !== 1) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "Thin workflow must contain exactly one package placeholder and one centralized lint invocation.", file: "templates/hy-workflow.yml" });
-  }
+  const publicHelper = main + "\n" + helperCli + "\n" + helperProject;
   for (const forbidden of [
-    "  push:\n", "paths:", "ci.commands", "__HY_WORKFLOW_LINT_BUNDLE_BASE64__",
-    "HY_WORKFLOW_INTERNAL_LINT_BUNDLE", "RUNNER_TEMP", "windows-latest",
-    "npm run build", "npm test", "python -m pytest", "go test ./...", "cargo test",
-    "codelint.json", "doclint.json", "docs-gardener.json", "actions/upload-artifact",
-    "contents: write", "actions: write", "checks: write", "pull-requests: write",
-    "id-token: write", "|| true",
+    ".github/workflows/hy-workflow.yml",
+    "writeSharedArtifacts",
+    "renderWorkflowTemplate",
+    "SHARED_PROJECT_FILES",
+    "AGENTS.md",
   ]) {
-    if (template.includes(forbidden)) findings.push({ rule: "setup", severity: "hard_fail", message: `Thin workflow contains removed inference, payload, permission, or legacy token: ${forbidden}.`, file: "templates/hy-workflow.yml" });
+    if (publicHelper.includes(forbidden)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: `Public setup/helper must not inject project files; found ${forbidden}.`, file: helperProject.includes(forbidden) ? helperProjectPath : helperCli.includes(forbidden) ? helperCliPath : mainPath });
+    }
   }
 
-  for (const token of [
-    "projectPaths(root).config", "isProjectRuntimeConfigSource", "RUNTIME_CONFIG_SOURCE_ENV",
-    "RUNTIME_CONFIG_SOURCE_SCHEMA", "legacyDetectedConfig", "LEGACY_COMPATIBLE_POLICY_PROFILE",
-  ]) {
-    if (!config.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `Runtime configuration authority contract is missing ${token}.`, file: "src/config.ts" });
+  const configPath = "src/config.ts";
+  const config = readText(context.root, configPath);
+  for (const token of AUTHORITY_TOKENS) {
+    if (!config.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `Runtime configuration authority contract is missing ${token}.`, file: configPath });
   }
   if (!config.includes("if (externalRead.value && isProjectRuntimeConfigSource(externalRead.value))")
       || !config.includes("if (process.env[RUNTIME_CONFIG_SOURCE_ENV] === RUNTIME_CONFIG_SOURCE_SCHEMA)")) {
-    findings.push({ rule: "setup", severity: "hard_fail", message: "Root config may be selected only by the exact external authority marker or exact CI signal.", file: "src/config.ts" });
+    findings.push({ rule: "setup", severity: "hard_fail", message: "Root config may be selected only by the exact external authority marker or exact CI signal.", file: configPath });
   }
 
-  for (const token of AUTHORITY_DOC_TOKENS) {
-    if (!architectureDocs.includes(token) && !setupDocs.includes(token)) {
-      findings.push({ rule: "setup", severity: "hard_fail", message: `Configuration authority documentation is missing ${token}.`, file: "docs/architecture.md" });
+  // The legacy opt-in workflow template remains a packaged compatibility
+  // artifact, but the public helper never installs it. Keep its security
+  // properties machine checked while it exists.
+  const templatePath = "templates/hy-workflow.yml";
+  if (exists(context.root, templatePath)) {
+    const template = readText(context.root, templatePath);
+    for (const token of [
+      "permissions:\n  contents: read",
+      "persist-credentials: false",
+      "__HY_WORKFLOW_PACKAGE_SPEC__",
+      "hy-workflow lint --json",
+    ]) {
+      if (!template.includes(token)) findings.push({ rule: "setup", severity: "hard_fail", message: `Optional workflow template is missing ${token}.`, file: templatePath });
     }
-  }
-  for (const token of INERT_LEGACY_DOC_TOKENS) {
-    if (!setupDocs.includes(token)) {
-      findings.push({ rule: "setup", severity: "hard_fail", message: `Seamless-upgrade documentation must say legacy injections are inert; missing ${token}.`, file: "docs/setup.md" });
+    if (!/actions\/checkout@[0-9a-f]{40}/.test(template)) {
+      findings.push({ rule: "setup", severity: "hard_fail", message: "Optional workflow checkout must use an immutable 40-hex commit.", file: templatePath });
     }
-  }
-  for (const token of ["writes only `hy-workflow.json` and `.github/workflows/hy-workflow.yml`", "does not inject `AGENTS.md`"]) {
-    if (!architectureDocs.includes(token)) {
-      findings.push({ rule: "setup", severity: "hard_fail", message: `Architecture must document the two-artifact boundary: ${token}.`, file: "docs/architecture.md" });
+    for (const forbidden of [
+      "  push:\n", "contents: write", "actions: write", "checks: write",
+      "pull-requests: write", "id-token: write", "|| true",
+      "codelint.json", "doclint.json", "docs-gardener.json",
+    ]) {
+      if (template.includes(forbidden)) findings.push({ rule: "setup", severity: "hard_fail", message: `Optional workflow template contains unsafe or legacy token ${forbidden}.`, file: templatePath });
     }
   }
   return findings;

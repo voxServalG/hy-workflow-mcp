@@ -34,7 +34,8 @@ import {
   type MergeIdentity,
   type MergeReceipt,
 } from "../merge-recovery.js";
-import { invalidWorkflowStateResult, toolResult, type ToolResult } from "./_base.js";
+import { invalidWorkflowStateResult, toolResult as buildToolResult, type ToolResult } from "./_base.js";
+import type { ToolResultFields } from "../output/envelope.js";
 
 type Executor = unknown;
 type MergeStage = "merge.reconcile" | "merge.sync";
@@ -43,6 +44,23 @@ type DownstreamSnapshot =
   | { ok: true; progress: DownstreamBranchProgress[]; skipped: string[]; executor?: Executor }
   | { ok: false; error: unknown; branch: string; skipped: string[]; executor?: Executor };
 
+
+function machineErrorFacts(error: unknown): unknown {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return error;
+  const input = error as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(input, "hint")) return error;
+  const output = { ...input };
+  delete output.hint;
+  if (typeof input.message === "string") output.message = input.message;
+  return output;
+}
+
+function mergeResult(next: Parameters<typeof buildToolResult>[0], fields: ToolResultFields): ToolResult {
+  return buildToolResult(next, {
+    ...fields,
+    ...(fields.error === undefined ? {} : { error: machineErrorFacts(fields.error) }),
+  });
+}
 function sameIdentity(left: MergeIdentity, right: MergeIdentity): boolean {
   return left.repository === right.repository
     && left.prNumber === right.prNumber
@@ -72,7 +90,6 @@ function causeText(cause: unknown): string | undefined {
 function mergeError(
   code: string,
   message: string,
-  hint: string,
   identity: MergeIdentity,
   retryable: boolean,
   detail: Record<string, unknown> = {},
@@ -83,7 +100,6 @@ function mergeError(
     subtype: code === "MERGE_LOCK_BUSY" ? "lock_busy" : retryable ? "io_failure" : "invalid_phase",
     code,
     message,
-    hint,
     detail: { ...immutableDetail(identity), ...detail },
     ...(causeText(cause) ? { cause: causeText(cause) } : {}),
     retryable,
@@ -107,7 +123,6 @@ function stopFailure(
   identity: MergeIdentity,
   code: string,
   message: string,
-  hint: string,
   retryable: boolean,
   detail: Record<string, unknown> = {},
   data: Record<string, unknown> = {},
@@ -116,23 +131,22 @@ function stopFailure(
 ): ToolResult {
   const tool = retryable ? "hy_merge" : "hy_reset";
   const stage = stageOverride ?? receiptStageForError(code);
-  return toolResult("merge", {
-    error: mergeError(code, message, hint, identity, retryable, detail, cause),
+  return mergeResult("merge", {
+    error: mergeError(code, message, identity, retryable, detail, cause),
     data,
-    display: { title: message, body: hint },
     requires_user: true,
     stop_here: true,
     stage,
     status: retryable ? "pending" : "blocked",
     recovery: retryable
-      ? { strategy: "wait_and_retry", tool: "hy_merge", instruction: hint }
-      : { strategy: "reset", tool: "hy_reset", instruction: hint },
+      ? { strategy: "wait_and_retry", tool: "hy_merge" }
+      : { strategy: "reset", tool: "hy_reset" },
     allowedTools: retryable ? ["hy_merge", "hy_status"] : ["hy_reset", "hy_status"],
     nextAction: { tool, phase: "merge", stage, automatic: false },
     control: { automatic: false, stop: true, reason: retryable ? "wait_required" : "review_required" },
     userAction: retryable
-      ? { kind: "wait", instruction: hint }
-      : { kind: "review_failure", instruction: hint },
+      ? { kind: "wait" }
+      : { kind: "review_failure" },
   });
 }
 
@@ -148,14 +162,10 @@ function decisionStop(
   const message = code === "PR_MERGE_OUTCOME_UNCONFIRMED"
     ? "The pull request merge outcome could not be confirmed."
     : "Merge reconciliation failed closed.";
-  const hint = decision.retryable
-    ? "Restore the unavailable remote evidence, then retry hy_merge; the recorded mutation will not be repeated blindly."
-    : "The immutable pull request identity is inconsistent. Inspect the evidence, then use hy_reset before starting a new workflow.";
   return stopFailure(
     identity,
     code,
     message,
-    hint,
     decision.retryable,
     { decision: decision.code, ...decision.detail, ...extra },
     { decision: decision.code, executor, ...extra },
@@ -278,14 +288,10 @@ function syncFailure(
   const restored = restoreBase(root, receipt.identity.baseBranch);
   const progress = progressData(receipt);
   persistReceipt(state, receipt);
-  const hint = retryable
-    ? "Repair the local or remote Git condition, then retry hy_merge; the confirmed receipt prevents another PR merge mutation."
-    : "The recorded synchronization precondition drifted. Inspect the refs, then use hy_reset rather than overwriting either branch.";
   return stopFailure(
     receipt.identity,
     "POST_MERGE_SYNC_INCOMPLETE",
     `Remote integration is confirmed, but ${operation} failed${branch ? ` for ${branch}` : ""}.`,
-    hint,
     retryable,
     { operation, branch, ...progress, ...restored, ...detail },
     { outcome: receipt.remote.outcome, evidence: receipt.remote.evidence, baseOid: receipt.remote.baseOid, ...progress, executor },
@@ -502,7 +508,7 @@ function finalizeLocalSync(root: string, state: WorkflowState, receipt: MergeRec
   next.stage = "done.completed";
   next.mergeReceipt = receipt;
   writeState(next);
-  return toolResult("done", {
+  return mergeResult("done", {
     stage: "done.completed",
     status: "completed",
     prNumber: receipt.identity.prNumber,
@@ -516,16 +522,10 @@ function finalizeLocalSync(root: string, state: WorkflowState, receipt: MergeRec
       skipped,
       executor: executor ?? pinned.executor,
     },
-    display: {
-      title: "Pull request integration confirmed and downstream branches synced",
-      body: `PR #${receipt.identity.prNumber}: ${receipt.remote.outcome}. Synced ${progress.completed.length} downstream branches.`,
-    },
-    hint: "Workflow is complete. Call hy_reset to clear the completed task before starting another one.",
     allowedTools: ["hy_reset", "hy_status"],
     nextAction: { tool: "hy_reset", phase: "done", stage: "done.completed", automatic: true },
     control: { automatic: true, stop: false, reason: "completed" },
     userAction: null,
-    message: `PR #${receipt.identity.prNumber} integration confirmed (${receipt.remote.outcome}). Workflow complete.`,
   });
 }
 
@@ -540,14 +540,10 @@ function snapshotFailure(
   const message = integration
     ? "Remote integration is confirmed, but the downstream snapshot is unsafe."
     : "A safe downstream snapshot could not be prepared before the merge mutation.";
-  const hint = integration
-    ? "Reconcile the downstream local and remote refs, then retry hy_merge; neither ref will be overwritten."
-    : "Reconcile the downstream local and remote refs, then retry hy_merge; no merge mutation has run.";
   return stopFailure(
     identity,
     code,
     message,
-    hint,
     true,
     { operation: "downstream snapshot", branch: snapshot.branch, skipped: snapshot.skipped },
     {
@@ -565,7 +561,6 @@ function handleMergeLocked(root: string, state: WorkflowState, identity: MergeId
       identity,
       "PR_IDENTITY_MISMATCH",
       "The persisted merge receipt does not match the active verified pull request identity.",
-      "Inspect the receipt, then use hy_reset before starting a new workflow.",
       false,
       { receiptIdentity: receipt.identity },
       { executor },
@@ -619,7 +614,6 @@ function handleMergeLocked(root: string, state: WorkflowState, identity: MergeId
       identity,
       "MERGE_WORKTREE_NOT_CLEAN",
       "The worktree must be clean before the pull request merge mutation.",
-      "Commit, stash, or remove unrelated changes, then retry hy_merge.",
       true,
       {},
       { executor: clean.executor ?? activeExecutor },
@@ -665,7 +659,6 @@ export async function handleMerge(): Promise<ToolResult> {
       initial,
       "MERGE_PLAN_MISSING",
       "Workflow state does not contain the PlanDoc required to merge.",
-      "Reset the invalid workflow state before starting another approved task.",
     );
   }
   if (!approvalMatchesPlan(initial.approval, initial.plan)) {
@@ -673,7 +666,6 @@ export async function handleMerge(): Promise<ToolResult> {
       initial,
       "APPROVAL_PLAN_MISMATCH",
       "The persisted approval does not match the current PlanDoc.",
-      "Reset the invalid workflow state before creating a new approved PlanDoc.",
     );
   }
   if (!initial.prNumber) {
@@ -681,13 +673,12 @@ export async function handleMerge(): Promise<ToolResult> {
       initial,
       "MERGE_PR_MISSING",
       "Workflow state reached merge without an active pull request.",
-      "Reset the impossible workflow state before starting another approved task.",
     );
   }
   const root = projectRoot();
   const resolved = resolveMergeIdentity(root, initial.prNumber);
   if (!resolved.ok) {
-    return toolResult("merge", {
+    return mergeResult("merge", {
       stage: initialStage,
       error: resolved.error,
       data: { executor: resolved.executor },
@@ -703,7 +694,6 @@ export async function handleMerge(): Promise<ToolResult> {
       resolved.identity,
       "MERGE_LOCK_BUSY",
       "Another hy_merge process owns this project's merge lock.",
-      "Wait for the active merge call to finish, then retry hy_merge.",
       true,
       { owner, lockPath: lock.path },
       { executor: resolved.executor },
@@ -719,7 +709,6 @@ export async function handleMerge(): Promise<ToolResult> {
         state,
         "APPROVAL_PLAN_MISMATCH",
         "The approval or PlanDoc changed while acquiring the project merge lock.",
-        "Reset the invalid workflow state before starting another approved task.",
       );
     }
     if (!state.prNumber) {
@@ -727,7 +716,6 @@ export async function handleMerge(): Promise<ToolResult> {
         state,
         "MERGE_PR_MISSING",
         "The active pull request disappeared from workflow state while acquiring the merge lock.",
-        "Reset the impossible workflow state before starting another approved task.",
       );
     }
     state.stage = state.mergeReceipt && state.mergeReceipt.remote.outcome !== "pending"
@@ -736,7 +724,7 @@ export async function handleMerge(): Promise<ToolResult> {
     writeState(state);
     const lockedIdentity = resolveMergeIdentity(root, state.prNumber);
     if (!lockedIdentity.ok) {
-      return toolResult("merge", {
+      return mergeResult("merge", {
         stage: mergeStageForState(state),
         error: lockedIdentity.error,
         data: { executor: lockedIdentity.executor ?? resolved.executor },
@@ -750,7 +738,6 @@ export async function handleMerge(): Promise<ToolResult> {
         resolved.identity,
         "PR_IDENTITY_MISMATCH",
         "The immutable merge identity changed while acquiring the project lock.",
-        "Inspect the workflow state, then use hy_reset before starting a new workflow.",
         false,
         { lockedIdentity: lockedIdentity.identity },
         { executor: lockedIdentity.executor ?? resolved.executor },

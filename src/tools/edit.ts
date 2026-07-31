@@ -34,7 +34,6 @@ export async function handleEdit(): Promise<ToolResult> {
         phase: state.phase,
         stage,
         error: "Create the approved workflow branch before locking edit scope.",
-        hint: "Call hy_branch with a safe category and topic, then continue automatically to hy_edit.",
         allowedTools: ["hy_branch", "hy_status"],
         nextAction: { tool: null, phase: state.phase, stage, automatic: false },
         control: { automatic: false, stop: true, reason: "information_required" },
@@ -74,16 +73,10 @@ export async function handleEdit(): Promise<ToolResult> {
     branch: state.branch,
     scope: state.plan.scope,
     boundary: state.plan.boundary,
-    display: {
-      title: "Scope locked",
-      body: `Edit only files declared in plan.scope, then run hy_read_docs(after_edit).`,
-    },
-    hint: "Use standard file editing tools only within plan.scope. When implementation edits are complete, run hy_read_docs with stage after_edit, then hy_sync_docs, then hy_verify.",
     allowedTools: ["hy_read_docs", "hy_edit", "hy_status"],
     blockedTools: ["hy_commit", "hy_merge"],
     nextAction: { tool: null, phase: "edit", stage: "edit.implementation", automatic: false },
     control: { automatic: false, stop: true, reason: "external_action_required" },
     userAction: null,
-    message: `Scope locked. Edit files within plan.scope: ${state.plan.scope.changes.join(", ")}. When done, run hy_read_docs(after_edit), then hy_sync_docs, then hy_verify.`,
   });
 }
