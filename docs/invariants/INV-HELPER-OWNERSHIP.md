@@ -6,4 +6,4 @@ This boundary includes fresh install, idempotent update, 0.5 twelve-to-three mig
 
 The invariant does not promise cleanup of legacy project state. Those files are ignored and preserved.
 
-Source incident: [INC-HELPER-RETIRED-SKILLS](../incidents/INC-HELPER-RETIRED-SKILLS.md). Verification responsibility: the Helper unit suite and public 0.5 upgrade acceptance.
+Source incidents: [INC-HELPER-RETIRED-SKILLS](../incidents/INC-HELPER-RETIRED-SKILLS.md) and [INC-HELPER-PARTIAL-PROJECTION](../incidents/INC-HELPER-PARTIAL-PROJECTION.md). Verification responsibility: the Helper unit suite and public 0.5 upgrade acceptance.
