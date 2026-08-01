@@ -8,12 +8,12 @@ It is deliberately not a planner, Agent, test runner, continuous-integration ser
 
 ```bash
 npm install --global @voxstudio/hy-workflow
-hy-workflow helper install --json
+hy-workflow helper
 ```
 
 Restart Codex, Claude Code, or OpenCode after the first install. Helper detects installed hosts and projects exactly three user-level Skills: `hy-init`, `hy-verify`, and `hy-capture`. It does not modify the current repository, Git, MCP configuration, Agent project configuration, or GitHub Actions.
 
-Use `helper update`, `helper status`, and `helper remove` for later lifecycle operations. All Helper output uses the stable `hy-workflow.helper.v2` envelope.
+In an interactive terminal, bare `helper` opens a guided installer in Chinese. Use `helper -h` for command help. For Agents, scripts, and non-interactive use, call `helper install|update|status|remove --json`; the JSON form keeps the stable `hy-workflow.helper.v2` envelope.
 
 ## Project protocol
 
