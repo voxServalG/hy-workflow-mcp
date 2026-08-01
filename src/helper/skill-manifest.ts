@@ -15,11 +15,12 @@ import {
 import {
   HELPER_SKILL_AGENTS,
   HELPER_SKILL_NAMES,
+  LEGACY_HELPER_SKILL_NAMES,
+  MANAGED_HELPER_SKILL_NAMES,
   HelperSkillError,
   fail,
   type HelperSkillAgent,
   type HelperSkillFinding,
-  type HelperSkillName,
   type HelperSkillOwnershipManifest,
   type HelperSkillPaths,
   type HelperSkillTargetRecord,
@@ -38,7 +39,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 export const PROJECTION_RUNTIME: ProjectionRuntime = {
-  skillNames: HELPER_SKILL_NAMES,
+  skillNames: MANAGED_HELPER_SKILL_NAMES,
   agents: HELPER_SKILL_AGENTS,
   fail,
   isHelperSkillError: error => error instanceof HelperSkillError,
@@ -53,7 +54,8 @@ function validateManifest(value: unknown, expectedPaths: HelperSkillPaths): Help
   const invalid = (reason: string): never => fail("HELPER_SKILL_MANIFEST_INVALID", `Invalid Skill ownership manifest: ${reason}`);
   if (!isObject(value)) invalid("root object");
   const root = value as Record<string, unknown>;
-  if (root.schemaVersion !== "1" || !isObject(root.package)) invalid("root fields");
+  if ((root.schemaVersion !== "1" && root.schemaVersion !== "2") || !isObject(root.package)) invalid("root fields");
+  const expectedCatalog = root.schemaVersion === "1" ? LEGACY_HELPER_SKILL_NAMES : HELPER_SKILL_NAMES;
   const packageRecord = root.package as Record<string, unknown>;
   if (typeof packageRecord.name !== "string" || typeof packageRecord.version !== "string" || !HASH_PATTERN.test(String(packageRecord.bundleHash))) invalid("package fields");
   if (typeof root.canonicalRoot !== "string" || path.resolve(root.canonicalRoot) !== path.resolve(expectedPaths.ssotRoot)) invalid("canonical root");
@@ -100,9 +102,9 @@ function validateManifest(value: unknown, expectedPaths: HelperSkillPaths): Help
     }
   }
 
-  const currentSkillNames = new Set<string>(HELPER_SKILL_NAMES);
+  const expectedSkillNames = new Set<string>(expectedCatalog);
   const skillNames = new Set<string>();
-  const currentSkillHashes = new Map<HelperSkillName, string>();
+  const currentSkillHashes = new Map<string, string>();
   for (const candidate of root.skills as unknown[]) {
     if (!isObject(candidate)) invalid("skill object");
     const item = candidate as Record<string, unknown>;
@@ -113,10 +115,9 @@ function validateManifest(value: unknown, expectedPaths: HelperSkillPaths): Help
       || !Array.isArray(item.projections)) invalid("skill record");
     const skillName = item.name as string;
     skillNames.add(skillName);
-    const isCurrent = currentSkillNames.has(skillName);
-    if ((isCurrent && item.retired) || (!isCurrent && !item.retired)) invalid("skill catalog membership");
+    if (!expectedSkillNames.has(skillName) || item.retired !== false) invalid("skill catalog membership");
     if (item.sourceHash !== item.contentHash) invalid("skill hash relationship");
-    if (isCurrent) currentSkillHashes.set(skillName as HelperSkillName, item.sourceHash as string);
+    currentSkillHashes.set(skillName, item.sourceHash as string);
     const projectionAgents = new Set<string>();
     for (const projectionCandidate of item.projections as unknown[]) {
       if (!isObject(projectionCandidate)) invalid("projection object");
@@ -136,9 +137,9 @@ function validateManifest(value: unknown, expectedPaths: HelperSkillPaths): Help
     }
     if (projectionAgents.size !== targetAgents.size) invalid("incomplete projections");
   }
-  if (currentSkillHashes.size !== HELPER_SKILL_NAMES.length) invalid("incomplete current skill catalog");
+  if (currentSkillHashes.size !== expectedCatalog.length) invalid("incomplete current skill catalog");
   const bundleHash = createHash("sha256");
-  for (const name of HELPER_SKILL_NAMES) {
+  for (const name of expectedCatalog) {
     const sourceHash = currentSkillHashes.get(name);
     if (!sourceHash) invalid("incomplete current skill catalog");
     bundleHash.update(name);
