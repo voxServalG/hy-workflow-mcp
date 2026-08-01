@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/voxServalG/hy-workflow-mcp/blob/main/schemas/hy-workflow.evidence.schema.json",
+  "title": "hy-workflow agent-attested evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "binding", "results"],
+  "properties": {
+    "schema": { "const": "hy-workflow.evidence.v1" },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuanceId", "head", "diffHash", "protocolHash"],
+      "properties": {
+        "issuanceId": { "$ref": "#/$defs/sha256" },
+        "head": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "diffHash": { "$ref": "#/$defs/sha256" },
+        "protocolHash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "results": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["commandId", "argv", "startedAt", "completedAt", "exitCode", "stdout", "stderr"],
+        "properties": {
+          "commandId": { "type": "string", "pattern": "^cmd-[0-9a-f]{20}$" },
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": { "type": "string" }
+          },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "completedAt": { "type": "string", "format": "date-time" },
+          "exitCode": { "type": "integer", "minimum": -255, "maximum": 255 },
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

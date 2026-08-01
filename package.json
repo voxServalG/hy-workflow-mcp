@@ -1,7 +1,7 @@
 {
   "name": "@voxstudio/hy-workflow",
-  "version": "0.5.0",
-  "description": "State and evidence CLI with stage Skills for safe agent-assisted development",
+  "version": "0.6.0",
+  "description": "Free Git-native incident and invariant evidence protocol for coding Agents",
   "type": "module",
   "main": "dist/main.js",
   "bin": {
@@ -10,29 +10,18 @@
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
     "build": "npm run clean && tsc",
-    "lint": "node dist/main.js lint --json",
-    "start": "node dist/main.js",
     "dev": "npx tsx src/main.ts",
-    "lint:contract": "npm run build && npm run lint:contract:built",
-    "lint:contract:built": "node dist/contralint/index.js",
-    "test:run": "node -e \"const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),tsx=require.resolve('tsx/cli'),env={...process.env};delete env.HY_WORKFLOW_RUNTIME_CONFIG_SOURCE;const dir=process.argv[1];for(const name of fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).sort()){const child=cp.spawnSync(process.execPath,[tsx,path.join(dir,name)],{stdio:'inherit',env});if(child.error){console.error(child.error.message);process.exit(1)}if(child.status!==0)process.exit(child.status??1)}\"",
+    "test:run": "node -e \"const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),tsx=require.resolve('tsx/cli'),dir=process.argv[1];for(const name of fs.readdirSync(dir).filter(name=>name.endsWith('.ts')).sort()){const child=cp.spawnSync(process.execPath,[tsx,path.join(dir,name)],{stdio:'inherit',env:{...process.env}});if(child.error){console.error(child.error.message);process.exit(1)}if(child.status!==0)process.exit(child.status??1)}\"",
     "test:unit": "npm run test:run -- test/unit",
     "test:e2e": "npm run test:run -- test/e2e",
     "test:contract": "npm run test:run -- test/contract",
-    "test:acceptance:baseline": "npx tsx test/acceptance/baseline-runner.ts",
-    "test:acceptance:migration": "npx tsx test/acceptance/public-migration-oracle.ts",
-    "test:acceptance:pressure": "npx tsx test/acceptance/runner.ts --profile release",
-    "test:acceptance": "npm run test:acceptance:pressure --",
-    "test:windows": "node scripts/windows-smoke.mjs",
     "test": "npm run test:unit && npm run test:e2e && npm run test:contract",
     "verify": "npm run build && npm test",
-    "verify:dev": "npm run verify && npm run test:acceptance:baseline",
+    "test:acceptance:thin": "npx tsx test/acceptance/thin-package.ts",
+    "test:acceptance:migration": "npx tsx test/acceptance/public-0.5-upgrade.ts",
+    "test:windows": "node scripts/windows-smoke.mjs",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run verify",
-    "test:dist": "npx tsx test/contract/dist-artifacts.ts",
-    "test:lint-cli": "npx tsx test/unit/lint-cli.ts",
-    "test:setup-update": "npx tsx test/e2e/setup-update-check.ts",
-    "test:config-update": "npx tsx test/unit/config-update.ts"
+    "prepublishOnly": "npm run verify"
   },
   "author": "Haiyi",
   "license": "MIT",
@@ -51,17 +40,17 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "jsonc-parser": "^3.3.1"
+    "picomatch": "^4.0.5",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/picomatch": "^4.0.3",
     "tsx": "^4.23.0",
     "typescript": "^5.7.0"
   },
   "files": [
     "dist",
-    "docs",
     "schemas",
     "templates",
     "skills",

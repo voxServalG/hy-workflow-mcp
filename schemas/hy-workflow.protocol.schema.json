@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/voxServalG/hy-workflow-mcp/blob/main/schemas/hy-workflow.protocol.schema.json",
+  "title": "hy-workflow Git protocol",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "obligations"],
+  "properties": {
+    "schema": { "const": "hy-workflow.protocol.v1" },
+    "obligations": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/obligation" }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?![!/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!\\.git(?:/|$))[^\\\\\\u0000]+$"
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "expected_exit_code"],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "type": "string", "minLength": 1, "maxLength": 2048 }
+        },
+        "expected_exit_code": { "type": "integer", "minimum": 0, "maximum": 255 }
+      }
+    },
+    "obligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "statement", "sources", "applies_to", "verification"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^(INV|INC)-[A-Z0-9][A-Z0-9._-]{1,62}$" },
+        "kind": { "enum": ["invariant", "incident"] },
+        "status": { "enum": ["active", "superseded", "retired"], "default": "active" },
+        "statement": { "type": "string", "minLength": 10, "maxLength": 1000 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/path" }
+        },
+        "applies_to": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["paths"],
+          "properties": {
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/path" }
+            }
+          }
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scale", "commands"],
+          "properties": {
+            "scale": { "enum": ["small", "medium", "large"] },
+            "commands": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": { "$ref": "#/$defs/command" }
+            }
+          }
+        },
+        "superseded_by": { "type": "string", "pattern": "^(INV|INC)-[A-Z0-9][A-Z0-9._-]{1,62}$" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "superseded" } }, "required": ["status"] },
+          "then": { "required": ["superseded_by"] },
+          "else": { "not": { "required": ["superseded_by"] } }
+        }
+      ]
+    }
+  }
+}
