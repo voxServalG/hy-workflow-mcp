@@ -1,19 +1,15 @@
-import type { ClientName } from "../runtime/deployment.js";
-import type { RetiredWorkflowMcpResult } from "../setup/operations.js";
-import type { ClientAdapter } from "../setup/types.js";
 import type {
   DetectedHelperSkillTarget,
+  HelperSkillAgent,
   HelperSkillFaultHooks,
   HelperSkillPaths,
   HelperSkillProjectionPreference,
 } from "./skills.js";
-import type {
-  HelperProjectRegistration,
-  HelperProjectStatus,
-} from "./project.js";
 
-export const HELPER_CLI_SCHEMA = "hy-workflow.helper.v1" as const;
-export const HELPER_CLI_VERSION = 1 as const;
+type ClientName = HelperSkillAgent;
+
+export const HELPER_CLI_SCHEMA = "hy-workflow.helper.v2" as const;
+export const HELPER_CLI_VERSION = 2 as const;
 export const HELPER_CLI_COMMANDS = ["install", "update", "status", "remove"] as const;
 export const HELPER_CLI_CLIENTS = ["codex", "claude", "opencode"] as const;
 
@@ -47,22 +43,11 @@ export type HelperCliEnvelope = {
   version: typeof HELPER_CLI_VERSION;
   command: HelperCliCommand | null;
   ok: boolean;
-  status: "completed" | "attention" | "partial" | "failed";
-  projectRoot: string | null;
+  status: "completed" | "attention" | "failed";
   clients: ClientName[];
-  layers: {
-    skills: HelperCliLayer;
-    project: HelperCliLayer;
-    mcp: HelperCliLayer;
-  };
-  projectFilesChanged: [];
+  skills: HelperCliLayer;
+  changedPaths: string[];
   error?: HelperCliError;
-  recovery?: {
-    command: HelperCliCommand;
-    argv: string[];
-    completedLayers: string[];
-    reason: string;
-  };
 };
 
 export type HelperCliRunResult = {
@@ -72,19 +57,10 @@ export type HelperCliRunResult = {
 };
 
 export type HelperCliDependencies = {
-  cwd?: string;
   bundleRoot?: string;
   skillPaths?: HelperSkillPaths;
   detectedTargets?: DetectedHelperSkillTarget[];
   skillHooks?: HelperSkillFaultHooks;
-  adapters?: ClientAdapter[];
-  registerProject?: (root: string, clients: ClientName[]) => Promise<HelperProjectRegistration>;
-  projectStatus?: (root: string) => HelperProjectStatus;
-  retireWorkflowMcp?: (
-    root: string,
-    clients: ClientName[],
-    adapters?: ClientAdapter[],
-  ) => Promise<RetiredWorkflowMcpResult>;
 };
 
 export class HelperCliInputError extends Error {

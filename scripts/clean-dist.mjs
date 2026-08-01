@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 
 import { lstat, realpath, rm } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = resolve(projectRoot, "dist");
-const relativeDist = relative(projectRoot, dist);
 
-if (relativeDist !== "dist" || dist === projectRoot) {
+if (relative(projectRoot, dist) !== "dist" || dist === projectRoot) {
   throw new Error(`Refusing to clean an unsafe dist path: ${dist}`);
 }
 
@@ -33,4 +32,4 @@ try {
   throw error;
 }
 
-await rm(join(projectRoot, "dist"), { recursive: true, force: true });
+await rm(dist, { recursive: true, force: true });

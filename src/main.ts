@@ -3,84 +3,94 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runWorkflowCli, WORKFLOW_CLI_COMMANDS } from "./cli/workflow.js";
-import { runConfigCli } from "./config.js";
-import { runContractLint } from "./contralint/run.js";
+import { parseInputOptions } from "./cli/input.js";
+import { issueFromError, jsonLine } from "./cli/output.js";
 import { runHelperCli } from "./helper/cli.js";
-import { runSkillsCli } from "./skills/cli.js";
-import { runLintCli } from "./lint.js";
 import { PACKAGE_VERSION } from "./package-meta.js";
+import { inspectRepository } from "./protocol/inspect.js";
+import { verifyEvidence } from "./protocol/verify.js";
 
 export function cliHelp(): string {
   return [
     "hy-workflow",
     "",
-    "State and evidence CLI for the hy-workflow Skill bundle.",
+    "Git-native incident and invariant evidence protocol for coding Agents.",
     "",
     "Usage:",
-    "  hy-workflow helper install|update|status|remove [options]",
-    "  hy-workflow skills list|read [options]    Inspect packaged stage Skills",
-    "  hy-workflow setup [options]               Alias for helper install",
-    "  hy-workflow unset [--json]                 Alias for helper remove",
-    "  hy-workflow <workflow-command> [--input <JSON>]",
-    "  hy-workflow <workflow-command> --input-file <path>",
-    "  hy-workflow lint --json                   Run built-in doclint and codelint",
-    "  hy-workflow config ...                    Inspect or update project policy",
-    "  hy-workflow doctor [--json]              Alias for helper status",
+    "  hy-workflow helper install|update|status|remove [--json]",
+    "  hy-workflow inspect --json",
+    "  hy-workflow verify --input-file <evidence.json> --json",
+    "  hy-workflow verify --input '<JSON object>' --json",
     "  hy-workflow --version",
     "",
-    `Workflow commands: ${WORKFLOW_CLI_COMMANDS.join(", ")}`,
-    "",
-    "Workflow commands emit one hy-workflow.cli.v1 JSON document. The CLI is the",
-    "sole authority for phase, stage, allowed actions, state, and verification evidence.",
+    "inspect reads the tracked root hy-workflow.yml and the current Git diff,",
+    "then issues exact project-native argv. verify checks agent-attested results",
+    "against the current protocol, HEAD, diff, argv, and expected exit codes.",
+    "Neither command grants or denies permission for an Agent to continue working.",
   ].join("\n");
+}
+
+function errorOutput(command: string | null, error: unknown): string {
+  return jsonLine({
+    schema: "hy-workflow.error.v1",
+    version: 1,
+    command,
+    ok: false,
+    status: "invalid",
+    issues: [issueFromError(error)],
+  });
+}
+
+function inspectOptions(argv: readonly string[]): void {
+  const unknown = argv.filter(argument => argument !== "--json");
+  if (unknown.length) {
+    const error = new Error(`inspect accepts only --json; unknown option: ${unknown[0]}.`);
+    (error as Error & { code: string }).code = "OPTION_UNKNOWN";
+    throw error;
+  }
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   if (!argv.length || argv[0] === "--help" || argv[0] === "-h") {
-    process.stdout.write(cliHelp() + "\n");
+    process.stdout.write(`${cliHelp()}\n`);
     return 0;
   }
   if (argv[0] === "--version" || argv[0] === "-v") {
-    process.stdout.write(PACKAGE_VERSION + "\n");
+    process.stdout.write(`${PACKAGE_VERSION}\n`);
     return 0;
   }
-  if (argv[0] === "skills") {
-    const result = runSkillsCli(argv.slice(1));
+  if (argv[0] === "helper") {
+    const result = await runHelperCli(argv.slice(1));
     process.stdout.write(result.stdout);
     return result.exitCode;
   }
-  if (argv[0] === "helper" || argv[0] === "setup" || argv[0] === "unset") {
-    const helperArgv = argv[0] === "helper"
-      ? argv.slice(1)
-      : [argv[0] === "setup" ? "install" : "remove", ...argv.slice(1)];
-    const result = await runHelperCli(helperArgv);
-    process.stdout.write(result.stdout);
-    return result.exitCode;
+  if (argv[0] === "inspect") {
+    try {
+      inspectOptions(argv.slice(1));
+      const result = inspectRepository();
+      process.stdout.write(jsonLine(result));
+      return result.status === "invalid" ? 1 : 0;
+    } catch (error) {
+      process.stdout.write(errorOutput("inspect", error));
+      return 1;
+    }
   }
-  if (argv[0] === "doctor") {
-    const result = await runHelperCli(["status", ...argv.slice(1)]);
-    process.stdout.write(result.stdout);
-    return result.exitCode;
+  if (argv[0] === "verify") {
+    try {
+      const input = parseInputOptions(argv.slice(1));
+      const result = verifyEvidence(input);
+      process.stdout.write(jsonLine(result));
+      return result.status === "verified" ? 0 : 1;
+    } catch (error) {
+      process.stdout.write(errorOutput("verify", error));
+      return 1;
+    }
   }
-  if (argv[0] === "config") {
-    const result = runConfigCli(argv.slice(1));
-    process.stdout.write(result.stdout);
-    return result.exitCode;
-  }
-  if (argv[0] === "lint") {
-    const result = await runLintCli(argv.slice(1));
-    process.stdout.write(result.stdout);
-    return result.exitCode;
-  }
-  if (argv[0] === "lint-contract") {
-    const report = runContractLint(process.cwd());
-    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
-    return report.ok ? 0 : 1;
-  }
-  const result = await runWorkflowCli(argv);
-  process.stdout.write(result.stdout);
-  return result.exitCode;
+  process.stdout.write(errorOutput(argv[0] ?? null, Object.assign(
+    new Error(`Unknown command: ${argv[0]}. Use --help for the supported thin interface.`),
+    { code: "COMMAND_UNKNOWN" },
+  )));
+  return 1;
 }
 
 function isDirectEntrypoint(moduleUrl: string, argvEntry: string | undefined): boolean {
@@ -94,7 +104,7 @@ function isDirectEntrypoint(moduleUrl: string, argvEntry: string | undefined): b
 
 if (isDirectEntrypoint(import.meta.url, process.argv[1])) {
   main().then(code => { process.exitCode = code; }).catch(error => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stdout.write(errorOutput(null, error));
     process.exitCode = 1;
   });
 }

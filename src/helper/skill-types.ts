@@ -1,5 +1,12 @@
 export const HELPER_SKILL_NAMES = [
   "hy-init",
+  "hy-verify",
+  "hy-capture",
+] as const;
+
+/** Exact v0.5 catalog. It exists only for ownership-safe migration and recovery. */
+export const LEGACY_HELPER_SKILL_NAMES = [
+  "hy-init",
   "hy-status",
   "hy-read-docs",
   "hy-plan",
@@ -13,7 +20,15 @@ export const HELPER_SKILL_NAMES = [
   "hy-reset",
 ] as const;
 
+/** Every fixed Skill name that a valid current or legacy journal may own. */
+export const MANAGED_HELPER_SKILL_NAMES = [
+  ...LEGACY_HELPER_SKILL_NAMES,
+  "hy-capture",
+] as const;
+
 export type HelperSkillName = typeof HELPER_SKILL_NAMES[number];
+export type LegacyHelperSkillName = typeof LEGACY_HELPER_SKILL_NAMES[number];
+export type ManagedHelperSkillName = typeof MANAGED_HELPER_SKILL_NAMES[number];
 export type HelperSkillAgent = "codex" | "claude" | "opencode";
 export type HelperSkillProjectionMode = "symlink" | "copy";
 export type HelperSkillProjectionPreference = HelperSkillProjectionMode | "auto";
@@ -62,7 +77,7 @@ export type HelperSkillTargetRecord = {
 };
 
 export type HelperSkillOwnershipManifest = {
-  schemaVersion: "1";
+  schemaVersion: "1" | "2";
   package: {
     name: string;
     version: string;

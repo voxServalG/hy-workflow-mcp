@@ -124,6 +124,16 @@ function ownedMutationPreflight(
   const first = captureMutationFingerprints(paths, manifest.targets, names);
   const inspected = inspectManifest(manifest, paths);
   const second = captureMutationFingerprints(paths, manifest.targets, names);
+  const ownedNames = new Set(manifest.skills.map(skill => skill.name));
+  for (const name of names) {
+    if (ownedNames.has(name)) continue;
+    for (const target of manifest.targets) {
+      const destination = path.resolve(path.join(target.skillsDir, name));
+      if (second.get(destination) !== null) {
+        fail("HELPER_SKILL_OWNERSHIP_CONFLICT", `New Skill destination exists without helper ownership: ${destination}`);
+      }
+    }
+  }
   if (!sameFingerprints(first, second)
       || second.get(path.resolve(paths.manifestPath)) !== expectedManifestFingerprint) {
     fail("HELPER_SKILL_OWNERSHIP_CONFLICT", "Managed Skill resources changed during ownership preflight.");
@@ -226,7 +236,7 @@ function installCore(options: InstallHelperSkillsOptions, paths: HelperSkillPath
     }
     const now = new Date().toISOString();
     const manifest: HelperSkillOwnershipManifest = {
-      schemaVersion: "1",
+      schemaVersion: "2",
       package: { name: options.packageName ?? PACKAGE_NAME, version: options.packageVersion ?? PACKAGE_VERSION, bundleHash: bundle.hash },
       canonicalRoot: paths.ssotRoot,
       targets,
@@ -249,12 +259,11 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
   const findings = manifestFindings(manifest, paths);
   const packageName = options.packageName ?? PACKAGE_NAME;
   const packageVersion = options.packageVersion ?? PACKAGE_VERSION;
-  if (!repair && !findings.length && manifest.package.name === packageName
+  if (!repair && manifest.schemaVersion === "2" && !findings.length && manifest.package.name === packageName
     && manifest.package.version === packageVersion && manifest.package.bundleHash === bundle.hash) {
     return { action: "unchanged", manifest, changes: [] };
   }
 
-  const bundleByName = new Map(bundle.skills.map(skill => [skill.name, skill]));
   const previousByName = new Map(manifest.skills.map(skill => [skill.name, skill]));
   const names = [...new Set([...bundle.skills.map(skill => skill.name), ...manifest.skills.map(skill => skill.name)])].sort();
 
@@ -274,22 +283,16 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
       contentHash: string;
     }> = [];
     try {
-      for (const name of names) {
-        const bundleSkill = bundleByName.get(name as SkillBundleEntry["name"]);
+      for (const bundleSkill of bundle.skills) {
+        const name = bundleSkill.name;
         const previous = previousByName.get(name);
-        const missing = previous ? inspected.canonical.get(name) === "missing" : false;
-        if (missing && !bundleSkill && (repair || !previous?.intentionalDeletion)) {
-          fail("HELPER_SKILL_OWNERSHIP_CONFLICT", `Missing retired canonical Skill cannot be rebuilt from the package: ${name}`);
-        }
         const canonicalDeleted = Boolean(previous && !repair && previous.intentionalDeletion);
-        const retired = !bundleSkill;
-        const sourceHash = bundleSkill?.hash ?? previous!.sourceHash;
-        const contentHash = bundleSkill?.hash ?? previous!.contentHash;
-        desired.push({ name, bundle: bundleSkill, previous, canonicalDeleted, retired, sourceHash, contentHash });
+        const sourceHash = bundleSkill.hash;
+        const contentHash = bundleSkill.hash;
+        desired.push({ name, bundle: bundleSkill, previous, canonicalDeleted, retired: false, sourceHash, contentHash });
         if (canonicalDeleted) continue;
         const destination = path.join(stagedRoot, name);
-        if (bundleSkill) copyDirectory(bundleSkill.sourcePath, destination);
-        else copyDirectory(previous!.canonicalPath, destination);
+        copyDirectory(bundleSkill.sourcePath, destination);
         const actual = hashDirectory(destination);
         if (actual !== contentHash) fail("HELPER_SKILL_BUNDLE_INVALID", `Staged Skill hash mismatch: ${name}`);
       }
@@ -336,8 +339,20 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
       });
     }
 
+    const currentNames = new Set(bundle.skills.map(skill => skill.name));
+    for (const previous of manifest.skills) {
+      if (currentNames.has(previous.name as SkillBundleEntry["name"])) continue;
+      if (inspected.canonical.get(previous.name) === "present") changes.push(previous.canonicalPath);
+      for (const projection of previous.projections) {
+        transaction.remove(projection.path);
+        if (fingerprints.get(path.resolve(projection.path)) !== null) {
+          changes.push(projection.path);
+        }
+      }
+    }
+
     const nextManifest: HelperSkillOwnershipManifest = {
-      schemaVersion: "1",
+      schemaVersion: "2",
       package: { name: packageName, version: packageVersion, bundleHash: bundle.hash },
       canonicalRoot: paths.ssotRoot,
       targets: manifest.targets,
@@ -349,7 +364,7 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
     const preparedManifest = prepareManifest(nextManifest, paths, transaction, created);
     try { transaction.swap(preparedManifest, paths.manifestPath); } finally { removeResource(preparedManifest); }
     changes.push(paths.manifestPath);
-    return { action: "updated", manifest: nextManifest, changes };
+    return { action: "updated", manifest: nextManifest, changes: [...new Set(changes)] };
   });
 }
 
@@ -415,6 +430,9 @@ export function getHelperSkillStatus(options: BundleOptions = {}): HelperSkillSt
     return { state: unmanaged ? "unmanaged" : "absent", paths, manifest: null, findings: unmanaged ? [{ code: "unowned_canonical_root", path: paths.ssotRoot, message: "Canonical root exists without an ownership manifest." }] : [], bundleHash: null };
   }
   const findings = manifestFindings(manifest, paths);
+  if (manifest.schemaVersion === "1") {
+    findings.unshift({ code: "legacy_manifest", path: paths.manifestPath, message: "The installed v0.5 twelve-Skill bundle is ready for ownership-safe migration." });
+  }
   const packageName = options.packageName ?? PACKAGE_NAME;
   const packageVersion = options.packageVersion ?? PACKAGE_VERSION;
   if (manifest.package.name !== packageName) {

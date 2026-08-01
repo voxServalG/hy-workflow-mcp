@@ -1,0 +1,67 @@
+schema: hy-workflow.protocol.v1
+obligations:
+  - id: INV-HELPER-OWNERSHIP
+    kind: invariant
+    status: active
+    statement: Helper mutates only exactly owned user-level Skill resources and never project or unrelated Agent state.
+    sources:
+      - docs/incidents/INC-HELPER-RETIRED-SKILLS.md
+      - docs/invariants/INV-HELPER-OWNERSHIP.md
+    applies_to:
+      paths:
+        - src/helper/**
+        - skills/**
+        - test/acceptance/public-0.5-upgrade.ts
+        - package.json
+        - package-lock.json
+    verification:
+      scale: large
+      commands:
+        - argv: ["npm", "run", "test:unit"]
+          expected_exit_code: 0
+        - argv: ["npm", "run", "test:acceptance:migration"]
+          expected_exit_code: 0
+  - id: INV-EVIDENCE-FRESHNESS
+    kind: invariant
+    status: active
+    statement: Verification evidence remains valid only for one exact protocol, HEAD, complete Git diff, and issued argv binding.
+    sources:
+      - docs/invariants/INV-EVIDENCE-FRESHNESS.md
+    applies_to:
+      paths:
+        - src/cli/**
+        - src/git/**
+        - src/protocol/**
+        - schemas/**
+        - templates/**
+        - docs/incidents/**
+        - docs/invariants/**
+        - hy-workflow.yml
+    verification:
+      scale: medium
+      commands:
+        - argv: ["npm", "run", "test:unit"]
+          expected_exit_code: 0
+        - argv: ["npm", "run", "test:e2e"]
+          expected_exit_code: 0
+  - id: INV-RELEASE-TARBALL
+    kind: invariant
+    status: active
+    statement: Release acceptance and npm publication consume one identical versioned tarball from the tagged main commit.
+    sources:
+      - docs/invariants/INV-RELEASE-TARBALL.md
+    applies_to:
+      paths:
+        - .github/workflows/npm-publish.yml
+        - package.json
+        - package-lock.json
+        - scripts/**
+        - test/contract/**
+        - test/acceptance/**
+    verification:
+      scale: large
+      commands:
+        - argv: ["npm", "run", "test:contract"]
+          expected_exit_code: 0
+        - argv: ["npm", "run", "test:acceptance:thin"]
+          expected_exit_code: 0
