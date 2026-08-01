@@ -1,6 +1,6 @@
 {
   "name": "@voxstudio/hy-workflow",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Free Git-native incident and invariant evidence protocol for coding Agents",
   "type": "module",
   "main": "dist/main.js",
@@ -40,6 +40,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@clack/prompts": "^0.11.0",
     "picomatch": "^4.0.5",
     "yaml": "^2.9.0"
   },

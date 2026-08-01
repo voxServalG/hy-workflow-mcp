@@ -50,6 +50,14 @@ try {
     assert(!help.stdout.includes(retired), `CLI help exposes retired surface: ${retired}`);
   }
 
+  for (const flag of ["-h", "--help"]) {
+    const helperHelp = run([main, "helper", flag], outsideGit);
+    assert(helperHelp.status === 0 && helperHelp.stderr === "", "helper " + flag + " failed: " + helperHelp.stderr);
+    assert(helperHelp.stdout.includes("Launch TUI") && helperHelp.stdout.includes("--json"), "helper " + flag + " omitted TUI or JSON usage");
+  }
+  const bareHelper = run([main, "helper"], outsideGit);
+  assert(bareHelper.status === 0 && bareHelper.stdout.includes("Launch TUI"), "bare helper outside a TTY must return help without blocking");
+
   const unavailable = run([main, "inspect", "--json"], outsideGit);
   const unavailableEnvelope = JSON.parse(unavailable.stdout);
   assert(unavailable.status === 0, "inspect outside Git must report unavailable without treating it as malformed input");

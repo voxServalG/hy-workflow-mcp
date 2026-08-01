@@ -16,7 +16,6 @@ import {
 import {
   inspectManifest,
   manifestFindings,
-  projectionKey,
   readManifest,
 } from "./skill-manifest.js";
 import {
@@ -257,6 +256,18 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
   if (!manifest || manifestRead.fingerprint === null) fail("HELPER_SKILL_NOT_INSTALLED", "The helper Skill bundle is not installed.");
   const bundle = readHelperSkillBundle(options.bundleRoot);
   const findings = manifestFindings(manifest, paths);
+  const desiredNames = new Set(bundle.skills.map(skill => skill.name));
+  for (const skill of manifest.skills) {
+    if (!desiredNames.has(skill.name as SkillBundleEntry["name"])) continue;
+    if (skill.intentionalDeletion) {
+      findings.push({ code: "desired_skill_marked_deleted", path: skill.canonicalPath, message: "A packaged Skill is incorrectly marked as intentionally deleted." });
+    }
+    for (const projection of skill.projections) {
+      if (projection.intentionalDeletion) {
+        findings.push({ code: "desired_projection_marked_deleted", path: projection.path, message: "A packaged Skill projection is incorrectly marked as intentionally deleted." });
+      }
+    }
+  }
   const packageName = options.packageName ?? PACKAGE_NAME;
   const packageVersion = options.packageVersion ?? PACKAGE_VERSION;
   if (!repair && manifest.schemaVersion === "2" && !findings.length && manifest.package.name === packageName
@@ -286,7 +297,10 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
       for (const bundleSkill of bundle.skills) {
         const name = bundleSkill.name;
         const previous = previousByName.get(name);
-        const canonicalDeleted = Boolean(previous && !repair && previous.intentionalDeletion);
+        // Every Skill in the packaged v2 catalog is desired state. A missing
+        // canonical directory or projection is drift, not an implicit user
+        // preference that update should preserve forever.
+        const canonicalDeleted = false;
         const sourceHash = bundleSkill.hash;
         const contentHash = bundleSkill.hash;
         desired.push({ name, bundle: bundleSkill, previous, canonicalDeleted, retired: false, sourceHash, contentHash });
@@ -307,10 +321,7 @@ function updateCore(options: BundleOptions, paths: HelperSkillPaths, repair: boo
       for (const target of manifest.targets) {
         const destination = path.join(target.skillsDir, item.name);
         const previousProjection = item.previous?.projections.find(projection => projection.agent === target.agent);
-        const projectionMissing = previousProjection
-          ? inspected.projections.get(projectionKey(item.name, target.agent)) === "missing"
-          : false;
-        const projectionDeleted = item.canonicalDeleted || Boolean(previousProjection && !repair && (previousProjection.intentionalDeletion || projectionMissing));
+        const projectionDeleted = item.canonicalDeleted;
         if (projectionDeleted) {
           transaction.remove(destination);
           if (fingerprints.get(path.resolve(destination)) !== null) changes.push(destination);
@@ -443,6 +454,18 @@ export function getHelperSkillStatus(options: BundleOptions = {}): HelperSkillSt
   }
   const bundle = readHelperSkillBundle(options.bundleRoot ?? defaultSkillBundleRoot());
   const bundleHash = bundle.hash;
+  const currentNames = new Set(bundle.skills.map(skill => skill.name));
+  for (const skill of manifest.skills) {
+    if (!currentNames.has(skill.name as SkillBundleEntry["name"])) continue;
+    if (skill.intentionalDeletion) {
+      findings.push({ code: "desired_skill_marked_deleted", path: skill.canonicalPath, message: "A packaged Skill is incorrectly marked as intentionally deleted." });
+    }
+    for (const projection of skill.projections) {
+      if (projection.intentionalDeletion) {
+        findings.push({ code: "desired_projection_marked_deleted", path: projection.path, message: "A packaged Skill projection is incorrectly marked as intentionally deleted." });
+      }
+    }
+  }
   if (bundle.hash !== manifest.package.bundleHash) findings.push({ code: "bundle_outdated", path: bundle.root, message: "Installed Skill bundle differs from the package bundle." });
   return { state: findings.length ? "drifted" : "healthy", paths, manifest, findings, bundleHash };
 }

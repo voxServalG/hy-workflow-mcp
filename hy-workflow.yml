@@ -6,10 +6,13 @@ obligations:
     statement: Helper mutates only exactly owned user-level Skill resources and never project or unrelated Agent state.
     sources:
       - docs/incidents/INC-HELPER-RETIRED-SKILLS.md
+      - docs/incidents/INC-HELPER-PARTIAL-PROJECTION.md
       - docs/invariants/INV-HELPER-OWNERSHIP.md
     applies_to:
       paths:
         - src/helper/**
+        - test/unit/helper-projection-recovery.ts
+        - test/unit/helper-tui.ts
         - skills/**
         - test/acceptance/public-0.5-upgrade.ts
         - package.json

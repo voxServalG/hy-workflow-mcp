@@ -40,7 +40,7 @@ function npmPackDryRun(root: string): string[] {
 const root = process.cwd();
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 assert(pkg.name === "@voxstudio/hy-workflow", "package name drifted");
-assert(pkg.version === "0.6.0", "this release contract is for v0.6.0");
+assert(pkg.version === "0.6.1", "this release contract is for v0.6.1");
 assert(pkg.publishConfig?.access === "public", "scoped package must publish publicly");
 assert(pkg.engines?.node === ">=18", "package must retain the Node 18 runtime floor");
 assert(pkg.main === "dist/main.js" && pkg.bin?.["hy-workflow"] === "dist/main.js", "main and bin must share the thin CLI entrypoint");

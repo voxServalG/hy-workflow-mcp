@@ -6,9 +6,28 @@ import { fileURLToPath } from "node:url";
 import { parseInputOptions } from "./cli/input.js";
 import { issueFromError, jsonLine } from "./cli/output.js";
 import { runHelperCli } from "./helper/cli.js";
+import { runHelperTui } from "./helper/tui.js";
 import { PACKAGE_VERSION } from "./package-meta.js";
 import { inspectRepository } from "./protocol/inspect.js";
 import { verifyEvidence } from "./protocol/verify.js";
+
+export function helperHelp(): string {
+  return [
+    "hy-workflow helper",
+    "",
+    "Interactive Skill installer and ownership checker for Codex, Claude, and OpenCode.",
+    "",
+    "Usage:",
+    "  hy-workflow helper                         Launch TUI in an interactive terminal",
+    "  hy-workflow helper install [--clients all|LIST] [--mode auto|symlink|copy] [--json]",
+    "  hy-workflow helper update [--repair] [--json]",
+    "  hy-workflow helper status [--json]",
+    "  hy-workflow helper remove [--json]",
+    "  hy-workflow helper -h|--help",
+    "",
+    "The helper writes only owned user-level Skill resources. --json keeps the stable machine contract.",
+  ].join("\n");
+}
 
 export function cliHelp(): string {
   return [
@@ -60,7 +79,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 0;
   }
   if (argv[0] === "helper") {
-    const result = await runHelperCli(argv.slice(1));
+    const helperArgs = argv.slice(1);
+    if (helperArgs[0] === "--help" || helperArgs[0] === "-h") {
+      process.stdout.write(`${helperHelp()}\n`);
+      return 0;
+    }
+    if (!helperArgs.length) {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        process.stdout.write(`${helperHelp()}\n`);
+        return 0;
+      }
+      return runHelperTui();
+    }
+    const result = await runHelperCli(helperArgs);
     process.stdout.write(result.stdout);
     return result.exitCode;
   }
